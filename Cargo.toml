@@ -1,0 +1,9 @@
+[package]
+name = "docrev"
+version = "0.1.0"
+edition = "2024"
+description = "A terminal document viewer with inline review comments, designed for AI agent workflows"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kaneko1117/docrev"
+
+[dependencies]
