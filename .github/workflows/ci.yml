@@ -27,10 +27,9 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      # --no-tests=pass: the crate has no tests yet; drop the flag once Stage 1 lands tests
-      - run: cargo nextest run --no-tests=pass
-      # doc-tests (nextest does not run them); enable once a lib target exists:
-      # - run: cargo test --doc
+      - run: cargo nextest run
+      # doc-tests (nextest does not run them)
+      - run: cargo test --doc
 
   deny:
     name: cargo-deny (licenses / advisories / sources)
