@@ -24,6 +24,7 @@ pub enum Event {
     Backspace,
     Submit,
     CancelEdit,
+    ReloadComments,
     Quit,
     Noop,
 }
@@ -241,6 +242,16 @@ impl Viewer {
                         },
                         buffer: String::new(),
                     };
+                }
+                return;
+            }
+            Event::ReloadComments => {
+                match self.store.load() {
+                    Ok(comments) => {
+                        self.comments = comments;
+                        self.notice = None;
+                    }
+                    Err(e) => self.notice = Some(format!("comments unavailable: {e}")),
                 }
                 return;
             }
@@ -568,6 +579,47 @@ mod tests {
         v.apply(Event::StartComment);
         v.apply(Event::Move { rows: 1, cols: 1 });
         assert_eq!(v.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn reload_picks_up_new_comments() {
+        #[derive(Clone, Default)]
+        struct SharedStore {
+            threads: Rc<RefCell<Vec<CommentThread>>>,
+        }
+        impl CommentStore for SharedStore {
+            fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
+                Ok(self.threads.borrow().clone())
+            }
+            fn add_thread(
+                &mut self,
+                _: Anchor,
+                _: &str,
+                _: &str,
+            ) -> Result<CommentThread, StoreError> {
+                Err(StoreError("read only".into()))
+            }
+            fn add_reply(
+                &mut self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<CommentThread, StoreError> {
+                Err(StoreError("read only".into()))
+            }
+            fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
+                Err(StoreError("read only".into()))
+            }
+        }
+
+        let store = SharedStore::default();
+        let shared = store.threads.clone();
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        assert!(v.unresolved_on_active_sheet().is_empty());
+
+        shared.borrow_mut().push(thread("one", 1, 1, false)); // an agent replied meanwhile
+        v.apply(Event::ReloadComments);
+        assert_eq!(v.unresolved_on_active_sheet(), vec![(1, 1)]);
     }
 
     #[test]

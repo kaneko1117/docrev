@@ -56,6 +56,19 @@ This format is a **public contract**: AI agents read and write it through the
   thread. Multiple threads per cell are valid in the schema, but the TUI follows
   the spreadsheet convention of one open thread per cell (`c` replies to an open
   thread instead of forking a second one).
+
+## CLI
+
+`docrev comment` is the intended way for agents to read and write this file:
+
+- `list --json` prints this document shape (`{"version": 1, "comments": [...]}`)
+  after applying filters — the schema above is the output contract.
+- `add` / `reply` / `resolve` print the affected thread (same thread shape,
+  including its `id`) and exit non-zero with a message on stderr for invalid
+  cell references, unknown sheets, or unknown thread ids.
+- Writers hold an exclusive advisory lock on `<sidecar>.lock` during
+  read-modify-write, so concurrent TUI and CLI writes cannot lose updates.
+  The lock file is left in place; it is safe to delete when nothing is running.
 - Threads whose `resolved` is `false` are shown with a `●` marker in the viewer.
 - A missing sidecar file means "no comments" and is not an error. A corrupt or
   unsupported sidecar must not prevent opening the document read-only.

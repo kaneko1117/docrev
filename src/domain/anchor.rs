@@ -41,6 +41,16 @@ impl Anchor {
         reversed.iter().rev().collect()
     }
 
+    /// `"Sheet!B3"` -> anchor. Splits on the last `!` (sheet names may contain `!`).
+    pub fn parse_ref(reference: &str) -> Option<Anchor> {
+        let (sheet, cell) = reference.rsplit_once('!')?;
+        if sheet.is_empty() {
+            return None;
+        }
+        let (row, col) = Self::parse_cell_ref(cell)?;
+        Some(Anchor::cell(sheet, row, col))
+    }
+
     /// `"B3"` -> `(row 2, col 1)`; `None` if malformed.
     pub fn parse_cell_ref(reference: &str) -> Option<(u32, u32)> {
         let letters: String = reference
@@ -90,6 +100,22 @@ mod tests {
         assert_eq!(Anchor::parse_cell_ref("B3"), Some((2, 1)));
         assert_eq!(Anchor::parse_cell_ref("b3"), Some((2, 1)));
         assert_eq!(Anchor::parse_cell_ref("AA10"), Some((9, 26)));
+    }
+
+    #[test]
+    fn parses_full_references() {
+        assert_eq!(
+            Anchor::parse_ref("売上!B3"),
+            Some(Anchor::cell("売上", 2, 1))
+        );
+        assert_eq!(
+            Anchor::parse_ref("A!B!C3"),
+            Some(Anchor::cell("A!B", 2, 2)),
+            "splits on the last '!'"
+        );
+        for bad in ["B3", "!B3", "売上!", "売上!nope"] {
+            assert_eq!(Anchor::parse_ref(bad), None, "should reject {bad:?}");
+        }
     }
 
     #[test]

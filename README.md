@@ -28,21 +28,28 @@ docrev dump file.xlsx   # print a sheet as a text table (--sheet <name> to pick 
 | Tab / Shift+Tab | Next / previous sheet |
 | c | Comment on the cell (replies when the cell already has an open thread) |
 | r | Reply to the thread on the cell |
+| F5 | Reload comments (pick up agent replies without restarting) |
 | q / Ctrl+C | Quit |
 
 In the comment editor: Enter inserts a newline, Ctrl+S saves, Esc cancels.
 The status bar shows the full value of the selected cell; cells with an open
 thread are marked with `●` and their thread appears in a side panel.
 
-## Planned
+## Agent CLI
+
+The other half of the loop — an AI agent reads your comments, acts, and replies:
 
 ```text
-docrev comment list file.xlsx --json  # an agent reads the comments you left in the TUI
-docrev comment add file.xlsx ...      # ...and replies inline
+docrev comment list file.xlsx --json [--unresolved] [--author <name>] [--sheet <name>]
+docrev comment add file.xlsx --cell "Sheet1!B3" --body "..." [--author <name>]
+docrev comment reply file.xlsx --thread <id> --body "..." [--author <name>]
+docrev comment resolve file.xlsx --thread <id>
 ```
 
-Comments will live in a sidecar file (`file.xlsx.docrev.json`); the original document
-is never modified.
+`list --json` emits exactly the [sidecar schema](docs/sidecar.md); `add`/`reply`/
+`resolve` print the affected thread (including its id). Comments live in a sidecar
+file (`file.xlsx.docrev.json`); the original document is never modified, and
+concurrent TUI/CLI writes are serialized through a `.lock` file.
 
 ## License
 
