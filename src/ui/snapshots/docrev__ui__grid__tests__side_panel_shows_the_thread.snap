@@ -2,13 +2,13 @@
 source: src/ui/grid.rs
 expression: "render_text(&view, &mut scroll, 76, 10)"
 ---
-        A            B            C         │B2
- 1 項目         単価         数量           │
- 2 りんご      ●         120            3   │ user:
- 3 みかん                 80            5   │  単価が古いのでは?
+ B2     │ 120
+  │     A      │     B      │     C         │B2
+ 1│項目        │単価        │数量           │
+ 2│りんご      ●         120│           3   │ user:
+ 3│みかん      │          80│           5   │  単価が古いのでは?
                                             │
                                             │ claude:
                                             │  確認しました。150円です
-                                            │
 [売上]
-B2: 120                                           r:reply  c:comment  q:quit
+                                                  r:reply  c:comment  q:quit
