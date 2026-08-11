@@ -1,3 +1,7 @@
 /target
 
 *.snap.new
+
+# local testing scratch — only basic.xlsx has a committed fixture sidecar
+tests/fixtures/multi_sheet.xlsx.docrev.json
+tests/fixtures/edge.xlsx.docrev.json

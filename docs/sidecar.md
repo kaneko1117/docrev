@@ -53,7 +53,9 @@ This format is a **public contract**: AI agents read and write it through the
 ## Semantics
 
 - A **thread** is one root comment plus its replies; `resolved` closes the whole
-  thread. Start a new thread for a new topic, even on the same cell.
+  thread. Multiple threads per cell are valid in the schema, but the TUI follows
+  the spreadsheet convention of one open thread per cell (`c` replies to an open
+  thread instead of forking a second one).
 - Threads whose `resolved` is `false` are shown with a `●` marker in the viewer.
 - A missing sidecar file means "no comments" and is not an error. A corrupt or
   unsupported sidecar must not prevent opening the document read-only.

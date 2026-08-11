@@ -24,7 +24,7 @@ fn loads_threads_from_committed_fixture() {
 #[test]
 fn viewer_marks_only_unresolved_threads() {
     let store = JsonCommentStore::for_document(&fixture("basic.xlsx"));
-    let viewer = Viewer::open(&XlsxSource, &store, &fixture("basic.xlsx")).unwrap();
+    let viewer = Viewer::open(&XlsxSource, Box::new(store), &fixture("basic.xlsx")).unwrap();
     assert_eq!(viewer.notice(), None);
     assert_eq!(viewer.unresolved_on_active_sheet(), vec![(1, 1)]);
 }
