@@ -1,0 +1,11 @@
+---
+source: src/ui/grid.rs
+expression: "render_text(&view, &mut scroll, 60, 7)"
+---
+        A            B            C
+ 1 項目         単価         数量
+ 2 りんご      ●         120            3
+ 3 みかん                 80            5
+
+[売上]
+A1: 項目             ⚠ comments unavailable: invalid sidecar

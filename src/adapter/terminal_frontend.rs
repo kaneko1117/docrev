@@ -38,6 +38,8 @@ impl Frontend for TerminalFrontend {
             sheet_names: viewer.sheet_names(),
             active: viewer.active(),
             cursor: viewer.cursor(),
+            markers: viewer.unresolved_on_active_sheet().into_iter().collect(),
+            notice: viewer.notice(),
         };
         terminal
             .draw(|frame| {

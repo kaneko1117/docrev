@@ -1,9 +1,14 @@
 use unicode_width::UnicodeWidthStr;
 
+use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::sheet::Sheet;
 
-use super::text::{cell_text, center, clip, column_label, pad_left, pad_right};
+use super::text::{cell_text, center, clip, pad_left, pad_right};
+
+fn column_label(index: u32) -> String {
+    Anchor::column_label(index)
+}
 
 const MAX_CELL_WIDTH: usize = 24;
 

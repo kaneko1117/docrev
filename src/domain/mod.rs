@@ -1,5 +1,7 @@
 //! Pure model. No IO, no dependencies on other layers.
 
+pub mod anchor;
 pub mod cell;
+pub mod comment;
 pub mod document;
 pub mod sheet;
