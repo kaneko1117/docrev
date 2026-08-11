@@ -1,23 +1,33 @@
+use std::collections::HashSet;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::sheet::Sheet;
 
-use super::text::{cell_text, center, clip, column_label, pad_left, pad_right, sanitize};
+use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
 
 pub const CELL_WIDTH: usize = 12;
 /// Header line + tab bar + status bar.
 pub const CHROME_ROWS: u16 = 3;
+
+fn column_label(index: u32) -> String {
+    Anchor::column_label(index)
+}
 
 pub struct GridView<'a> {
     pub sheet: &'a Sheet,
     pub sheet_names: Vec<&'a str>,
     pub active: usize,
     pub cursor: (usize, usize),
+    /// Cells with an unresolved comment thread, marked with `●`.
+    pub markers: HashSet<(usize, usize)>,
+    pub notice: Option<&'a str>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -74,7 +84,11 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
             header_style,
         )];
         for col in scroll.left..last_col {
-            spans.push(Span::raw(" "));
+            if view.markers.contains(&(row, col)) {
+                spans.push(Span::styled("●", Style::default().fg(Color::Yellow)));
+            } else {
+                spans.push(Span::raw(" "));
+            }
             let cell = sheet.cell(row, col);
             let clipped = clip(&cell_text(cell), CELL_WIDTH);
             let aligned = if matches!(cell, CellValue::Number(_)) {
@@ -124,15 +138,21 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &GridView) {
     let value = sanitize(&cell_text(view.sheet.cell(row, col)));
     let address = format!("{}{}", column_label(col as u32), row + 1);
     let left = format!("{address}: {value}");
-    let hint = "q:quit  Tab:sheet";
+    let (right, right_style) = match view.notice {
+        Some(notice) => (format!("⚠ {notice}"), Style::default().fg(Color::Yellow)),
+        None => (
+            "q:quit  Tab:sheet".to_string(),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    };
     let gap = (area.width as usize).saturating_sub(
         unicode_width::UnicodeWidthStr::width(left.as_str())
-            + unicode_width::UnicodeWidthStr::width(hint),
+            + unicode_width::UnicodeWidthStr::width(right.as_str()),
     );
     let line = Line::from(vec![
         Span::raw(left),
         Span::raw(" ".repeat(gap)),
-        Span::styled(hint, Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(right, right_style),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -199,6 +219,8 @@ mod tests {
             sheet_names: vec!["売上", "経費"],
             active: 0,
             cursor: (1, 1),
+            markers: HashSet::new(),
+            notice: None,
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 46, 7));
@@ -215,6 +237,8 @@ mod tests {
             sheet_names: vec!["big"],
             active: 0,
             cursor: (50, 0),
+            markers: HashSet::new(),
+            notice: None,
         };
         let mut scroll = Scroll::default();
         let text = render_text(&view, &mut scroll, 30, 6);
@@ -230,6 +254,8 @@ mod tests {
             sheet_names: vec!["売上"],
             active: 0,
             cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
         terminal
@@ -247,8 +273,25 @@ mod tests {
             sheet_names: vec!["empty"],
             active: 0,
             cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
         };
         let text = render_text(&view, &mut Scroll::default(), 30, 5);
         assert!(text.contains("(empty sheet)"));
+    }
+
+    #[test]
+    fn markers_and_notice_are_rendered() {
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::from([(1, 1)]),
+            notice: Some("comments unavailable: invalid sidecar"),
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 60, 7));
     }
 }

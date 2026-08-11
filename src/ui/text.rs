@@ -22,19 +22,6 @@ pub(crate) fn sanitize(text: &str) -> String {
         .collect()
 }
 
-pub(crate) fn column_label(index: u32) -> String {
-    let mut index = index;
-    let mut reversed = Vec::new();
-    loop {
-        reversed.push(char::from(b'A' + (index % 26) as u8));
-        if index < 26 {
-            break;
-        }
-        index = index / 26 - 1;
-    }
-    reversed.iter().rev().collect()
-}
-
 pub(crate) fn clip(text: &str, max: usize) -> String {
     if text.width() <= max {
         return text.to_string();
@@ -70,16 +57,6 @@ pub(crate) fn center(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn column_labels() {
-        assert_eq!(column_label(0), "A");
-        assert_eq!(column_label(25), "Z");
-        assert_eq!(column_label(26), "AA");
-        assert_eq!(column_label(51), "AZ");
-        assert_eq!(column_label(701), "ZZ");
-        assert_eq!(column_label(702), "AAA");
-    }
 
     #[test]
     fn clips_by_display_width() {

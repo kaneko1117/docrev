@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+use docrev::adapter::json_comment_store::JsonCommentStore;
 use docrev::adapter::terminal_frontend::TerminalFrontend;
 use docrev::adapter::xlsx_source::XlsxSource;
 use docrev::app::dump::dump;
@@ -65,7 +66,8 @@ fn run_dump(file: &Path, sheet: Option<&str>) -> ExitCode {
 }
 
 fn run_viewer(file: &Path) -> ExitCode {
-    let viewer = match Viewer::open(&XlsxSource, file) {
+    let store = JsonCommentStore::for_document(file);
+    let viewer = match Viewer::open(&XlsxSource, &store, file) {
         Ok(viewer) => viewer,
         Err(e) => return fail(&e),
     };

@@ -1,10 +1,12 @@
 use std::path::Path;
 
+use crate::domain::anchor::Anchor;
+use crate::domain::comment::CommentThread;
 use crate::domain::document::Document;
 use crate::domain::sheet::Sheet;
 
 use super::error::{DocumentError, FrontendError};
-use super::ports::DocumentSource;
+use super::ports::{CommentStore, DocumentSource};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
@@ -48,15 +50,31 @@ pub struct Viewer {
     cursors: Vec<(usize, usize)>,
     active: usize,
     quit: bool,
+    comments: Vec<CommentThread>,
+    notice: Option<String>,
 }
 
 impl Viewer {
-    pub fn open(source: &impl DocumentSource, path: &Path) -> Result<Self, DocumentError> {
+    /// A broken comment store must not block reading the document: the
+    /// viewer opens without comments and carries a notice instead.
+    pub fn open(
+        source: &impl DocumentSource,
+        store: &impl CommentStore,
+        path: &Path,
+    ) -> Result<Self, DocumentError> {
         let document = source.load(path)?;
-        Self::from_document(document)
+        let (comments, notice) = match store.load() {
+            Ok(comments) => (comments, None),
+            Err(e) => (Vec::new(), Some(format!("comments unavailable: {e}"))),
+        };
+        Self::from_document(document, comments, notice)
     }
 
-    fn from_document(document: Document) -> Result<Self, DocumentError> {
+    fn from_document(
+        document: Document,
+        comments: Vec<CommentThread>,
+        notice: Option<String>,
+    ) -> Result<Self, DocumentError> {
         let mut sheets = document.into_sheets().into_iter();
         let Some(first) = sheets.next() else {
             return Err(DocumentError::EmptyDocument);
@@ -68,7 +86,32 @@ impl Viewer {
             cursors,
             active: 0,
             quit: false,
+            comments,
+            notice,
         })
+    }
+
+    pub fn threads(&self) -> &[CommentThread] {
+        &self.comments
+    }
+
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    /// (row, col) of every unresolved thread on the active sheet.
+    pub fn unresolved_on_active_sheet(&self) -> Vec<(usize, usize)> {
+        let active = self.sheet().name();
+        self.comments
+            .iter()
+            .filter(|t| !t.resolved)
+            .filter_map(|t| match &t.anchor {
+                Anchor::Cell { sheet, row, col } if sheet == active => {
+                    Some((*row as usize, *col as usize))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn sheet(&self) -> &Sheet {
@@ -156,12 +199,41 @@ mod tests {
             Sheet::new("one", grid),
             Sheet::new("two", vec![vec![CellValue::Bool(true)]]),
         ]);
-        Viewer::from_document(doc).unwrap()
+        Viewer::from_document(doc, Vec::new(), None).unwrap()
+    }
+
+    fn thread(sheet: &str, row: u32, col: u32, resolved: bool) -> CommentThread {
+        CommentThread {
+            id: format!("t-{sheet}-{row}-{col}"),
+            anchor: Anchor::cell(sheet, row, col),
+            author: "user".into(),
+            body: "body".into(),
+            created_at: "2026-08-11T00:00:00Z".into(),
+            resolved,
+            replies: Vec::new(),
+        }
     }
 
     #[test]
     fn empty_document_is_rejected() {
-        assert!(Viewer::from_document(Document::new(vec![])).is_err());
+        assert!(Viewer::from_document(Document::new(vec![]), Vec::new(), None).is_err());
+    }
+
+    #[test]
+    fn unresolved_markers_follow_the_active_sheet() {
+        let doc = Document::new(vec![
+            Sheet::new("one", vec![vec![CellValue::Number(1.0); 3]; 3]),
+            Sheet::new("two", vec![vec![CellValue::Number(1.0); 3]; 3]),
+        ]);
+        let comments = vec![
+            thread("one", 1, 1, false),
+            thread("one", 2, 2, true),
+            thread("two", 0, 0, false),
+        ];
+        let mut v = Viewer::from_document(doc, comments, None).unwrap();
+        assert_eq!(v.unresolved_on_active_sheet(), vec![(1, 1)]);
+        v.apply(Event::NextSheet);
+        assert_eq!(v.unresolved_on_active_sheet(), vec![(0, 0)]);
     }
 
     #[test]

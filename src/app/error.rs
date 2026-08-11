@@ -20,3 +20,7 @@ pub enum DocumentError {
 #[derive(Debug, Error)]
 #[error("{0}")]
 pub struct FrontendError(pub String);
+
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub struct StoreError(pub String);
