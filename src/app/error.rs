@@ -5,7 +5,7 @@ use thiserror::Error;
 pub struct LoadError(pub String);
 
 #[derive(Debug, Error)]
-pub enum DumpError {
+pub enum DocumentError {
     #[error("failed to load document: {0}")]
     Load(#[from] LoadError),
     #[error("sheet \"{name}\" not found. available sheets: {}", available.join(", "))]
@@ -16,3 +16,7 @@ pub enum DumpError {
     #[error("document has no sheets")]
     EmptyDocument,
 }
+
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub struct FrontendError(pub String);

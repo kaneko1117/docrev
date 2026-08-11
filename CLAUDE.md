@@ -42,7 +42,7 @@ src/
   touches comments goes through `Anchor`, never through raw cell strings.
 - Coordinates are **0-based** everywhere internally. A1-notation ("Sheet1!B12")
   exists only at the edges: CLI arguments, JSON sidecar, and UI display.
-  Conversion lives in one place (currently private in `ui::table`; it becomes a
+  Conversion lives in one place (currently private inside `ui`; it becomes a
   method of the `Anchor` type when that lands in Stage 3).
 - No constructor-less utility modules in `domain` — free functions belong next to
   their single consumer until a real domain type can own them.

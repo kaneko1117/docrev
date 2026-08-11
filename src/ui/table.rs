@@ -1,7 +1,9 @@
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::domain::cell::CellValue;
 use crate::domain::sheet::Sheet;
+
+use super::text::{cell_text, center, clip, column_label, pad_left, pad_right};
 
 const MAX_CELL_WIDTH: usize = 24;
 
@@ -16,7 +18,7 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
     let texts: Vec<Vec<String>> = (0..sheet.row_count())
         .map(|r| {
             (0..col_count)
-                .map(|c| clip(&cell_text(sheet.cell(r, c))))
+                .map(|c| clip(&cell_text(sheet.cell(r, c)), MAX_CELL_WIDTH))
                 .collect()
         })
         .collect();
@@ -79,71 +81,6 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
     out
 }
 
-fn cell_text(cell: &CellValue) -> String {
-    match cell {
-        CellValue::Empty => String::new(),
-        CellValue::Text(s) | CellValue::DateTime(s) | CellValue::Error(s) => sanitize(s),
-        CellValue::Number(n) => n.to_string(),
-        CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-    }
-}
-
-/// Control characters would break the table layout.
-fn sanitize(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '\n' | '\r' => '⏎',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .collect()
-}
-
-fn column_label(index: u32) -> String {
-    let mut index = index;
-    let mut reversed = Vec::new();
-    loop {
-        reversed.push(char::from(b'A' + (index % 26) as u8));
-        if index < 26 {
-            break;
-        }
-        index = index / 26 - 1;
-    }
-    reversed.iter().rev().collect()
-}
-
-fn clip(text: &str) -> String {
-    if text.width() <= MAX_CELL_WIDTH {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let w = ch.width().unwrap_or(0);
-        if used + w > MAX_CELL_WIDTH - 1 {
-            break;
-        }
-        out.push(ch);
-        used += w;
-    }
-    out.push('…');
-    out
-}
-
-fn pad_right(text: &str, width: usize) -> String {
-    format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
-}
-
-fn pad_left(text: &str, width: usize) -> String {
-    format!("{}{text}", " ".repeat(width.saturating_sub(text.width())))
-}
-
-fn center(text: &str, width: usize) -> String {
-    let pad = width.saturating_sub(text.width());
-    let left = pad / 2;
-    format!("{}{text}{}", " ".repeat(left), " ".repeat(pad - left))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,14 +126,6 @@ Sheet: S (1/1)
     }
 
     #[test]
-    fn clips_long_text_by_display_width() {
-        let long = "これはとても長い備考でありグリッド表示では切り詰められるはずの文字列";
-        let clipped = clip(long);
-        assert!(clipped.ends_with('…'));
-        assert!(clipped.width() <= MAX_CELL_WIDTH);
-    }
-
-    #[test]
     fn empty_sheet_has_placeholder() {
         let sheet = Sheet::new("empty", vec![]);
         assert!(render(&sheet, 0, 1).contains("(empty sheet)"));
@@ -218,15 +147,5 @@ Sheet: S (1/1)
             widths.iter().all(|w| *w == widths[0]),
             "uneven line widths: {widths:?}"
         );
-    }
-
-    #[test]
-    fn column_labels() {
-        assert_eq!(column_label(0), "A");
-        assert_eq!(column_label(25), "Z");
-        assert_eq!(column_label(26), "AA");
-        assert_eq!(column_label(51), "AZ");
-        assert_eq!(column_label(701), "ZZ");
-        assert_eq!(column_label(702), "AAA");
     }
 }

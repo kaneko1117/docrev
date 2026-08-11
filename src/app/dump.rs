@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::domain::sheet::Sheet;
 
-use super::error::DumpError;
+use super::error::DocumentError;
 use super::ports::DocumentSource;
 
 #[derive(Debug)]
@@ -18,16 +18,16 @@ pub fn dump(
     source: &impl DocumentSource,
     path: &Path,
     sheet_name: Option<&str>,
-) -> Result<DumpView, DumpError> {
+) -> Result<DumpView, DocumentError> {
     let document = source.load(path)?;
     let total = document.sheets().len();
     if total == 0 {
-        return Err(DumpError::EmptyDocument);
+        return Err(DocumentError::EmptyDocument);
     }
     let position = match sheet_name {
         Some(name) => document
             .index_of(name)
-            .ok_or_else(|| DumpError::SheetNotFound {
+            .ok_or_else(|| DocumentError::SheetNotFound {
                 name: name.to_string(),
                 available: document.sheet_names().map(str::to_string).collect(),
             })?,
@@ -37,7 +37,7 @@ pub fn dump(
         .into_sheets()
         .into_iter()
         .nth(position)
-        .ok_or(DumpError::EmptyDocument)?;
+        .ok_or(DocumentError::EmptyDocument)?;
     Ok(DumpView {
         sheet,
         position,
@@ -84,7 +84,7 @@ mod tests {
     fn unknown_sheet_reports_candidates() {
         let source = FakeSource(Ok(doc(&["one", "two"])));
         let err = dump(&source, Path::new("x"), Some("nope")).unwrap_err();
-        assert!(matches!(err, DumpError::SheetNotFound { .. }));
+        assert!(matches!(err, DocumentError::SheetNotFound { .. }));
         let msg = err.to_string();
         assert!(msg.contains("one, two"), "unexpected message: {msg}");
     }
@@ -93,7 +93,7 @@ mod tests {
     fn empty_document_is_an_error() {
         let source = FakeSource(Ok(doc(&[])));
         let err = dump(&source, Path::new("x"), None).unwrap_err();
-        assert!(matches!(err, DumpError::EmptyDocument));
+        assert!(matches!(err, DocumentError::EmptyDocument));
     }
 
     #[test]
