@@ -14,9 +14,40 @@ use crate::domain::sheet::Sheet;
 use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
 
 pub const CELL_WIDTH: usize = 12;
-/// Header line + tab bar + status bar.
-pub const CHROME_ROWS: u16 = 3;
+/// Formula bar + header line + tab bar + status bar.
+pub const CHROME_ROWS: u16 = 4;
 const PANEL_WIDTH: u16 = 32;
+
+// Sheets-flavored palette, painted regardless of terminal theme (#16).
+const TEXT: Color = Color::Rgb(32, 33, 36);
+const CANVAS_BG: Color = Color::Rgb(255, 255, 255);
+const HEADER_BG: Color = Color::Rgb(241, 243, 244);
+const HEADER_FG: Color = Color::Rgb(95, 99, 104);
+const SELECTION_BG: Color = Color::Rgb(210, 227, 252);
+const MARKER_FG: Color = Color::Rgb(242, 153, 0);
+const NOTICE_FG: Color = Color::Rgb(217, 48, 37);
+const GRIDLINE: Color = Color::Rgb(218, 220, 224);
+const USER_FG: Color = Color::Rgb(146, 64, 14);
+const AGENT_FG: Color = Color::Rgb(11, 87, 208);
+
+fn canvas() -> Style {
+    Style::new().bg(CANVAS_BG).fg(TEXT)
+}
+
+fn header() -> Style {
+    Style::new().bg(HEADER_BG).fg(HEADER_FG)
+}
+
+fn selected() -> Style {
+    Style::new().bg(SELECTION_BG).fg(TEXT)
+}
+
+/// Horizontal gridlines without spending screen rows: a colored underline.
+fn ruled(style: Style) -> Style {
+    style
+        .add_modifier(Modifier::UNDERLINED)
+        .underline_color(GRIDLINE)
+}
 
 fn column_label(index: u32) -> String {
     Anchor::column_label(index)
@@ -48,7 +79,8 @@ pub struct Scroll {
 }
 
 pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
-    let [main_area, tabs_area, status_area] = Layout::vertical([
+    let [formula_area, main_area, tabs_area, status_area] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -62,6 +94,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
         }
         _ => (main_area, None),
     };
+    draw_formula_bar(frame, formula_area, view);
     draw_grid(frame, grid_area, view, scroll);
     if let (Some(panel), Some(thread)) = (panel_area, view.thread) {
         draw_panel(frame, panel, thread);
@@ -73,14 +106,30 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
     }
 }
 
+/// Sheets' name box + formula bar: `B2      │ 120`.
+fn draw_formula_bar(frame: &mut Frame, area: Rect, view: &GridView) {
+    let (row, col) = view.cursor;
+    let address = format!("{}{}", column_label(col as u32), row + 1);
+    let value = sanitize(&cell_text(view.sheet.cell(row, col)));
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" {address:<7}"),
+            canvas().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("│ ", Style::new().bg(CANVAS_BG).fg(HEADER_FG)),
+        Span::styled(value, canvas()),
+    ]);
+    frame.render_widget(Paragraph::new(line).style(canvas()), area);
+}
+
 fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll) {
     let sheet = view.sheet;
     if sheet.row_count() == 0 || sheet.col_count() == 0 {
-        frame.render_widget(Paragraph::new("(empty sheet)"), area);
+        frame.render_widget(Paragraph::new("(empty sheet)").style(canvas()), area);
         return;
     }
 
-    let header_style = Style::default().add_modifier(Modifier::DIM);
+    let header_style = header();
     let row_label_width = sheet.row_count().to_string().len().max(2);
     let rows_visible = area.height.saturating_sub(1) as usize;
     let cols_visible = (area.width as usize).saturating_sub(row_label_width + 1) / (CELL_WIDTH + 1);
@@ -93,26 +142,32 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
     let last_col = (scroll.left + cols_visible).min(sheet.col_count());
 
     let mut lines = Vec::with_capacity(rows_visible + 1);
-    let mut header = vec![Span::styled(" ".repeat(row_label_width), header_style)];
+    let mut header_line = vec![Span::styled(
+        " ".repeat(row_label_width),
+        ruled(header_style),
+    )];
     for col in scroll.left..last_col {
-        header.push(Span::raw(" "));
-        header.push(Span::styled(
+        header_line.push(Span::styled("│", ruled(header().fg(GRIDLINE))));
+        header_line.push(Span::styled(
             center(&column_label(col as u32), CELL_WIDTH),
-            header_style,
+            ruled(header_style),
         ));
     }
-    lines.push(Line::from(header));
+    lines.push(Line::from(header_line));
 
     for row in scroll.top..last_row {
         let mut spans = vec![Span::styled(
             pad_left(&(row + 1).to_string(), row_label_width),
-            header_style,
+            ruled(header_style),
         )];
         for col in scroll.left..last_col {
             if view.markers.contains(&(row, col)) {
-                spans.push(Span::styled("●", Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    "●",
+                    ruled(Style::new().bg(CANVAS_BG).fg(MARKER_FG)),
+                ));
             } else {
-                spans.push(Span::raw(" "));
+                spans.push(Span::styled("│", ruled(canvas().fg(GRIDLINE))));
             }
             let cell = sheet.cell(row, col);
             let clipped = clip(&cell_text(cell), CELL_WIDTH);
@@ -122,15 +177,15 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                 pad_right(&clipped, CELL_WIDTH)
             };
             let style = if (row, col) == view.cursor {
-                Style::default().add_modifier(Modifier::REVERSED)
+                selected()
             } else {
-                Style::default()
+                canvas()
             };
-            spans.push(Span::styled(aligned, style));
+            spans.push(Span::styled(aligned, ruled(style)));
         }
         lines.push(Line::from(spans));
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines).style(canvas()), area);
 }
 
 /// Keeps the cursor inside the visible window by moving the scroll origin.
@@ -152,7 +207,7 @@ fn draw_panel(frame: &mut Frame, area: Rect, thread: &CommentThread) {
         thread.anchor.cell_ref()
     };
     let mut lines = vec![
-        Line::styled(title, Style::default().add_modifier(Modifier::BOLD)),
+        Line::styled(title, canvas().add_modifier(Modifier::BOLD)),
         Line::raw(""),
     ];
     push_message(&mut lines, &thread.author, &thread.body);
@@ -161,18 +216,22 @@ fn draw_panel(frame: &mut Frame, area: Rect, thread: &CommentThread) {
         push_message(&mut lines, &reply.author, &reply.body);
     }
     let panel = Paragraph::new(lines)
+        .style(canvas())
         .wrap(Wrap { trim: false })
-        .block(Block::new().borders(Borders::LEFT));
+        .block(
+            Block::new()
+                .borders(Borders::LEFT)
+                .border_style(Style::new().bg(CANVAS_BG).fg(HEADER_FG)),
+        );
     frame.render_widget(panel, area);
 }
 
 fn push_message(lines: &mut Vec<Line>, author: &str, body: &str) {
-    let style = if author == "user" {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
-    lines.push(Line::styled(format!(" {author}:"), style));
+    let color = if author == "user" { USER_FG } else { AGENT_FG };
+    lines.push(Line::styled(
+        format!(" {author}:"),
+        Style::new().bg(CANVAS_BG).fg(color),
+    ));
     for part in body.split('\n') {
         lines.push(Line::raw(format!("  {}", sanitize(part))));
     }
@@ -200,11 +259,16 @@ fn draw_editor(frame: &mut Frame, editor: &EditorView) {
     }
     lines.push(Line::styled(
         "Enter:newline  Ctrl+S:save  Esc:cancel",
-        Style::default().add_modifier(Modifier::DIM),
+        Style::new().bg(CANVAS_BG).fg(HEADER_FG),
     ));
     let popup_widget = Paragraph::new(lines)
+        .style(canvas())
         .wrap(Wrap { trim: false })
-        .block(Block::bordered().title(editor.title.clone()));
+        .block(
+            Block::bordered()
+                .title(editor.title.clone())
+                .border_style(Style::new().bg(CANVAS_BG).fg(HEADER_FG)),
+        );
     frame.render_widget(popup_widget, popup);
 }
 
@@ -212,44 +276,36 @@ fn draw_tabs(frame: &mut Frame, area: Rect, view: &GridView) {
     let mut spans = Vec::with_capacity(view.sheet_names.len());
     for (i, name) in view.sheet_names.iter().enumerate() {
         let style = if i == view.active {
-            Style::default().add_modifier(Modifier::REVERSED)
+            canvas().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().add_modifier(Modifier::DIM)
+            header()
         };
         spans.push(Span::styled(format!("[{name}]"), style));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(header()), area);
 }
 
+/// Hints and notices only — the cell value lives in the formula bar now.
 fn draw_status(frame: &mut Frame, area: Rect, view: &GridView) {
-    let (row, col) = view.cursor;
-    let value = sanitize(&cell_text(view.sheet.cell(row, col)));
-    let address = format!("{}{}", column_label(col as u32), row + 1);
-    let left = format!("{address}: {value}");
-    let (right, right_style) = match view.notice {
-        Some(notice) => (format!("⚠ {notice}"), Style::default().fg(Color::Yellow)),
-        None => {
-            let hint = if view.thread.is_some() {
-                "r:reply  c:comment  q:quit"
-            } else {
-                "c:comment  q:quit  Tab:sheet"
-            };
-            (
-                hint.to_string(),
-                Style::default().add_modifier(Modifier::DIM),
-            )
-        }
+    let left = match view.notice {
+        Some(notice) => format!("⚠ {notice}"),
+        None => String::new(),
+    };
+    let hint = if view.thread.is_some() {
+        "r:reply  c:comment  q:quit"
+    } else {
+        "c:comment  q:quit  Tab:sheet"
     };
     let gap = (area.width as usize).saturating_sub(
         unicode_width::UnicodeWidthStr::width(left.as_str())
-            + unicode_width::UnicodeWidthStr::width(right.as_str()),
+            + unicode_width::UnicodeWidthStr::width(hint),
     );
     let line = Line::from(vec![
-        Span::raw(left),
-        Span::raw(" ".repeat(gap)),
-        Span::styled(right, right_style),
+        Span::styled(left, Style::new().bg(HEADER_BG).fg(NOTICE_FG)),
+        Span::styled(" ".repeat(gap), header()),
+        Span::styled(hint, header()),
     ]);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(line).style(header()), area);
 }
 
 #[cfg(test)]
@@ -342,11 +398,11 @@ mod tests {
         let mut scroll = Scroll::default();
         let text = render_text(&view, &mut scroll, 30, 6);
         assert!(text.contains("51"), "cursor row must be visible:\n{text}");
-        assert_eq!(scroll.top, 48, "3 grid rows visible above chrome");
+        assert_eq!(scroll.top, 49, "2 grid rows visible above chrome");
     }
 
     #[test]
-    fn cursor_cell_is_reversed() {
+    fn cursor_cell_uses_the_selection_color_on_the_white_canvas() {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
@@ -358,12 +414,18 @@ mod tests {
             thread: None,
             editor: None,
         };
-        let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(46, 8)).unwrap();
         terminal
             .draw(|f| draw(f, &view, &mut Scroll::default()))
             .unwrap();
-        let cell = terminal.backend().buffer().cell((3, 1)).unwrap();
-        assert!(cell.style().add_modifier.contains(Modifier::REVERSED));
+        let buffer = terminal.backend().buffer();
+        // row 0: formula bar, row 1: column headers, row 2: first data row
+        let cursor_cell = buffer.cell((3, 2)).unwrap();
+        assert_eq!(cursor_cell.style().bg, Some(SELECTION_BG));
+        let plain_cell = buffer.cell((3, 3)).unwrap();
+        assert_eq!(plain_cell.style().bg, Some(CANVAS_BG));
+        let header_cell = buffer.cell((3, 1)).unwrap();
+        assert_eq!(header_cell.style().bg, Some(HEADER_BG));
     }
 
     #[test]
