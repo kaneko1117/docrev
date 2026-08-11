@@ -27,6 +27,19 @@ impl JsonCommentStore {
         }
     }
 
+    fn lock_path(&self) -> PathBuf {
+        let mut path = self.sidecar.as_os_str().to_owned();
+        path.push(".lock");
+        PathBuf::from(path)
+    }
+
+    /// Exclusive advisory lock preventing lost updates when the TUI and an
+    /// agent CLI write concurrently.
+    fn lock(&self) -> Result<fs::SidecarLock, StoreError> {
+        fs::SidecarLock::acquire(&self.lock_path())
+            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))
+    }
+
     fn read(&self) -> Result<SidecarFile, StoreError> {
         let Some(text) = fs::read_optional(&self.sidecar).map_err(|e| StoreError(e.to_string()))?
         else {
@@ -64,6 +77,10 @@ impl CommentStore for JsonCommentStore {
         body: &str,
         author: &str,
     ) -> Result<CommentThread, StoreError> {
+        let mut lock = self.lock()?;
+        let _guard = lock
+            .exclusive()
+            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
         let thread = CommentThread {
             id: Uuid::new_v4().to_string(),
@@ -85,6 +102,10 @@ impl CommentStore for JsonCommentStore {
         body: &str,
         author: &str,
     ) -> Result<CommentThread, StoreError> {
+        let mut lock = self.lock()?;
+        let _guard = lock
+            .exclusive()
+            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
         let Some(dto) = file.comments.iter_mut().find(|t| t.id == thread_id) else {
             return Err(StoreError(format!("no thread with id {thread_id}")));
@@ -101,6 +122,10 @@ impl CommentStore for JsonCommentStore {
     }
 
     fn resolve(&mut self, thread_id: &str) -> Result<(), StoreError> {
+        let mut lock = self.lock()?;
+        let _guard = lock
+            .exclusive()
+            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
         let Some(dto) = file.comments.iter_mut().find(|t| t.id == thread_id) else {
             return Err(StoreError(format!("no thread with id {thread_id}")));
@@ -112,6 +137,21 @@ impl CommentStore for JsonCommentStore {
 
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// CLI output: the sidecar schema with the given threads.
+pub fn threads_to_json(threads: &[CommentThread]) -> Result<String, StoreError> {
+    let file = SidecarFile {
+        version: SCHEMA_VERSION,
+        comments: threads.iter().map(ThreadDto::from_domain).collect(),
+    };
+    serde_json::to_string_pretty(&file).map_err(|e| StoreError(e.to_string()))
+}
+
+/// CLI output: a single thread in the sidecar's thread shape.
+pub fn thread_to_json(thread: &CommentThread) -> Result<String, StoreError> {
+    serde_json::to_string_pretty(&ThreadDto::from_domain(thread))
+        .map_err(|e| StoreError(e.to_string()))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -217,7 +257,33 @@ mod tests {
     }
 
     fn cleanup(document: &Path) {
-        let _ = std::fs::remove_file(JsonCommentStore::for_document(document).sidecar);
+        let store = JsonCommentStore::for_document(document);
+        let _ = std::fs::remove_file(store.lock_path());
+        let _ = std::fs::remove_file(store.sidecar);
+    }
+
+    #[test]
+    fn concurrent_writers_do_not_lose_updates() {
+        let document = temp_document();
+        let handles: Vec<_> = (0..4)
+            .map(|writer| {
+                let doc = document.clone();
+                std::thread::spawn(move || {
+                    let mut store = JsonCommentStore::for_document(&doc);
+                    for i in 0..5 {
+                        store
+                            .add_thread(Anchor::cell("s", writer, i), "x", "user")
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let threads = JsonCommentStore::for_document(&document).load().unwrap();
+        assert_eq!(threads.len(), 20, "no update may be lost");
+        cleanup(&document);
     }
 
     #[test]

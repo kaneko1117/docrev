@@ -24,3 +24,13 @@ pub struct FrontendError(pub String);
 #[derive(Debug, Error)]
 #[error("{0}")]
 pub struct StoreError(pub String);
+
+#[derive(Debug, Error)]
+pub enum CommentError {
+    #[error("invalid cell reference \"{0}\" (expected \"Sheet!B3\")")]
+    BadReference(String),
+    #[error(transparent)]
+    Document(#[from] DocumentError),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}

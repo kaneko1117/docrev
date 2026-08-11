@@ -120,6 +120,7 @@ fn map_key(key: KeyEvent, page: isize, editing: bool) -> Event {
         KeyCode::End => Event::RowEnd,
         KeyCode::Tab => Event::NextSheet,
         KeyCode::BackTab => Event::PrevSheet,
+        KeyCode::F(5) => Event::ReloadComments,
         _ => Event::Noop,
     }
 }
@@ -147,6 +148,7 @@ mod tests {
             Event::StartComment
         );
         assert_eq!(map_key_grid(key(KeyCode::Char('r')), 10), Event::StartReply);
+        assert_eq!(map_key_grid(key(KeyCode::F(5)), 10), Event::ReloadComments);
     }
 
     #[test]

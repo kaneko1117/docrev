@@ -11,6 +11,29 @@ pub fn read_optional(path: &Path) -> io::Result<Option<String>> {
     }
 }
 
+/// Advisory lock for sidecar read-modify-write cycles, backed by a
+/// `<sidecar>.lock` file. Released on drop.
+pub struct SidecarLock {
+    lock: fd_lock::RwLock<fs::File>,
+}
+
+impl SidecarLock {
+    pub fn acquire(lock_path: &Path) -> io::Result<Self> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(lock_path)?;
+        Ok(Self {
+            lock: fd_lock::RwLock::new(file),
+        })
+    }
+
+    /// Blocks until the exclusive lock is granted.
+    pub fn exclusive(&mut self) -> io::Result<fd_lock::RwLockWriteGuard<'_, fs::File>> {
+        self.lock.write()
+    }
+}
+
 /// Sibling temp file + rename, so readers never observe a half-written file.
 /// The temp name is unique per write so concurrent writers cannot clobber
 /// each other's temp file (the last rename still wins; locking is #4's scope).
