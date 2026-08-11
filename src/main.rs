@@ -67,7 +67,7 @@ fn run_dump(file: &Path, sheet: Option<&str>) -> ExitCode {
 
 fn run_viewer(file: &Path) -> ExitCode {
     let store = JsonCommentStore::for_document(file);
-    let viewer = match Viewer::open(&XlsxSource, &store, file) {
+    let viewer = match Viewer::open(&XlsxSource, Box::new(store), file) {
         Ok(viewer) => viewer,
         Err(e) => return fail(&e),
     };

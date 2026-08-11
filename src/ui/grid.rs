@@ -4,10 +4,11 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
+use crate::domain::comment::CommentThread;
 use crate::domain::sheet::Sheet;
 
 use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
@@ -15,6 +16,7 @@ use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
 pub const CELL_WIDTH: usize = 12;
 /// Header line + tab bar + status bar.
 pub const CHROME_ROWS: u16 = 3;
+const PANEL_WIDTH: u16 = 32;
 
 fn column_label(index: u32) -> String {
     Anchor::column_label(index)
@@ -28,6 +30,15 @@ pub struct GridView<'a> {
     /// Cells with an unresolved comment thread, marked with `●`.
     pub markers: HashSet<(usize, usize)>,
     pub notice: Option<&'a str>,
+    /// Thread under the cursor — shown in the side panel.
+    pub thread: Option<&'a CommentThread>,
+    /// Comment editor state — shown as a popup.
+    pub editor: Option<EditorView<'a>>,
+}
+
+pub struct EditorView<'a> {
+    pub title: String,
+    pub buffer: &'a str,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -37,15 +48,29 @@ pub struct Scroll {
 }
 
 pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
-    let [grid_area, tabs_area, status_area] = Layout::vertical([
+    let [main_area, tabs_area, status_area] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(frame.area());
+    let (grid_area, panel_area) = match view.thread {
+        Some(_) if main_area.width > PANEL_WIDTH + 20 => {
+            let [g, p] = Layout::horizontal([Constraint::Min(20), Constraint::Length(PANEL_WIDTH)])
+                .areas(main_area);
+            (g, Some(p))
+        }
+        _ => (main_area, None),
+    };
     draw_grid(frame, grid_area, view, scroll);
+    if let (Some(panel), Some(thread)) = (panel_area, view.thread) {
+        draw_panel(frame, panel, thread);
+    }
     draw_tabs(frame, tabs_area, view);
     draw_status(frame, status_area, view);
+    if let Some(editor) = &view.editor {
+        draw_editor(frame, editor);
+    }
 }
 
 fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll) {
@@ -120,6 +145,69 @@ fn follow_cursor(origin: &mut usize, cursor: usize, visible: usize) {
     }
 }
 
+fn draw_panel(frame: &mut Frame, area: Rect, thread: &CommentThread) {
+    let title = if thread.resolved {
+        format!("{} (resolved)", thread.anchor.cell_ref())
+    } else {
+        thread.anchor.cell_ref()
+    };
+    let mut lines = vec![
+        Line::styled(title, Style::default().add_modifier(Modifier::BOLD)),
+        Line::raw(""),
+    ];
+    push_message(&mut lines, &thread.author, &thread.body);
+    for reply in &thread.replies {
+        lines.push(Line::raw(""));
+        push_message(&mut lines, &reply.author, &reply.body);
+    }
+    let panel = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(Block::new().borders(Borders::LEFT));
+    frame.render_widget(panel, area);
+}
+
+fn push_message(lines: &mut Vec<Line>, author: &str, body: &str) {
+    let style = if author == "user" {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+    lines.push(Line::styled(format!(" {author}:"), style));
+    for part in body.split('\n') {
+        lines.push(Line::raw(format!("  {}", sanitize(part))));
+    }
+}
+
+fn draw_editor(frame: &mut Frame, editor: &EditorView) {
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).clamp(20, 50);
+    let text_lines: Vec<String> = editor.buffer.split('\n').map(sanitize).collect();
+    let height = (text_lines.len() as u16 + 3).clamp(5, area.height.saturating_sub(2).max(5));
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let mut lines: Vec<Line> = Vec::with_capacity(text_lines.len() + 1);
+    for (i, text) in text_lines.iter().enumerate() {
+        if i == text_lines.len() - 1 {
+            lines.push(Line::raw(format!("{text}█")));
+        } else {
+            lines.push(Line::raw(text.clone()));
+        }
+    }
+    lines.push(Line::styled(
+        "Enter:newline  Ctrl+S:save  Esc:cancel",
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    let popup_widget = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(Block::bordered().title(editor.title.clone()));
+    frame.render_widget(popup_widget, popup);
+}
+
 fn draw_tabs(frame: &mut Frame, area: Rect, view: &GridView) {
     let mut spans = Vec::with_capacity(view.sheet_names.len());
     for (i, name) in view.sheet_names.iter().enumerate() {
@@ -140,10 +228,17 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &GridView) {
     let left = format!("{address}: {value}");
     let (right, right_style) = match view.notice {
         Some(notice) => (format!("⚠ {notice}"), Style::default().fg(Color::Yellow)),
-        None => (
-            "q:quit  Tab:sheet".to_string(),
-            Style::default().add_modifier(Modifier::DIM),
-        ),
+        None => {
+            let hint = if view.thread.is_some() {
+                "r:reply  c:comment  q:quit"
+            } else {
+                "c:comment  q:quit  Tab:sheet"
+            };
+            (
+                hint.to_string(),
+                Style::default().add_modifier(Modifier::DIM),
+            )
+        }
     };
     let gap = (area.width as usize).saturating_sub(
         unicode_width::UnicodeWidthStr::width(left.as_str())
@@ -221,6 +316,8 @@ mod tests {
             cursor: (1, 1),
             markers: HashSet::new(),
             notice: None,
+            thread: None,
+            editor: None,
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 46, 7));
@@ -239,6 +336,8 @@ mod tests {
             cursor: (50, 0),
             markers: HashSet::new(),
             notice: None,
+            thread: None,
+            editor: None,
         };
         let mut scroll = Scroll::default();
         let text = render_text(&view, &mut scroll, 30, 6);
@@ -256,6 +355,8 @@ mod tests {
             cursor: (0, 0),
             markers: HashSet::new(),
             notice: None,
+            thread: None,
+            editor: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
         terminal
@@ -275,9 +376,67 @@ mod tests {
             cursor: (0, 0),
             markers: HashSet::new(),
             notice: None,
+            thread: None,
+            editor: None,
         };
         let text = render_text(&view, &mut Scroll::default(), 30, 5);
         assert!(text.contains("(empty sheet)"));
+    }
+
+    fn sample_thread() -> CommentThread {
+        use crate::domain::comment::Reply;
+        CommentThread {
+            id: "t1".into(),
+            anchor: Anchor::cell("売上", 1, 1),
+            author: "user".into(),
+            body: "単価が古いのでは?".into(),
+            created_at: "2026-08-11T09:15:00Z".into(),
+            resolved: false,
+            replies: vec![Reply {
+                id: "r1".into(),
+                author: "claude".into(),
+                body: "確認しました。150円です".into(),
+                created_at: "2026-08-11T09:20:00Z".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn side_panel_shows_the_thread() {
+        let sheet = sheet_3x3();
+        let thread = sample_thread();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (1, 1),
+            markers: HashSet::from([(1, 1)]),
+            notice: None,
+            thread: Some(&thread),
+            editor: None,
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 76, 10));
+    }
+
+    #[test]
+    fn editor_popup_overlays_the_grid() {
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (1, 1),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: Some(EditorView {
+                title: " Comment on B2 ".into(),
+                buffer: "line one\nline two",
+            }),
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 10));
     }
 
     #[test]
@@ -290,6 +449,8 @@ mod tests {
             cursor: (0, 0),
             markers: HashSet::from([(1, 1)]),
             notice: Some("comments unavailable: invalid sidecar"),
+            thread: None,
+            editor: None,
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 60, 7));

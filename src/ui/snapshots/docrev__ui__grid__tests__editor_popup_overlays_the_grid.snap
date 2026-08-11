@@ -1,0 +1,14 @@
+---
+source: src/ui/grid.rs
+expression: "render_text(&view, &mut scroll, 50, 10)"
+---
+        A            B            C
+ 1 項目         単価         数量
+ 2┌ Comment on B2 ─────────────────────────────┐
+ 3│line one                                    │
+  │line two█                                   │
+  │Enter:newline  Ctrl+S:save  Esc:cancel      │
+  └────────────────────────────────────────────┘
+
+[売上]
+B2: 120               c:comment  q:quit  Tab:sheet

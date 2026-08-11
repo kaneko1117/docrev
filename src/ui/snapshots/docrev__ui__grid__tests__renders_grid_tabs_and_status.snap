@@ -8,4 +8,4 @@ expression: "render_text(&view, &mut scroll, 46, 7)"
  3 みかん                 80            5
 
 [売上][経費]
-B2: 120                      q:quit  Tab:sheet
+B2: 120           c:comment  q:quit  Tab:sheet
