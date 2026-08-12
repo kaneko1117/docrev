@@ -59,6 +59,15 @@ impl Frontend for TerminalFrontend {
             notice: viewer.notice(),
             thread: viewer.thread_at_cursor(),
             editor,
+            col_widths: (0..viewer.sheet().col_count())
+                .map(|c| {
+                    viewer
+                        .sheet()
+                        .col_width(c)
+                        .map(usize::from)
+                        .unwrap_or(grid::DEFAULT_CELL_WIDTH)
+                })
+                .collect(),
         };
         terminal
             .draw(|frame| {

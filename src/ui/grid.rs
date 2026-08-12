@@ -13,7 +13,7 @@ use crate::domain::sheet::Sheet;
 
 use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
 
-pub const CELL_WIDTH: usize = 12;
+pub const DEFAULT_CELL_WIDTH: usize = 12;
 /// Formula bar + header line + tab bar + status bar.
 pub const CHROME_ROWS: u16 = 4;
 const PANEL_WIDTH: u16 = 32;
@@ -65,6 +65,8 @@ pub struct GridView<'a> {
     pub thread: Option<&'a CommentThread>,
     /// Comment editor state — shown as a popup.
     pub editor: Option<EditorView<'a>>,
+    /// Per-column display widths; missing entries use `DEFAULT_CELL_WIDTH`.
+    pub col_widths: Vec<usize>,
 }
 
 pub struct EditorView<'a> {
@@ -132,14 +134,20 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
     let header_style = header();
     let row_label_width = sheet.row_count().to_string().len().max(2);
     let rows_visible = area.height.saturating_sub(1) as usize;
-    let cols_visible = (area.width as usize).saturating_sub(row_label_width + 1) / (CELL_WIDTH + 1);
+    let avail = (area.width as usize).saturating_sub(row_label_width);
+    let width_of = |c: usize| {
+        view.col_widths
+            .get(c)
+            .copied()
+            .unwrap_or(DEFAULT_CELL_WIDTH)
+    };
 
     let (cursor_row, cursor_col) = view.cursor;
     follow_cursor(&mut scroll.top, cursor_row, rows_visible);
-    follow_cursor(&mut scroll.left, cursor_col, cols_visible);
+    follow_col(&mut scroll.left, cursor_col, avail, &width_of);
 
     let last_row = (scroll.top + rows_visible).min(sheet.row_count());
-    let last_col = (scroll.left + cols_visible).min(sheet.col_count());
+    let last_col = last_visible_col(scroll.left, sheet.col_count(), avail, &width_of);
 
     let mut lines = Vec::with_capacity(rows_visible + 1);
     let mut header_line = vec![Span::styled(
@@ -149,7 +157,7 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
     for col in scroll.left..last_col {
         header_line.push(Span::styled("│", ruled(header().fg(GRIDLINE))));
         header_line.push(Span::styled(
-            center(&column_label(col as u32), CELL_WIDTH),
+            center(&column_label(col as u32), width_of(col)),
             ruled(header_style),
         ));
     }
@@ -160,7 +168,8 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
             pad_left(&(row + 1).to_string(), row_label_width),
             ruled(header_style),
         )];
-        for col in scroll.left..last_col {
+        let mut col = scroll.left;
+        while col < last_col {
             if view.markers.contains(&(row, col)) {
                 spans.push(Span::styled(
                     "●",
@@ -170,18 +179,43 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                 spans.push(Span::styled("│", ruled(canvas().fg(GRIDLINE))));
             }
             let cell = sheet.cell(row, col);
-            let clipped = clip(&cell_text(cell), CELL_WIDTH);
-            let aligned = if matches!(cell, CellValue::Number(_)) {
-                pad_left(&clipped, CELL_WIDTH)
+            let text = cell_text(cell);
+            let own_width = width_of(col);
+            let is_number = matches!(cell, CellValue::Number(_));
+            let on_cursor = (row, col) == view.cursor;
+
+            // Sheets-style overflow: text wider than its column spills over
+            // empty neighbors (never numbers; a marker, data or the cursor
+            // stops it; disabled on the cursor cell so the selection stays
+            // a clean box).
+            let mut span_cols = 1;
+            let mut span_width = own_width;
+            if !is_number
+                && !on_cursor
+                && unicode_width::UnicodeWidthStr::width(text.as_str()) > own_width
+            {
+                let mut next = col + 1;
+                while next < last_col
+                    && unicode_width::UnicodeWidthStr::width(text.as_str()) > span_width
+                    && sheet.cell(row, next).is_empty()
+                    && !view.markers.contains(&(row, next))
+                    && (row, next) != view.cursor
+                {
+                    span_width += 1 + width_of(next);
+                    span_cols += 1;
+                    next += 1;
+                }
+            }
+
+            let clipped = clip(&text, span_width);
+            let aligned = if is_number {
+                pad_left(&clipped, span_width)
             } else {
-                pad_right(&clipped, CELL_WIDTH)
+                pad_right(&clipped, span_width)
             };
-            let style = if (row, col) == view.cursor {
-                selected()
-            } else {
-                canvas()
-            };
+            let style = if on_cursor { selected() } else { canvas() };
             spans.push(Span::styled(aligned, ruled(style)));
+            col += span_cols;
         }
         lines.push(Line::from(spans));
     }
@@ -198,6 +232,41 @@ fn follow_cursor(origin: &mut usize, cursor: usize, visible: usize) {
     } else if cursor >= *origin + visible {
         *origin = cursor + 1 - visible;
     }
+}
+
+/// Horizontal variant for variable column widths.
+fn follow_col(left: &mut usize, cursor: usize, avail: usize, width_of: &impl Fn(usize) -> usize) {
+    if cursor < *left {
+        *left = cursor;
+        return;
+    }
+    while *left < cursor {
+        let span: usize = (*left..=cursor).map(|c| width_of(c) + 1).sum();
+        if span <= avail {
+            break;
+        }
+        *left += 1;
+    }
+}
+
+/// First column that no longer fits; always shows at least one column.
+fn last_visible_col(
+    left: usize,
+    col_count: usize,
+    avail: usize,
+    width_of: &impl Fn(usize) -> usize,
+) -> usize {
+    let mut used = 0;
+    let mut col = left;
+    while col < col_count {
+        let needed = width_of(col) + 1;
+        if used + needed > avail && col > left {
+            break;
+        }
+        used += needed;
+        col += 1;
+    }
+    col
 }
 
 fn draw_panel(frame: &mut Frame, area: Rect, thread: &CommentThread) {
@@ -374,6 +443,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            col_widths: vec![],
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 46, 7));
@@ -394,6 +464,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            col_widths: vec![],
         };
         let mut scroll = Scroll::default();
         let text = render_text(&view, &mut scroll, 30, 6);
@@ -413,6 +484,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            col_widths: vec![],
         };
         let mut terminal = Terminal::new(TestBackend::new(46, 8)).unwrap();
         terminal
@@ -440,6 +512,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            col_widths: vec![],
         };
         let text = render_text(&view, &mut Scroll::default(), 30, 5);
         assert!(text.contains("(empty sheet)"));
@@ -476,6 +549,7 @@ mod tests {
             notice: None,
             thread: Some(&thread),
             editor: None,
+            col_widths: vec![],
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 76, 10));
@@ -496,9 +570,112 @@ mod tests {
                 title: " Comment on B2 ".into(),
                 buffer: "line one\nline two",
             }),
+            col_widths: vec![],
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 10));
+    }
+
+    fn overflow_sheet() -> Sheet {
+        let long = "あいうえおかきくけこさしすせそ"; // display width 30
+        Sheet::new(
+            "OF",
+            vec![
+                vec![CellValue::Text(long.into())],
+                vec![CellValue::Text(long.into()), CellValue::Text("X".into())],
+                vec![CellValue::Number(1234567890123456.0), CellValue::Empty],
+            ],
+        )
+    }
+
+    #[test]
+    fn overflow_spills_over_empty_cells_only() {
+        let sheet = overflow_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["OF"],
+            active: 0,
+            cursor: (2, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 8));
+    }
+
+    #[test]
+    fn cursor_on_the_source_cell_suppresses_overflow() {
+        let sheet = overflow_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["OF"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let text = render_text(&view, &mut Scroll::default(), 50, 8);
+        let grid_row = text
+            .lines()
+            .find(|l| l.starts_with(" 1│"))
+            .expect("first data row");
+        assert!(
+            !grid_row.contains("さしすせそ"),
+            "overflow must be clipped while the cursor sits on the cell:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_marker_blocks_overflow() {
+        let sheet = overflow_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["OF"],
+            active: 0,
+            cursor: (2, 2),
+            markers: HashSet::from([(0, 1)]),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let text = render_text(&view, &mut Scroll::default(), 50, 8);
+        assert!(text.contains('●'));
+        assert!(
+            !text.contains("さしすせそ"),
+            "overflow must stop at a commented cell:\n{text}"
+        );
+    }
+
+    #[test]
+    fn custom_column_widths_change_the_grid() {
+        let sheet = Sheet::new(
+            "W",
+            vec![vec![
+                CellValue::Text("幅20の列です".into()),
+                CellValue::Number(42.0),
+                CellValue::Text("ok".into()),
+            ]],
+        );
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["W"],
+            active: 0,
+            cursor: (0, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![20, 6, 8],
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 6));
     }
 
     #[test]
@@ -513,6 +690,7 @@ mod tests {
             notice: Some("comments unavailable: invalid sidecar"),
             thread: None,
             editor: None,
+            col_widths: vec![],
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 60, 7));

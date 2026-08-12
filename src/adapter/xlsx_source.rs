@@ -7,19 +7,46 @@ use crate::app::ports::DocumentSource;
 use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
 use crate::domain::sheet::Sheet;
-use crate::infra::xlsx;
+use crate::infra::{xlsx, xlsx_meta};
 
 pub struct XlsxSource;
 
 impl DocumentSource for XlsxSource {
     fn load(&self, path: &Path) -> Result<Document, LoadError> {
         let raw = xlsx::read_workbook(path).map_err(|e| LoadError(e.to_string()))?;
+        // widths are cosmetic — a parse failure must not block opening
+        let widths = xlsx_meta::column_widths(path).unwrap_or_default();
         let sheets = raw
             .into_iter()
-            .map(|(name, range)| to_sheet(name, range))
+            .map(|(name, range)| {
+                let cols = widths.get(&name);
+                let sheet = to_sheet(name, range);
+                match cols {
+                    Some(cols) => {
+                        let expanded = expand_widths(cols, sheet.col_count());
+                        sheet.with_col_widths(expanded)
+                    }
+                    None => sheet,
+                }
+            })
             .collect();
         Ok(Document::new(sheets))
     }
+}
+
+/// Excel widths are float character counts on 1-based inclusive ranges;
+/// terminal cells are integer columns, clamped to a sane range.
+fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<u16>> {
+    let mut widths = vec![None; col_count];
+    for col in cols {
+        let cells = (col.width.round().clamp(4.0, 60.0)) as u16;
+        let from = col.min.saturating_sub(1) as usize;
+        let to = (col.max as usize).min(col_count);
+        for slot in widths.iter_mut().take(to).skip(from) {
+            *slot = Some(cells);
+        }
+    }
+    widths
 }
 
 /// Pads with `Empty` up to the used range's offset so row 0 / col 0 stay A1.
