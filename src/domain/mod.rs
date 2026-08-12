@@ -4,4 +4,5 @@ pub mod anchor;
 pub mod cell;
 pub mod comment;
 pub mod document;
+pub mod number_format;
 pub mod sheet;
