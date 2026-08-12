@@ -1,5 +1,26 @@
 use super::cell::CellValue;
 
+/// An inclusive rectangle of merged cells; the value lives at the anchor
+/// (top-left).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedRange {
+    pub start_row: usize,
+    pub start_col: usize,
+    pub end_row: usize,
+    pub end_col: usize,
+}
+
+impl MergedRange {
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        (self.start_row..=self.end_row).contains(&row)
+            && (self.start_col..=self.end_col).contains(&col)
+    }
+
+    pub fn anchor(&self) -> (usize, usize) {
+        (self.start_row, self.start_col)
+    }
+}
+
 /// A grid of cells, 0-based, row-major.
 #[derive(Debug, Clone)]
 pub struct Sheet {
@@ -7,6 +28,7 @@ pub struct Sheet {
     rows: Vec<Vec<CellValue>>,
     /// Author-set column widths from the workbook, index = column.
     col_widths: Vec<Option<u16>>,
+    merges: Vec<MergedRange>,
 }
 
 impl Sheet {
@@ -17,6 +39,7 @@ impl Sheet {
             name: name.into(),
             rows,
             col_widths: Vec::new(),
+            merges: Vec::new(),
         }
     }
 
@@ -25,8 +48,17 @@ impl Sheet {
         self
     }
 
+    pub fn with_merges(mut self, merges: Vec<MergedRange>) -> Self {
+        self.merges = merges;
+        self
+    }
+
     pub fn col_width(&self, col: usize) -> Option<u16> {
         self.col_widths.get(col).copied().flatten()
+    }
+
+    pub fn merge_at(&self, row: usize, col: usize) -> Option<&MergedRange> {
+        self.merges.iter().find(|m| m.contains(row, col))
     }
 
     pub fn name(&self) -> &str {

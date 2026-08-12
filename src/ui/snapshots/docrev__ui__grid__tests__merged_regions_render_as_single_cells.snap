@@ -1,0 +1,12 @@
+---
+source: src/ui/grid.rs
+expression: "render_text(&view, &mut scroll, 50, 8)"
+---
+ B2     │ 100
+  │     A      │     B      │     C
+ 1│2026年度 売上報告
+ 2│上期        │         100│備考
+ 3│            │         200│
+
+[M]
+                      c:comment  q:quit  Tab:sheet

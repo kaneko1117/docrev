@@ -128,10 +128,18 @@ impl Viewer {
         &self.mode
     }
 
-    /// The thread under the cursor; unresolved threads win over resolved ones.
+    /// The thread under the cursor; unresolved threads win over resolved
+    /// ones. Inside a merged region the whole region counts as one cell, so
+    /// threads anchored to any of its cells are found.
     pub fn thread_at_cursor(&self) -> Option<&CommentThread> {
         let (row, col) = self.cursor();
-        let name = self.sheet().name();
+        let sheet = self.sheet();
+        let name = sheet.name();
+        let merge = sheet.merge_at(row, col);
+        let in_region = |r: usize, c: usize| match merge {
+            Some(m) => m.contains(r, c),
+            None => (r, c) == (row, col),
+        };
         let at_cell: Vec<&CommentThread> = self
             .comments
             .iter()
@@ -140,7 +148,7 @@ impl Viewer {
                     sheet,
                     row: r,
                     col: c,
-                } => sheet == name && *r as usize == row && *c as usize == col,
+                } => sheet == name && in_region(*r as usize, *c as usize),
             })
             .collect();
         at_cell
@@ -295,7 +303,13 @@ impl Viewer {
         }
         let result = match target {
             EditTarget::NewThread => {
+                // inside a merged region, anchor at its top-left so the
+                // comment is one with the visually single cell
                 let (row, col) = self.cursor();
+                let (row, col) = match self.sheet().merge_at(row, col) {
+                    Some(merge) => merge.anchor(),
+                    None => (row, col),
+                };
                 let anchor = Anchor::cell(self.sheet().name(), row as u32, col as u32);
                 self.store.add_thread(anchor, body, "user")
             }
@@ -580,6 +594,72 @@ mod tests {
         v.apply(Event::StartComment);
         v.apply(Event::Move { rows: 1, cols: 1 });
         assert_eq!(v.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn merged_region_acts_as_one_cell_for_comments() {
+        use crate::domain::sheet::MergedRange;
+        let sheet =
+            Sheet::new("one", vec![vec![CellValue::Text("t".into()); 3]; 2]).with_merges(vec![
+                MergedRange {
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 0,
+                    end_col: 2,
+                },
+            ]);
+        let doc = Document::new(vec![sheet]);
+
+        // a thread anchored on an interior cell (B1) must be discoverable
+        // from anywhere in the region
+        let comments = vec![thread("one", 0, 1, false)];
+        let store = RecordingStore::default();
+        let log = store.log.clone();
+        let mut v = Viewer::from_document(doc, comments, None, Box::new(store)).unwrap();
+        assert!(v.thread_at_cursor().is_some(), "found from A1");
+        v.apply(Event::Move { rows: 0, cols: 2 });
+        assert!(v.thread_at_cursor().is_some(), "found from C1");
+
+        // `c` on the interior cell replies to that thread instead of forking
+        v.apply(Event::StartComment);
+        assert!(matches!(
+            v.mode(),
+            Mode::Editing {
+                target: EditTarget::Reply { .. },
+                ..
+            }
+        ));
+        v.apply(Event::CancelEdit);
+
+        // a new thread from an interior cell anchors at the region's top-left
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        v.apply(Event::Move { rows: -1, cols: -1 }); // B1 (interior)
+        assert_eq!(v.cursor(), (0, 1));
+        v.apply(Event::StartReply);
+        v.apply(Event::CancelEdit);
+        let doc2 = Document::new(vec![
+            Sheet::new("one", vec![vec![CellValue::Text("t".into()); 3]; 2]).with_merges(vec![
+                MergedRange {
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 0,
+                    end_col: 2,
+                },
+            ]),
+        ]);
+        let store2 = RecordingStore::default();
+        let log2 = store2.log.clone();
+        let mut v2 = Viewer::from_document(doc2, Vec::new(), None, Box::new(store2)).unwrap();
+        v2.apply(Event::Move { rows: 0, cols: 1 }); // B1, interior, no thread yet
+        v2.apply(Event::StartComment);
+        type_text(&mut v2, "on merge");
+        v2.apply(Event::Submit);
+        assert_eq!(
+            log2.borrow().as_slice(),
+            ["thread A1 on merge"],
+            "anchored at the region's top-left, not the interior cell"
+        );
+        drop(log);
     }
 
     #[test]
