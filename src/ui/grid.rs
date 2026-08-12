@@ -309,8 +309,26 @@ fn push_message(lines: &mut Vec<Line>, author: &str, body: &str) {
 fn draw_editor(frame: &mut Frame, editor: &EditorView) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).clamp(20, 50);
+    let inner_width = width.saturating_sub(2).max(1) as usize;
     let text_lines: Vec<String> = editor.buffer.split('\n').map(sanitize).collect();
-    let height = (text_lines.len() as u16 + 3).clamp(5, area.height.saturating_sub(2).max(5));
+
+    // height must count *wrapped* rows, or long lines push the cursor and
+    // the hint out of the box; if the screen is smaller still, scroll so
+    // the cursor end stays visible
+    let hint = "Enter:newline  Ctrl+S:save  Esc:cancel";
+    let wrapped_rows = |columns: usize| columns.max(1).div_ceil(inner_width);
+    let mut total_rows = wrapped_rows(unicode_width::UnicodeWidthStr::width(hint));
+    for (i, line) in text_lines.iter().enumerate() {
+        let mut columns = unicode_width::UnicodeWidthStr::width(line.as_str());
+        if i == text_lines.len() - 1 {
+            columns += 1; // the █ cursor
+        }
+        total_rows += wrapped_rows(columns);
+    }
+
+    let height = (total_rows as u16 + 2).clamp(5, area.height.saturating_sub(2).max(5));
+    let inner_height = height.saturating_sub(2) as usize;
+    let scroll = total_rows.saturating_sub(inner_height) as u16;
     let popup = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -326,13 +344,11 @@ fn draw_editor(frame: &mut Frame, editor: &EditorView) {
             lines.push(Line::raw(text.clone()));
         }
     }
-    lines.push(Line::styled(
-        "Enter:newline  Ctrl+S:save  Esc:cancel",
-        Style::new().bg(CANVAS_BG).fg(HEADER_FG),
-    ));
+    lines.push(Line::styled(hint, Style::new().bg(CANVAS_BG).fg(HEADER_FG)));
     let popup_widget = Paragraph::new(lines)
         .style(canvas())
         .wrap(Wrap { trim: false })
+        .scroll((scroll, 0))
         .block(
             Block::bordered()
                 .title(editor.title.clone())
@@ -676,6 +692,32 @@ mod tests {
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 6));
+    }
+
+    #[test]
+    fn editor_keeps_cursor_and_hint_visible_with_long_wrapped_text() {
+        let long = "x".repeat(120);
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: Some(EditorView {
+                title: " Comment on A1 ".into(),
+                buffer: &long,
+            }),
+            col_widths: vec![],
+        };
+        let text = render_text(&view, &mut Scroll::default(), 50, 10);
+        assert!(text.contains('█'), "cursor must stay visible:\n{text}");
+        assert!(
+            text.contains("Esc:cancel"),
+            "hint must stay visible:\n{text}"
+        );
     }
 
     #[test]

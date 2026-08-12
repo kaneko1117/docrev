@@ -39,6 +39,10 @@ impl DocumentSource for XlsxSource {
 fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<u16>> {
     let mut widths = vec![None; col_count];
     for col in cols {
+        // NaN slips through clamp (NaN.clamp() == NaN, as u16 == 0)
+        if !col.width.is_finite() {
+            continue;
+        }
         let cells = (col.width.round().clamp(4.0, 60.0)) as u16;
         let from = col.min.saturating_sub(1) as usize;
         let to = (col.max as usize).min(col_count);
@@ -78,5 +82,32 @@ fn to_cell(data: &Data) -> CellValue {
         Data::DateTimeIso(s) => CellValue::DateTime(s.clone()),
         Data::DurationIso(s) => CellValue::Text(s.clone()),
         Data::Error(e) => CellValue::Error(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_widths_are_ignored() {
+        let cols = vec![
+            xlsx_meta::ColumnWidth {
+                min: 1,
+                max: 1,
+                width: f64::NAN,
+            },
+            xlsx_meta::ColumnWidth {
+                min: 2,
+                max: 2,
+                width: f64::INFINITY,
+            },
+            xlsx_meta::ColumnWidth {
+                min: 3,
+                max: 3,
+                width: 18.5,
+            },
+        ];
+        assert_eq!(expand_widths(&cols, 3), vec![None, None, Some(19)]);
     }
 }
