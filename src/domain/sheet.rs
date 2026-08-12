@@ -5,6 +5,8 @@ use super::cell::CellValue;
 pub struct Sheet {
     name: String,
     rows: Vec<Vec<CellValue>>,
+    /// Author-set column widths from the workbook, index = column.
+    col_widths: Vec<Option<u16>>,
 }
 
 impl Sheet {
@@ -14,7 +16,17 @@ impl Sheet {
         Self {
             name: name.into(),
             rows,
+            col_widths: Vec::new(),
         }
+    }
+
+    pub fn with_col_widths(mut self, widths: Vec<Option<u16>>) -> Self {
+        self.col_widths = widths;
+        self
+    }
+
+    pub fn col_width(&self, col: usize) -> Option<u16> {
+        self.col_widths.get(col).copied().flatten()
     }
 
     pub fn name(&self) -> &str {

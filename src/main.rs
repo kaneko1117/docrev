@@ -132,10 +132,7 @@ fn run_comment(action: CommentAction) -> ExitCode {
             };
             match comments::list(&store, &filter) {
                 Ok(threads) if json => print_json(json_comment_store::threads_to_json(&threads)),
-                Ok(threads) => {
-                    print!("{}", comment_list::render(&threads));
-                    ExitCode::SUCCESS
-                }
+                Ok(threads) => print_stdout(&comment_list::render(&threads)),
                 Err(e) => fail(&e),
             }
         }
@@ -163,25 +160,24 @@ fn run_comment(action: CommentAction) -> ExitCode {
 
 fn print_json(rendered: Result<String, docrev::app::error::StoreError>) -> ExitCode {
     match rendered {
-        Ok(json) => {
-            println!("{json}");
-            ExitCode::SUCCESS
-        }
+        Ok(json) => print_stdout(&format!("{json}\n")),
         Err(e) => fail(&e),
     }
 }
 
 fn run_dump(file: &Path, sheet: Option<&str>) -> ExitCode {
     match dump(&XlsxSource, file, sheet) {
-        Ok(view) => {
-            let rendered = table::render(&view.sheet, view.position, view.total);
-            match io::stdout().write_all(rendered.as_bytes()) {
-                Ok(()) => ExitCode::SUCCESS,
-                // downstream pipe closed early (e.g. `| head`) — not an error
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-                Err(e) => fail(&e),
-            }
-        }
+        Ok(view) => print_stdout(&table::render(&view.sheet, view.position, view.total)),
+        Err(e) => fail(&e),
+    }
+}
+
+/// All stdout goes through here: a downstream pipe closing early
+/// (e.g. `| head`, `| jq -e`) is not an error.
+fn print_stdout(text: &str) -> ExitCode {
+    match io::stdout().write_all(text.as_bytes()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }
 }

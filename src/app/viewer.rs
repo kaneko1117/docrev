@@ -308,6 +308,7 @@ impl Viewer {
                     None => self.comments.push(thread),
                 }
                 self.mode = Mode::Grid;
+                self.notice = None; // a stale "save failed" would lie now
             }
             Err(e) => self.notice = Some(format!("save failed: {e}")),
         }
@@ -620,6 +621,63 @@ mod tests {
         shared.borrow_mut().push(thread("one", 1, 1, false)); // an agent replied meanwhile
         v.apply(Event::ReloadComments);
         assert_eq!(v.unresolved_on_active_sheet(), vec![(1, 1)]);
+    }
+
+    #[test]
+    fn successful_retry_clears_the_failure_notice() {
+        struct FlakyStore {
+            failed_once: bool,
+        }
+        impl CommentStore for FlakyStore {
+            fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
+                Ok(Vec::new())
+            }
+            fn add_thread(
+                &mut self,
+                anchor: Anchor,
+                body: &str,
+                author: &str,
+            ) -> Result<CommentThread, StoreError> {
+                if !self.failed_once {
+                    self.failed_once = true;
+                    return Err(StoreError("disk full".into()));
+                }
+                Ok(CommentThread {
+                    id: "t".into(),
+                    anchor,
+                    author: author.into(),
+                    body: body.into(),
+                    created_at: "2026-08-12T00:00:00Z".into(),
+                    resolved: false,
+                    replies: Vec::new(),
+                })
+            }
+            fn add_reply(
+                &mut self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<CommentThread, StoreError> {
+                Err(StoreError("unused".into()))
+            }
+            fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
+                Err(StoreError("unused".into()))
+            }
+        }
+
+        let mut v = viewer_with(
+            3,
+            3,
+            Vec::new(),
+            Box::new(FlakyStore { failed_once: false }),
+        );
+        v.apply(Event::StartComment);
+        type_text(&mut v, "hello");
+        v.apply(Event::Submit);
+        assert!(v.notice().is_some(), "first save fails");
+        v.apply(Event::Submit);
+        assert_eq!(v.notice(), None, "successful retry must clear the notice");
+        assert_eq!(*v.mode(), Mode::Grid);
     }
 
     #[test]

@@ -7,7 +7,9 @@ fn bin() -> Command {
 
 fn temp_document() -> PathBuf {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.xlsx");
-    let dest = std::env::temp_dir().join(format!("docrev-cli-{}.xlsx", std::process::id()));
+    // unique per test, not per process: under `cargo test` all tests share
+    // one process and a pid-based name makes them race on the same file
+    let dest = std::env::temp_dir().join(format!("docrev-cli-{}.xlsx", uuid::Uuid::new_v4()));
     std::fs::copy(&source, &dest).unwrap();
     let _ = std::fs::remove_file(sidecar_of(&dest));
     dest

@@ -1,0 +1,12 @@
+---
+source: src/ui/grid.rs
+expression: "render_text(&view, &mut scroll, 50, 8)"
+---
+ C3     │
+  │     A      │     B
+ 1│あいうえおかきくけこさし…
+ 2│あいうえお… │X
+ 3│12345678901…│
+
+[OF]
+                      c:comment  q:quit  Tab:sheet
