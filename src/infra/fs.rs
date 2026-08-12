@@ -25,6 +25,7 @@ impl SidecarLock {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(lock_path)?;
         Ok(Self {
             lock: fd_lock::RwLock::new(file),
