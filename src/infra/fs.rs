@@ -19,9 +19,12 @@ pub struct SidecarLock {
 
 impl SidecarLock {
     pub fn acquire(lock_path: &Path) -> io::Result<Self> {
+        // read+write, not append: Windows' LockFileEx denies handles that
+        // carry only append permission
         let file = fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .read(true)
+            .write(true)
             .open(lock_path)?;
         Ok(Self {
             lock: fd_lock::RwLock::new(file),
