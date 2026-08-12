@@ -6,7 +6,7 @@ use crate::app::error::LoadError;
 use crate::app::ports::DocumentSource;
 use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
-use crate::domain::sheet::Sheet;
+use crate::domain::sheet::{MergedRange, Sheet};
 use crate::infra::{xlsx, xlsx_meta};
 
 pub struct XlsxSource;
@@ -18,9 +18,19 @@ impl DocumentSource for XlsxSource {
         let widths = xlsx_meta::column_widths(path).unwrap_or_default();
         let sheets = raw
             .into_iter()
-            .map(|(name, range)| {
-                let cols = widths.get(&name);
-                let sheet = to_sheet(name, range);
+            .map(|raw_sheet| {
+                let cols = widths.get(&raw_sheet.name);
+                let merges: Vec<MergedRange> = raw_sheet
+                    .merges
+                    .iter()
+                    .map(|(start, end)| MergedRange {
+                        start_row: start.0 as usize,
+                        start_col: start.1 as usize,
+                        end_row: end.0 as usize,
+                        end_col: end.1 as usize,
+                    })
+                    .collect();
+                let sheet = to_sheet(raw_sheet.name, raw_sheet.cells).with_merges(merges);
                 match cols {
                     Some(cols) => {
                         let expanded = expand_widths(cols, sheet.col_count());

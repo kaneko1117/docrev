@@ -108,11 +108,25 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
     }
 }
 
-/// Sheets' name box + formula bar: `B2      │ 120`.
+/// Sheets' name box + formula bar: `B2      │ 120`; a merged region shows
+/// its range and the anchor value.
 fn draw_formula_bar(frame: &mut Frame, area: Rect, view: &GridView) {
     let (row, col) = view.cursor;
-    let address = format!("{}{}", column_label(col as u32), row + 1);
-    let value = sanitize(&cell_text(view.sheet.cell(row, col)));
+    let (address, value) = match view.sheet.merge_at(row, col) {
+        Some(merge) => {
+            let start = Anchor::cell("", merge.start_row as u32, merge.start_col as u32);
+            let end = Anchor::cell("", merge.end_row as u32, merge.end_col as u32);
+            let (anchor_row, anchor_col) = merge.anchor();
+            (
+                format!("{}:{}", start.cell_ref(), end.cell_ref()),
+                sanitize(&cell_text(view.sheet.cell(anchor_row, anchor_col))),
+            )
+        }
+        None => (
+            format!("{}{}", column_label(col as u32), row + 1),
+            sanitize(&cell_text(view.sheet.cell(row, col))),
+        ),
+    };
     let line = Line::from(vec![
         Span::styled(
             format!(" {address:<7}"),
@@ -170,6 +184,50 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
         )];
         let mut col = scroll.left;
         while col < last_col {
+            // A merged region renders as one cell: the value on its anchor
+            // row spanning all its columns, no gridlines inside, and the
+            // whole region highlights when the cursor is anywhere in it.
+            // A thread on ANY of its cells shows one ● on the first
+            // visible row.
+            if let Some(merge) = sheet.merge_at(row, col) {
+                let first_visible_row = merge.start_row.max(scroll.top);
+                let region_marked = row == first_visible_row
+                    && view.markers.iter().any(|(r, c)| merge.contains(*r, *c));
+                if region_marked {
+                    spans.push(Span::styled(
+                        "●",
+                        ruled(Style::new().bg(CANVAS_BG).fg(MARKER_FG)),
+                    ));
+                } else {
+                    spans.push(Span::styled("│", ruled(canvas().fg(GRIDLINE))));
+                }
+                let segment_end = (merge.end_col + 1).min(last_col);
+                let span_cols = segment_end - col;
+                let span_width: usize =
+                    (col..segment_end).map(&width_of).sum::<usize>() + (span_cols - 1);
+                let (anchor_row, anchor_col) = merge.anchor();
+                let text = if row == anchor_row {
+                    cell_text(sheet.cell(anchor_row, anchor_col))
+                } else {
+                    String::new()
+                };
+                let aligned = pad_right(&clip(&text, span_width), span_width);
+                let base = if merge.contains(cursor_row, cursor_col) {
+                    selected()
+                } else {
+                    canvas()
+                };
+                // the horizontal gridline only under the region's last row
+                let style = if row == merge.end_row {
+                    ruled(base)
+                } else {
+                    base
+                };
+                spans.push(Span::styled(aligned, style));
+                col += span_cols;
+                continue;
+            }
+
             if view.markers.contains(&(row, col)) {
                 spans.push(Span::styled(
                     "●",
@@ -185,9 +243,9 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
             let on_cursor = (row, col) == view.cursor;
 
             // Sheets-style overflow: text wider than its column spills over
-            // empty neighbors (never numbers; a marker, data or the cursor
-            // stops it; disabled on the cursor cell so the selection stays
-            // a clean box).
+            // empty neighbors (never numbers; a marker, data, a merged
+            // region or the cursor stops it; disabled on the cursor cell so
+            // the selection stays a clean box).
             let mut span_cols = 1;
             let mut span_width = own_width;
             if !is_number
@@ -198,6 +256,7 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                 while next < last_col
                     && unicode_width::UnicodeWidthStr::width(text.as_str()) > span_width
                     && sheet.cell(row, next).is_empty()
+                    && sheet.merge_at(row, next).is_none()
                     && !view.markers.contains(&(row, next))
                     && (row, next) != view.cursor
                 {
@@ -717,6 +776,173 @@ mod tests {
         assert!(
             text.contains("Esc:cancel"),
             "hint must stay visible:\n{text}"
+        );
+    }
+
+    fn merged_sheet() -> Sheet {
+        use crate::domain::sheet::MergedRange;
+        Sheet::new(
+            "M",
+            vec![
+                vec![CellValue::Text("2026年度 売上報告".into())],
+                vec![
+                    CellValue::Text("上期".into()),
+                    CellValue::Number(100.0),
+                    CellValue::Text("備考".into()),
+                ],
+                vec![CellValue::Empty, CellValue::Number(200.0)],
+            ],
+        )
+        .with_merges(vec![
+            MergedRange {
+                start_row: 0,
+                start_col: 0,
+                end_row: 0,
+                end_col: 2,
+            },
+            MergedRange {
+                start_row: 1,
+                start_col: 0,
+                end_row: 2,
+                end_col: 0,
+            },
+        ])
+    }
+
+    #[test]
+    fn merged_regions_render_as_single_cells() {
+        let sheet = merged_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["M"],
+            active: 0,
+            cursor: (1, 1),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 8));
+    }
+
+    #[test]
+    fn cursor_inside_a_merge_highlights_the_whole_region() {
+        let sheet = merged_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["M"],
+            active: 0,
+            cursor: (0, 2), // C1, inside A1:C1
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
+        terminal
+            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // row 2 is the merged A1:C1 row; column x=3 is inside column A
+        let cell = buffer.cell((3, 2)).unwrap();
+        assert_eq!(cell.style().bg, Some(SELECTION_BG));
+        // formula bar shows the range
+        let top: String = (0..20)
+            .map(|x| buffer.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(top.contains("A1:C1"), "formula bar: {top}");
+    }
+
+    #[test]
+    fn vertical_merge_draws_the_gridline_only_under_its_last_row() {
+        let sheet = merged_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["M"],
+            active: 0,
+            cursor: (1, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
+        terminal
+            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // A2:A3 merge: row 3 (A2, mid-merge) has no underline, row 4 (A3, last) does
+        let mid = buffer.cell((3, 3)).unwrap();
+        assert!(!mid.style().add_modifier.contains(Modifier::UNDERLINED));
+        let last = buffer.cell((3, 4)).unwrap();
+        assert!(last.style().add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn a_thread_on_an_interior_merge_cell_still_shows_a_marker() {
+        let sheet = merged_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["M"],
+            active: 0,
+            cursor: (2, 2),
+            markers: HashSet::from([(0, 1)]), // B1, interior of A1:C1
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let text = render_text(&view, &mut Scroll::default(), 50, 8);
+        let merged_row = text
+            .lines()
+            .find(|l| l.starts_with(" 1"))
+            .expect("merged row");
+        assert!(
+            merged_row.contains('●'),
+            "the region must carry the marker:\n{text}"
+        );
+    }
+
+    #[test]
+    fn overflow_does_not_spill_into_a_merge() {
+        use crate::domain::sheet::MergedRange;
+        let sheet = Sheet::new(
+            "M",
+            vec![vec![
+                CellValue::Text("あいうえおかきくけこさしすせそ".into()),
+                CellValue::Empty,
+            ]],
+        )
+        .with_merges(vec![MergedRange {
+            start_row: 0,
+            start_col: 1,
+            end_row: 0,
+            end_col: 1,
+        }]);
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["M"],
+            active: 0,
+            cursor: (0, 1),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let text = render_text(&view, &mut Scroll::default(), 50, 6);
+        let grid_row = text
+            .lines()
+            .find(|l| l.starts_with(" 1│"))
+            .expect("data row");
+        assert!(
+            !grid_row.contains("さしすせそ"),
+            "must not overflow into the merged cell:\n{text}"
         );
     }
 
