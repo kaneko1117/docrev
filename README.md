@@ -1,14 +1,21 @@
 # docrev
 
+[日本語版 README](README.ja.md)
+
 A terminal document viewer with inline review comments, designed for AI agent workflows.
 
 Open a document in your terminal, leave comments anchored to its content, and let an
 AI agent read them through a CLI, act on them, and reply — think code review, but for
-documents.
+documents. The viewer paints a spreadsheet-style grid (white canvas, gridlines,
+formula bar) right in your terminal.
 
-> **Status: early development.**
 > v0.1 targets Excel (`.xlsx`), read-only. Word (`.docx`) support is planned.
-> Progress is tracked in the [v0.1.0 milestone](https://github.com/kaneko1117/docrev/milestone/1).
+
+## Installation
+
+```text
+cargo install docrev
+```
 
 ## Usage
 
@@ -51,6 +58,19 @@ docrev comment resolve file.xlsx --thread <id>
 file (`file.xlsx.docrev.json`); the original document is never modified, and
 concurrent TUI/CLI writes are serialized through a `.lock` file.
 
+## Using with Claude (or any agent)
+
+[`skills/docrev-review/SKILL.md`](skills/docrev-review/SKILL.md) teaches an agent the
+full loop. For Claude Code, copy it into your skills directory:
+
+```text
+mkdir -p ~/.claude/skills/docrev-review
+cp skills/docrev-review/SKILL.md ~/.claude/skills/docrev-review/
+```
+
+Then comment on cells in the viewer, tell Claude "I commented on budget.xlsx",
+and press `F5` to watch the replies arrive.
+
 ## License
 
-MIT OR Apache-2.0 (license files land with the first release).
+MIT OR Apache-2.0, at your option.
