@@ -10,7 +10,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::comment::CommentThread;
 use crate::domain::number_format::FormatColor;
-use crate::domain::sheet::Sheet;
+use crate::domain::sheet::{FillColor, Sheet};
 
 use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
 
@@ -72,6 +72,14 @@ fn cell_fg(cell: &CellValue, style: Style) -> Style {
             color: Some(color), ..
         } => style.fg(format_fg(*color)),
         _ => style,
+    }
+}
+
+/// Canvas painted with the workbook fill when the cell has one.
+fn filled_canvas(fill: Option<FillColor>) -> Style {
+    match fill {
+        Some(f) => canvas().bg(Color::Rgb(f.r, f.g, f.b)),
+        None => canvas(),
     }
 }
 
@@ -242,7 +250,8 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                 let base = if merge.contains(cursor_row, cursor_col) {
                     selected()
                 } else {
-                    canvas()
+                    // the anchor's fill paints the whole merged region
+                    filled_canvas(sheet.fill_at(anchor_row, anchor_col))
                 };
                 let base = if row == anchor_row {
                     cell_fg(anchor_cell, base)
@@ -260,11 +269,9 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                 continue;
             }
 
+            let fill = sheet.fill_at(row, col);
             if view.markers.contains(&(row, col)) {
-                spans.push(Span::styled(
-                    "●",
-                    ruled(Style::new().bg(CANVAS_BG).fg(MARKER_FG)),
-                ));
+                spans.push(Span::styled("●", ruled(filled_canvas(fill).fg(MARKER_FG))));
             } else {
                 spans.push(Span::styled("│", ruled(canvas().fg(GRIDLINE))));
             }
@@ -279,12 +286,13 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
 
             // Sheets-style overflow: text wider than its column spills over
             // empty neighbors (never numbers; a marker, data, a merged
-            // region or the cursor stops it; disabled on the cursor cell so
-            // the selection stays a clean box).
+            // region, a fill or the cursor stops it; disabled on the cursor
+            // and on filled cells so their boxes keep clean edges).
             let mut span_cols = 1;
             let mut span_width = own_width;
             if !is_number
                 && !on_cursor
+                && fill.is_none()
                 && unicode_width::UnicodeWidthStr::width(text.as_str()) > own_width
             {
                 let mut next = col + 1;
@@ -292,6 +300,7 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                     && unicode_width::UnicodeWidthStr::width(text.as_str()) > span_width
                     && sheet.cell(row, next).is_empty()
                     && sheet.merge_at(row, next).is_none()
+                    && sheet.fill_at(row, next).is_none()
                     && !view.markers.contains(&(row, next))
                     && (row, next) != view.cursor
                 {
@@ -307,7 +316,14 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
             } else {
                 pad_right(&clipped, span_width)
             };
-            let style = cell_fg(cell, if on_cursor { selected() } else { canvas() });
+            let style = cell_fg(
+                cell,
+                if on_cursor {
+                    selected()
+                } else {
+                    filled_canvas(fill)
+                },
+            );
             spans.push(Span::styled(aligned, ruled(style)));
             col += span_cols;
         }
@@ -608,6 +624,58 @@ mod tests {
             fg,
             Some(format_fg(FormatColor::Red)),
             "the [Red] tag must color the cell"
+        );
+    }
+
+    #[test]
+    fn fills_paint_backgrounds_and_stop_the_spill() {
+        use std::collections::HashMap;
+
+        let long = "この文章はとても長いのでスピルするはずの文字列";
+        let green = FillColor {
+            r: 0x00,
+            g: 0xB0,
+            b: 0x50,
+        };
+        let sheet = Sheet::new(
+            "塗り",
+            vec![vec![
+                CellValue::Text(long.into()),
+                CellValue::Empty,
+                CellValue::Empty,
+            ]],
+        )
+        .with_fills(HashMap::from([((0, 1), green)]));
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["塗り"],
+            active: 0,
+            cursor: (0, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
+        let mut scroll = Scroll::default();
+        terminal.draw(|f| draw(f, &view, &mut scroll)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let painted = (0..buffer.area.width).any(|x| {
+            (0..buffer.area.height).any(|y| {
+                buffer
+                    .cell((x, y))
+                    .is_some_and(|c| c.bg == Color::Rgb(0x00, 0xB0, 0x50))
+            })
+        });
+        assert!(painted, "the fill must reach the terminal background");
+
+        // the filled neighbor stops the overflow, so the long text clips
+        let text = buffer_text(buffer);
+        assert!(
+            text.contains('…'),
+            "text must clip instead of spilling over the filled cell:\n{text}"
         );
     }
 

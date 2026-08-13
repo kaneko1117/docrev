@@ -343,6 +343,10 @@ fn parse_section(code: &str) -> Option<Section> {
         }
     }
     section.scale += pending_commas;
+    // Excel renders at most 30 decimal places, and far beyond that the
+    // rounding scale (10^max_frac) overflows f64 into NaN output
+    section.max_frac = section.max_frac.min(30);
+    section.forced_frac = section.forced_frac.min(section.max_frac);
     flush(&mut literal, &mut tokens);
     section.tokens = tokens;
     Some(section)
@@ -573,5 +577,29 @@ mod tests {
 
         let frac_bomb = format!("0.{}", "0".repeat(5_000_000));
         assert!(NumberFormat::parse(&frac_bomb).is_general());
+    }
+
+    #[test]
+    fn the_longest_accepted_code_still_formats_in_bounded_time() {
+        // MAX_CODE_LEN caps digit placeholders at 512, so the quadratic
+        // zero-padding worst case is ~512² byte moves — trivial. This pins
+        // the bound: rendering (not just parsing) must stay instant.
+        let widest = "0".repeat(512);
+        let format = NumberFormat::parse(&widest);
+        assert!(!format.is_general(), "512 chars is within the cap");
+        let text = format.format(7.0).text;
+        assert_eq!(text.len(), 512);
+        assert!(text.ends_with('7'));
+    }
+
+    #[test]
+    fn decimal_places_clamp_at_excels_thirty() {
+        // 10^510 overflows f64 — without the clamp this rendered "NaN"
+        let deepest = format!("0.{}", "0".repeat(510));
+        let text = NumberFormat::parse(&deepest).format(1.5).text;
+        assert!(text.starts_with("1.5"), "got {text}");
+        assert_eq!(text.len(), 2 + 30, "padding stops at 30 decimals");
+
+        assert_eq!(NumberFormat::parse("0.00").format(1.5).text, "1.50");
     }
 }
