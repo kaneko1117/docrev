@@ -4,7 +4,6 @@ use calamine::{Data, Range};
 
 use crate::app::error::LoadError;
 use crate::app::ports::DocumentSource;
-use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
 use crate::domain::number_format::NumberFormat;
@@ -95,16 +94,13 @@ fn apply_formats(rows: &mut [Vec<CellValue>], formats: &xlsx_meta::SheetFormats)
         .iter()
         .map(|code| NumberFormat::parse(code))
         .collect();
-    for (reference, &idx) in &formats.cells {
+    for (&(row, col), &idx) in &formats.cells {
         let Some(format) = parsed.get(idx) else {
             continue;
         };
         if format.is_general() {
             continue;
         }
-        let Some((row, col)) = Anchor::parse_cell_ref(reference) else {
-            continue;
-        };
         let Some(cell) = rows
             .get_mut(row as usize)
             .and_then(|r| r.get_mut(col as usize))
@@ -178,11 +174,11 @@ mod tests {
         let formats = xlsx_meta::SheetFormats {
             codes: vec!["0%".into(), "#,##0;[Red]▲#,##0".into(), "General".into()],
             cells: [
-                ("A1".to_string(), 0),
-                ("B1".to_string(), 1),
-                ("C1".to_string(), 2),
-                ("D1".to_string(), 0),
-                ("Z9".to_string(), 0), // outside the grid: must not panic
+                ((0, 0), 0),
+                ((0, 1), 1),
+                ((0, 2), 2),
+                ((0, 3), 0),
+                ((8, 25), 0), // outside the grid: must not panic
             ]
             .into(),
         };

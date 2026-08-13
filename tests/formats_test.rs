@@ -16,13 +16,13 @@ fn fixture(name: &str) -> PathBuf {
 fn reads_format_codes_from_the_workbook() {
     let formats = xlsx_meta::number_formats(&fixture("formats.xlsx")).unwrap();
     let sheet = formats.get("書式").expect("sheet with formats");
-    let code_of = |cell: &str| sheet.cells.get(cell).map(|&i| sheet.codes[i].as_str());
+    let code_of = |pos: (u32, u32)| sheet.cells.get(&pos).map(|&i| sheet.codes[i].as_str());
     // built-in ids resolve without a numFmt entry in styles.xml
-    assert_eq!(code_of("A1"), Some("0%"));
-    assert_eq!(code_of("B1"), Some("#,##0"));
+    assert_eq!(code_of((0, 0)), Some("0%"));
+    assert_eq!(code_of((0, 1)), Some("#,##0"));
     // custom ids resolve through numFmts
-    assert_eq!(code_of("C1"), Some("#,##0;[Red]▲#,##0"));
-    assert_eq!(code_of("F1"), None, "unformatted cells carry no code");
+    assert_eq!(code_of((0, 2)), Some("#,##0;[Red]▲#,##0"));
+    assert_eq!(code_of((0, 5)), None, "unformatted cells carry no code");
 }
 
 #[test]
@@ -61,7 +61,22 @@ fn unformatted_numbers_and_dates_keep_their_existing_behavior() {
 
 #[test]
 fn format_parsing_failure_does_not_block_opening() {
-    // basic.xlsx has no formatted cells; loading must simply yield raw values
+    // corrupt_styles.xlsx is formats.xlsx with xl/styles.xml removed:
+    // resolving formats fails, opening must degrade to raw values
+    let path = fixture("corrupt_styles.xlsx");
+    assert!(
+        xlsx_meta::number_formats(&path).is_err(),
+        "the fixture must actually exercise the failure path"
+    );
+
+    let document = XlsxSource.load(&path).unwrap();
+    let sheet = &document.sheets()[0];
+    assert_eq!(sheet.cell(0, 0), &CellValue::Number(0.15));
+    assert_eq!(sheet.cell(0, 2), &CellValue::Number(-1234.0));
+}
+
+#[test]
+fn formatless_workbooks_stay_raw() {
     let document = XlsxSource.load(&fixture("basic.xlsx")).unwrap();
     let sheet = &document.sheets()[0];
     for row in 0..sheet.row_count() {

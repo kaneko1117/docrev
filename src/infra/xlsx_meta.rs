@@ -8,6 +8,8 @@ use quick_xml::events::Event;
 use quick_xml::events::attributes::Attribute;
 use thiserror::Error;
 
+use crate::domain::anchor::Anchor;
+
 #[derive(Debug, Error)]
 #[error("{0}")]
 pub struct MetaError(String);
@@ -44,11 +46,12 @@ pub fn column_widths(document: &Path) -> Result<HashMap<String, Vec<ColumnWidth>
     Ok(result)
 }
 
-/// Number-format codes per sheet: `cells` maps A1 refs to indices in `codes`.
+/// Number-format codes per sheet: `cells` maps 0-based (row, col) positions
+/// to indices in `codes`.
 #[derive(Debug, Default, Clone)]
 pub struct SheetFormats {
     pub codes: Vec<String>,
-    pub cells: HashMap<String, usize>,
+    pub cells: HashMap<(u32, u32), usize>,
 }
 
 /// Per-cell number-format codes, resolved through styles.xml
@@ -73,8 +76,13 @@ pub fn number_formats(document: &Path) -> Result<HashMap<String, SheetFormats>, 
         let Some(target) = targets.get(&rid) else {
             continue;
         };
-        let xml = read_entry(&mut archive, &entry_path(target))?;
-        let formats = parse_cell_formats(&xml, &style_codes)?;
+        // one unreadable sheet must not strip formats from the others
+        let Ok(xml) = read_entry(&mut archive, &entry_path(target)) else {
+            continue;
+        };
+        let Ok(formats) = parse_cell_formats(&xml, &style_codes) else {
+            continue;
+        };
         if !formats.cells.is_empty() {
             result.insert(name, formats);
         }
@@ -262,7 +270,9 @@ fn builtin_format(id: u32) -> Option<&'static str> {
 }
 
 /// `<c r="B2" s="5">` entries from a sheet XML, keeping only cells whose
-/// style resolves to a format code.
+/// style resolves to a format code. ECMA-376 makes both `<row r=…>` and
+/// `<c r=…>` optional — positions then continue from the previous element —
+/// so row and column are tracked explicitly.
 fn parse_cell_formats(
     xml: &str,
     style_codes: &[Option<String>],
@@ -271,8 +281,20 @@ fn parse_cell_formats(
     let mut codes: Vec<String> = Vec::new();
     let mut code_index: HashMap<usize, usize> = HashMap::new();
     let mut cells = HashMap::new();
+    let mut row: Option<u32> = None;
+    let mut next_col: u32 = 0;
     loop {
         match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"row" => {
+                let explicit = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == b"r")
+                    .and_then(|a| attr_value(&a, reader.decoder()).parse::<u32>().ok())
+                    .and_then(|r| r.checked_sub(1));
+                row = Some(explicit.unwrap_or_else(|| row.map_or(0, |r| r + 1)));
+                next_col = 0;
+            }
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"c" => {
                 let mut reference = None;
                 let mut style = None;
@@ -283,7 +305,22 @@ fn parse_cell_formats(
                         _ => {}
                     }
                 }
-                let (Some(reference), Some(style)) = (reference, style) else {
+                let position = match reference.as_deref().map(Anchor::parse_cell_ref) {
+                    // an explicit reference also re-anchors the trackers
+                    Some(Some((r, c))) => {
+                        row = Some(r);
+                        next_col = c + 1;
+                        Some((r, c))
+                    }
+                    // a present but unparseable reference names no cell
+                    Some(None) => None,
+                    None => row.map(|r| {
+                        let c = next_col;
+                        next_col += 1;
+                        (r, c)
+                    }),
+                };
+                let (Some(position), Some(style)) = (position, style) else {
                     continue;
                 };
                 let Some(Some(code)) = style_codes.get(style) else {
@@ -293,7 +330,7 @@ fn parse_cell_formats(
                     codes.push(code.clone());
                     codes.len() - 1
                 });
-                cells.insert(reference, idx);
+                cells.insert(position, idx);
             }
             Event::Eof => break,
             _ => {}
@@ -392,10 +429,31 @@ mod tests {
         let codes = vec![None, Some("0%".to_string())];
         let formats = parse_cell_formats(sheet, &codes).unwrap();
         assert_eq!(formats.codes, vec!["0%".to_string()]);
-        assert_eq!(formats.cells.get("A1"), Some(&0));
-        assert_eq!(formats.cells.get("D1"), Some(&0));
-        assert!(!formats.cells.contains_key("B1"));
-        assert!(!formats.cells.contains_key("C1"));
+        assert_eq!(formats.cells.get(&(0, 0)), Some(&0));
+        assert_eq!(formats.cells.get(&(0, 3)), Some(&0));
+        assert!(!formats.cells.contains_key(&(0, 1)));
+        assert!(!formats.cells.contains_key(&(0, 2)));
+    }
+
+    #[test]
+    fn cells_without_references_take_sequential_positions() {
+        // ECMA-376 allows omitting r on both <row> and <c>; streaming
+        // writers do exactly that
+        let sheet = r#"<worksheet><sheetData>
+            <row><c s="1"><v>1</v></c><c><v>2</v></c><c s="1"><v>3</v></c></row>
+            <row r="5"><c s="1"><v>4</v></c></row>
+            <row><c r="B6" s="1"/><c s="1"/></row>
+        </sheetData></worksheet>"#;
+        let codes = vec![None, Some("0%".to_string())];
+        let formats = parse_cell_formats(sheet, &codes).unwrap();
+        let positions: Vec<(u32, u32)> = {
+            let mut p: Vec<_> = formats.cells.keys().copied().collect();
+            p.sort_unstable();
+            p
+        };
+        // row 0: A and C (B has no style); r="5" is row index 4;
+        // then B6 re-anchors to (5, 1) and the next cell continues at (5, 2)
+        assert_eq!(positions, vec![(0, 0), (0, 2), (4, 0), (5, 1), (5, 2)]);
     }
 
     #[test]
