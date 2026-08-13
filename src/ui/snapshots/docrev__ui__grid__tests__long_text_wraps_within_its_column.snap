@@ -1,0 +1,17 @@
+---
+source: src/ui/grid.rs
+assertion_line: 986
+expression: "render_text(&view, &mut scroll, 50, 12)"
+---
+ B3     │
+  │     A      │     B
+ 1│あいうえおか│
+  │きくけこさし│
+  │すせそ      │
+ 2│あいうえおか│X
+  │きくけこさし│
+  │すせそ      │
+ 3│12345678901…│
+
+[WR]
+                      c:comment  q:quit  Tab:sheet

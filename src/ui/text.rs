@@ -23,6 +23,29 @@ pub(crate) fn sanitize(text: &str) -> String {
         .collect()
 }
 
+/// Breaks text into display-width-sized lines, char by char (CJK-safe).
+/// A char wider than `width` still gets a line of its own so the result
+/// always makes progress; empty text is one empty line.
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        line.push(ch);
+        used += w;
+    }
+    lines.push(line);
+    lines
+}
+
 pub(crate) fn clip(text: &str, max: usize) -> String {
     if text.width() <= max {
         return text.to_string();
@@ -71,5 +94,19 @@ mod tests {
     #[test]
     fn sanitizes_control_chars() {
         assert_eq!(sanitize("a\nb\tc"), "a⏎b c");
+    }
+
+    #[test]
+    fn wraps_by_display_width() {
+        assert_eq!(wrap("abcdef", 4), vec!["abcd", "ef"]);
+        // CJK chars are 2 cells wide: 4 cells fit two of them
+        assert_eq!(wrap("あいうえお", 4), vec!["あい", "うえ", "お"]);
+        // a wide char never splits: 「あ」(2 cells) does not fit next to
+        // 「い」 in 3 cells, so it moves whole to the next line
+        assert_eq!(wrap("いあ", 3), vec!["い", "あ"]);
+        assert_eq!(wrap("いいあ", 3), vec!["い", "い", "あ"]);
+        assert_eq!(wrap("", 4), vec![""]);
+        assert_eq!(wrap("abc", 0), vec![""], "zero width cannot loop");
+        assert_eq!(wrap("あ", 1), vec!["あ"], "wider than the column");
     }
 }
