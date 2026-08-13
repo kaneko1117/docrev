@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use docrev::adapter::xlsx_source::XlsxSource;
 use docrev::app::ports::DocumentSource;
 use docrev::domain::cell::CellValue;
-use docrev::domain::sheet::FillColor;
+use docrev::domain::sheet::Rgb;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16,10 +16,10 @@ fn loaded_sheets_carry_their_fill_colors() {
     let document = XlsxSource.load(&fixture("fills.xlsx")).unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.name(), "塗り");
-    assert_eq!(sheet.fill_at(0, 0), Some(FillColor { r: 255, g: 0, b: 0 }));
+    assert_eq!(sheet.fill_at(0, 0), Some(Rgb { r: 255, g: 0, b: 0 }));
     assert_eq!(
         sheet.fill_at(0, 1),
-        Some(FillColor {
+        Some(Rgb {
             r: 0x00,
             g: 0xB0,
             b: 0x50
@@ -43,7 +43,7 @@ fn fills_and_number_formats_coexist_on_one_cell() {
     );
     assert_eq!(
         sheet.fill_at(0, 3),
-        Some(FillColor {
+        Some(Rgb {
             r: 255,
             g: 255,
             b: 0
@@ -60,7 +60,7 @@ fn a_broken_theme_drops_theme_fills_but_keeps_rgb_fills() {
         .load(&fixture("fills_broken_theme.xlsx"))
         .unwrap();
     let sheet = &document.sheets()[0];
-    assert_eq!(sheet.fill_at(0, 0), Some(FillColor { r: 255, g: 0, b: 0 }));
+    assert_eq!(sheet.fill_at(0, 0), Some(Rgb { r: 255, g: 0, b: 0 }));
     assert_eq!(sheet.fill_at(0, 4), None, "theme fill must not be guessed");
 }
 
@@ -74,7 +74,7 @@ fn theme_fills_resolve_through_the_workbook_theme() {
     let sheet = &document.sheets()[0];
     assert_eq!(
         sheet.fill_at(0, 4),
-        Some(FillColor {
+        Some(Rgb {
             r: 149,
             g: 179,
             b: 215
