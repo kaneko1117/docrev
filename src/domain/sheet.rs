@@ -1,4 +1,14 @@
+use std::collections::HashMap;
+
 use super::cell::CellValue;
+
+/// A solid cell background from the workbook, sRGB.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FillColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
 
 /// An inclusive rectangle of merged cells; the value lives at the anchor
 /// (top-left).
@@ -29,6 +39,8 @@ pub struct Sheet {
     /// Author-set column widths from the workbook, index = column.
     col_widths: Vec<Option<u16>>,
     merges: Vec<MergedRange>,
+    /// Solid cell backgrounds from the workbook, keyed by (row, col).
+    fills: HashMap<(usize, usize), FillColor>,
 }
 
 impl Sheet {
@@ -40,7 +52,17 @@ impl Sheet {
             rows,
             col_widths: Vec::new(),
             merges: Vec::new(),
+            fills: HashMap::new(),
         }
+    }
+
+    pub fn with_fills(mut self, fills: HashMap<(usize, usize), FillColor>) -> Self {
+        self.fills = fills;
+        self
+    }
+
+    pub fn fill_at(&self, row: usize, col: usize) -> Option<FillColor> {
+        self.fills.get(&(row, col)).copied()
     }
 
     pub fn with_col_widths(mut self, widths: Vec<Option<u16>>) -> Self {

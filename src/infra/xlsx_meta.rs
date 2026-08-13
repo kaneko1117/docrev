@@ -46,24 +46,47 @@ pub fn column_widths(document: &Path) -> Result<HashMap<String, Vec<ColumnWidth>
     Ok(result)
 }
 
-/// Number-format codes per sheet: `cells` maps 0-based (row, col) positions
-/// to indices in `codes`.
-#[derive(Debug, Default, Clone)]
-pub struct SheetFormats {
-    pub codes: Vec<String>,
-    pub cells: HashMap<(u32, u32), usize>,
+/// What a cell's `s=` style index resolves to: a number-format code and/or
+/// a solid fill color (sRGB).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct CellStyle {
+    pub format: Option<String>,
+    pub fill: Option<(u8, u8, u8)>,
 }
 
-/// Per-cell number-format codes, resolved through styles.xml
-/// (`numFmts` + `cellXfs`) and each sheet's `s=` style indices.
-/// calamine does not expose formats either.
-pub fn number_formats(document: &Path) -> Result<HashMap<String, SheetFormats>, MetaError> {
+impl CellStyle {
+    fn is_plain(&self) -> bool {
+        self.format.is_none() && self.fill.is_none()
+    }
+}
+
+/// Everything cells reference in styles.xml, plus which cells reference it:
+/// `sheets` maps 0-based (row, col) positions to indices in `styles`.
+#[derive(Debug, Default, Clone)]
+pub struct WorkbookStyles {
+    pub styles: Vec<CellStyle>,
+    pub sheets: HashMap<String, HashMap<(u32, u32), usize>>,
+}
+
+/// Per-cell number formats and fill colors, resolved through styles.xml
+/// (`numFmts` + `fills` + `cellXfs`) and each sheet's `s=` style indices.
+/// calamine does not expose styles either. Theme-indexed fills resolve via
+/// the workbook's theme1.xml, falling back to the default Office palette.
+pub fn cell_styles(document: &Path) -> Result<WorkbookStyles, MetaError> {
     let mut archive = open_archive(document)?;
 
-    let styles = read_entry(&mut archive, "xl/styles.xml")?;
-    let style_codes = parse_style_codes(&styles)?;
-    if style_codes.iter().all(Option::is_none) {
-        return Ok(HashMap::new());
+    // a workbook without a theme part legitimately resolves against the
+    // default Office palette; a theme that exists but cannot be parsed must
+    // not silently recolor cells, so its theme-indexed fills are dropped
+    // (empty palette) while rgb fills stay untouched
+    let palette = match read_entry(&mut archive, "xl/theme/theme1.xml") {
+        Ok(xml) => parse_theme_palette(&xml).unwrap_or_default(),
+        Err(_) => default_palette(),
+    };
+    let styles_xml = read_entry(&mut archive, "xl/styles.xml")?;
+    let styles = parse_styles(&styles_xml, &palette)?;
+    if styles.iter().all(CellStyle::is_plain) {
+        return Ok(WorkbookStyles::default());
     }
 
     let workbook = read_entry(&mut archive, "xl/workbook.xml")?;
@@ -76,18 +99,21 @@ pub fn number_formats(document: &Path) -> Result<HashMap<String, SheetFormats>, 
         let Some(target) = targets.get(&rid) else {
             continue;
         };
-        // one unreadable sheet must not strip formats from the others
+        // one unreadable sheet must not strip styles from the others
         let Ok(xml) = read_entry(&mut archive, &entry_path(target)) else {
             continue;
         };
-        let Ok(formats) = parse_cell_formats(&xml, &style_codes) else {
+        let Ok(cells) = parse_cell_styles(&xml, &styles) else {
             continue;
         };
-        if !formats.cells.is_empty() {
-            result.insert(name, formats);
+        if !cells.is_empty() {
+            result.insert(name, cells);
         }
     }
-    Ok(result)
+    Ok(WorkbookStyles {
+        styles,
+        sheets: result,
+    })
 }
 
 fn open_archive(document: &Path) -> Result<zip::ZipArchive<File>, MetaError> {
@@ -175,74 +201,251 @@ fn parse_rel_targets(xml: &str) -> Result<HashMap<String, String>, MetaError> {
     Ok(out)
 }
 
-/// One format code per `cellXfs` entry (the style a cell's `s=` points at),
-/// `None` where the style has no format we can express as a code.
-fn parse_style_codes(xml: &str) -> Result<Vec<Option<String>>, MetaError> {
+/// The default Office theme palette, in `theme=` attribute order (see
+/// `parse_theme_palette`); used when theme1.xml cannot be read.
+fn default_palette() -> Vec<(u8, u8, u8)> {
+    vec![
+        (0xFF, 0xFF, 0xFF), // lt1
+        (0x00, 0x00, 0x00), // dk1
+        (0xE7, 0xE6, 0xE6), // lt2
+        (0x44, 0x54, 0x6A), // dk2
+        (0x44, 0x72, 0xC4), // accent1
+        (0xED, 0x7D, 0x31), // accent2
+        (0xA5, 0xA5, 0xA5), // accent3
+        (0xFF, 0xC0, 0x00), // accent4
+        (0x5B, 0x9B, 0xD5), // accent5
+        (0x70, 0xAD, 0x47), // accent6
+        (0x05, 0x63, 0xC1), // hlink
+        (0x95, 0x4F, 0x72), // folHlink
+    ]
+}
+
+/// The `theme=` attribute indexes the clrScheme colors in display order,
+/// which swaps each background/text pair relative to the file order:
+/// 0=lt1, 1=dk1, 2=lt2, 3=dk2, then accent1-6, hlink, folHlink.
+const THEME_ORDER: [&[u8]; 12] = [
+    b"lt1",
+    b"dk1",
+    b"lt2",
+    b"dk2",
+    b"accent1",
+    b"accent2",
+    b"accent3",
+    b"accent4",
+    b"accent5",
+    b"accent6",
+    b"hlink",
+    b"folHlink",
+];
+
+/// Reads `<a:clrScheme>` from theme1.xml: each named child holds either
+/// `<a:srgbClr val="RRGGBB"/>` or `<a:sysClr … lastClr="RRGGBB"/>`.
+fn parse_theme_palette(xml: &str) -> Result<Vec<(u8, u8, u8)>, MetaError> {
     let mut reader = Reader::from_str(xml);
-    let mut custom: HashMap<u32, String> = HashMap::new();
-    let mut xf_ids: Vec<u32> = Vec::new();
-    // `<numFmt>` also appears under `<dxfs>` and `<xf>` under `<cellStyleXfs>`;
-    // only the `<numFmts>` and `<cellXfs>` sections define what cells reference.
-    let mut in_num_fmts = false;
-    let mut in_cell_xfs = false;
+    let mut in_scheme = false;
+    let mut current: Option<Vec<u8>> = None;
+    let mut named: HashMap<Vec<u8>, (u8, u8, u8)> = HashMap::new();
     loop {
         match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
-            Event::Start(e) => match e.local_name().as_ref() {
-                b"numFmts" => in_num_fmts = true,
-                b"cellXfs" => in_cell_xfs = true,
-                b"numFmt" if in_num_fmts => collect_num_fmt(&e, &reader, &mut custom),
-                b"xf" if in_cell_xfs => xf_ids.push(xf_num_fmt_id(&e, &reader)),
-                _ => {}
-            },
-            Event::Empty(e) => match e.local_name().as_ref() {
-                b"numFmt" if in_num_fmts => collect_num_fmt(&e, &reader, &mut custom),
-                b"xf" if in_cell_xfs => xf_ids.push(xf_num_fmt_id(&e, &reader)),
-                _ => {}
-            },
+            Event::Start(e) if e.local_name().as_ref() == b"clrScheme" => in_scheme = true,
+            Event::End(e) if e.local_name().as_ref() == b"clrScheme" => break,
+            Event::Start(e) if in_scheme && THEME_ORDER.contains(&e.local_name().as_ref()) => {
+                current = Some(e.local_name().as_ref().to_vec());
+            }
+            Event::Start(e) | Event::Empty(e) if in_scheme => {
+                let attr_name = match e.local_name().as_ref() {
+                    b"srgbClr" => b"val".as_ref(),
+                    b"sysClr" => b"lastClr".as_ref(),
+                    _ => continue,
+                };
+                let Some(name) = current.clone() else {
+                    continue;
+                };
+                let rgb = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == attr_name)
+                    .and_then(|a| parse_hex_rgb(&attr_value(&a, reader.decoder())));
+                if let Some(rgb) = rgb {
+                    named.entry(name).or_insert(rgb);
+                }
+            }
+            Event::End(e) if THEME_ORDER.contains(&e.local_name().as_ref()) => current = None,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if named.len() < THEME_ORDER.len() {
+        return Err(MetaError("incomplete clrScheme".to_string()));
+    }
+    Ok(THEME_ORDER.iter().map(|name| named[*name]).collect())
+}
+
+/// `"RRGGBB"` or `"AARRGGBB"` (alpha ignored).
+fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+    // the byte-position slicing below panics mid-char on multi-byte input,
+    // and these strings come straight from untrusted XML
+    if !hex.is_ascii() {
+        return None;
+    }
+    let rgb = match hex.len() {
+        6 => hex,
+        8 => &hex[2..],
+        _ => return None,
+    };
+    let r = u8::from_str_radix(&rgb[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&rgb[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&rgb[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+/// Excel's tint: positive lightens toward white, negative darkens toward
+/// black. (Officially defined on HSL luminance; this per-channel linear
+/// approximation stays within a few units.)
+fn apply_tint(rgb: (u8, u8, u8), tint: f64) -> (u8, u8, u8) {
+    let tint = tint.clamp(-1.0, 1.0);
+    let channel = |c: u8| -> u8 {
+        let c = f64::from(c);
+        let out = if tint >= 0.0 {
+            c + (255.0 - c) * tint
+        } else {
+            c * (1.0 + tint)
+        };
+        out.round().clamp(0.0, 255.0) as u8
+    };
+    (channel(rgb.0), channel(rgb.1), channel(rgb.2))
+}
+
+/// One `CellStyle` per `cellXfs` entry (the style a cell's `s=` points at).
+fn parse_styles(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<CellStyle>, MetaError> {
+    let mut reader = Reader::from_str(xml);
+    let mut custom: HashMap<u32, String> = HashMap::new();
+    let mut fills: Vec<Option<(u8, u8, u8)>> = Vec::new();
+    let mut xfs: Vec<(u32, usize)> = Vec::new();
+    // `<numFmt>` also appears under `<dxfs>`, `<xf>` under `<cellStyleXfs>`
+    // and `<fill>` under `<dxfs>`; only the `<numFmts>`, `<fills>` and
+    // `<cellXfs>` sections define what cells reference.
+    let mut in_num_fmts = false;
+    let mut in_fills = false;
+    let mut in_cell_xfs = false;
+    // fill state: set inside `<fill>` once a solid `<patternFill>` is seen
+    let mut fill_depth = 0u32;
+    let mut solid = false;
+    let mut fill_color: Option<(u8, u8, u8)> = None;
+    loop {
+        let event = reader.read_event().map_err(|e| MetaError(e.to_string()))?;
+        match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.local_name().as_ref() {
+                    b"numFmts" if !empty => in_num_fmts = true,
+                    b"fills" if !empty => in_fills = true,
+                    b"cellXfs" if !empty => in_cell_xfs = true,
+                    b"numFmt" if in_num_fmts => {
+                        let mut id = None;
+                        let mut code = None;
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"numFmtId" => {
+                                    id = attr_value(&attr, reader.decoder()).parse().ok()
+                                }
+                                b"formatCode" => code = Some(attr_value(&attr, reader.decoder())),
+                                _ => {}
+                            }
+                        }
+                        if let (Some(id), Some(code)) = (id, code) {
+                            custom.insert(id, code);
+                        }
+                    }
+                    b"fill" if in_fills => {
+                        solid = false;
+                        fill_color = None;
+                        if empty {
+                            fills.push(None);
+                        } else {
+                            fill_depth += 1;
+                        }
+                    }
+                    b"patternFill" if in_fills && fill_depth > 0 => {
+                        solid = e.attributes().flatten().any(|a| {
+                            a.key.as_ref() == b"patternType"
+                                && attr_value(&a, reader.decoder()) == "solid"
+                        });
+                    }
+                    b"fgColor" if in_fills && fill_depth > 0 && solid => {
+                        fill_color = parse_color_attrs(e, &reader, palette);
+                    }
+                    b"xf" if in_cell_xfs => {
+                        let mut num_fmt = 0u32;
+                        let mut fill_id = 0usize;
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"numFmtId" => {
+                                    num_fmt =
+                                        attr_value(&attr, reader.decoder()).parse().unwrap_or(0)
+                                }
+                                b"fillId" => {
+                                    fill_id =
+                                        attr_value(&attr, reader.decoder()).parse().unwrap_or(0)
+                                }
+                                _ => {}
+                            }
+                        }
+                        xfs.push((num_fmt, fill_id));
+                    }
+                    _ => {}
+                }
+            }
             Event::End(e) => match e.local_name().as_ref() {
                 b"numFmts" => in_num_fmts = false,
+                b"fills" => in_fills = false,
                 b"cellXfs" => in_cell_xfs = false,
+                b"fill" if in_fills && fill_depth > 0 => {
+                    fill_depth -= 1;
+                    fills.push(if solid { fill_color } else { None });
+                }
                 _ => {}
             },
             Event::Eof => break,
             _ => {}
         }
     }
-    Ok(xf_ids
+    Ok(xfs
         .into_iter()
-        .map(|id| match custom.get(&id) {
-            Some(code) => Some(code.clone()),
-            None => builtin_format(id).map(str::to_string),
+        .map(|(num_fmt, fill_id)| CellStyle {
+            format: match custom.get(&num_fmt) {
+                Some(code) => Some(code.clone()),
+                None => builtin_format(num_fmt).map(str::to_string),
+            },
+            fill: fills.get(fill_id).copied().flatten(),
         })
         .collect())
 }
 
-fn collect_num_fmt(
+/// A color element's attributes: `rgb="FFRRGGBB"` wins, else `theme="n"`
+/// (optionally tinted) through the palette. Legacy `indexed=` is ignored.
+fn parse_color_attrs(
     e: &quick_xml::events::BytesStart,
     reader: &Reader<&[u8]>,
-    custom: &mut HashMap<u32, String>,
-) {
-    let mut id = None;
-    let mut code = None;
+    palette: &[(u8, u8, u8)],
+) -> Option<(u8, u8, u8)> {
+    let mut rgb = None;
+    let mut theme = None;
+    let mut tint = 0.0f64;
     for attr in e.attributes().flatten() {
+        let value = attr_value(&attr, reader.decoder());
         match attr.key.as_ref() {
-            b"numFmtId" => id = attr_value(&attr, reader.decoder()).parse().ok(),
-            b"formatCode" => code = Some(attr_value(&attr, reader.decoder())),
+            b"rgb" => rgb = parse_hex_rgb(&value),
+            b"theme" => theme = value.parse::<usize>().ok(),
+            b"tint" => tint = value.parse().unwrap_or(0.0),
             _ => {}
         }
     }
-    if let (Some(id), Some(code)) = (id, code) {
-        custom.insert(id, code);
+    if let Some(rgb) = rgb {
+        return Some(rgb);
     }
-}
-
-fn xf_num_fmt_id(e: &quick_xml::events::BytesStart, reader: &Reader<&[u8]>) -> u32 {
-    for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"numFmtId" {
-            return attr_value(&attr, reader.decoder()).parse().unwrap_or(0);
-        }
-    }
-    0
+    let base = palette.get(theme?).copied()?;
+    Some(apply_tint(base, tint))
 }
 
 /// The numeric subset of the reserved built-in formats (ECMA-376 §18.8.30);
@@ -270,16 +473,14 @@ fn builtin_format(id: u32) -> Option<&'static str> {
 }
 
 /// `<c r="B2" s="5">` entries from a sheet XML, keeping only cells whose
-/// style resolves to a format code. ECMA-376 makes both `<row r=…>` and
+/// style resolves to something visible. ECMA-376 makes both `<row r=…>` and
 /// `<c r=…>` optional — positions then continue from the previous element —
 /// so row and column are tracked explicitly.
-fn parse_cell_formats(
+fn parse_cell_styles(
     xml: &str,
-    style_codes: &[Option<String>],
-) -> Result<SheetFormats, MetaError> {
+    styles: &[CellStyle],
+) -> Result<HashMap<(u32, u32), usize>, MetaError> {
     let mut reader = Reader::from_str(xml);
-    let mut codes: Vec<String> = Vec::new();
-    let mut code_index: HashMap<usize, usize> = HashMap::new();
     let mut cells = HashMap::new();
     let mut row: Option<u32> = None;
     let mut next_col: u32 = 0;
@@ -323,20 +524,16 @@ fn parse_cell_formats(
                 let (Some(position), Some(style)) = (position, style) else {
                     continue;
                 };
-                let Some(Some(code)) = style_codes.get(style) else {
+                if !styles.get(style).is_some_and(|s| !s.is_plain()) {
                     continue;
-                };
-                let idx = *code_index.entry(style).or_insert_with(|| {
-                    codes.push(code.clone());
-                    codes.len() - 1
-                });
-                cells.insert(position, idx);
+                }
+                cells.insert(position, style);
             }
             Event::Eof => break,
             _ => {}
         }
     }
-    Ok(SheetFormats { codes, cells })
+    Ok(cells)
 }
 
 /// `<col min="1" max="1" width="20.5"/>` entries from a sheet XML.
@@ -372,8 +569,12 @@ fn parse_cols(xml: &str) -> Result<Vec<ColumnWidth>, MetaError> {
 mod tests {
     use super::*;
 
+    fn formats_of(styles: &[CellStyle]) -> Vec<Option<&str>> {
+        styles.iter().map(|s| s.format.as_deref()).collect()
+    }
+
     #[test]
-    fn style_codes_resolve_custom_and_builtin_ids() {
+    fn styles_resolve_custom_and_builtin_ids() {
         let styles = r##"<styleSheet>
             <numFmts count="1">
                 <numFmt numFmtId="164" formatCode="#,##0&quot;千円&quot;"/>
@@ -385,27 +586,127 @@ mod tests {
                 <xf numFmtId="999"/>
             </cellXfs>
         </styleSheet>"##;
-        let codes = parse_style_codes(styles).unwrap();
+        let styles = parse_styles(styles, &default_palette()).unwrap();
         assert_eq!(
-            codes,
+            formats_of(&styles),
+            vec![None, Some("0%"), Some("#,##0\"千円\""), None]
+        );
+        assert!(styles.iter().all(|s| s.fill.is_none()));
+    }
+
+    #[test]
+    fn styles_ignore_cell_style_xfs_and_dxfs() {
+        let styles = r#"<styleSheet>
+            <dxfs count="1">
+                <numFmt numFmtId="164" formatCode="0.000"/>
+                <fill><patternFill patternType="solid"><fgColor rgb="FF123456"/></patternFill></fill>
+            </dxfs>
+            <cellStyleXfs count="1"><xf numFmtId="9"/></cellStyleXfs>
+            <cellXfs count="1"><xf numFmtId="3"/></cellXfs>
+        </styleSheet>"#;
+        let styles = parse_styles(styles, &default_palette()).unwrap();
+        assert_eq!(formats_of(&styles), vec![Some("#,##0")]);
+        assert_eq!(styles[0].fill, None);
+    }
+
+    #[test]
+    fn solid_fills_resolve_rgb_theme_and_tint() {
+        let styles = r#"<styleSheet>
+            <fills count="5">
+                <fill><patternFill/></fill>
+                <fill><patternFill patternType="gray125"/></fill>
+                <fill><patternFill patternType="solid"><fgColor rgb="FFFF0000"/><bgColor indexed="64"/></patternFill></fill>
+                <fill><patternFill patternType="solid"><fgColor theme="4"/></patternFill></fill>
+                <fill><patternFill patternType="solid"><fgColor theme="4" tint="0.5"/></patternFill></fill>
+            </fills>
+            <cellXfs count="5">
+                <xf fillId="0"/>
+                <xf fillId="1"/>
+                <xf fillId="2"/>
+                <xf fillId="3"/>
+                <xf fillId="4"/>
+            </cellXfs>
+        </styleSheet>"#;
+        let styles = parse_styles(styles, &default_palette()).unwrap();
+        let fills: Vec<_> = styles.iter().map(|s| s.fill).collect();
+        // accent1 #4472C4; tint 0.5 lightens each channel halfway to white
+        assert_eq!(
+            fills,
             vec![
                 None,
-                Some("0%".to_string()),
-                Some("#,##0\"千円\"".to_string()),
                 None,
+                Some((0xFF, 0x00, 0x00)),
+                Some((0x44, 0x72, 0xC4)),
+                Some((162, 185, 226)),
             ]
         );
     }
 
     #[test]
-    fn style_codes_ignore_cell_style_xfs_and_dxfs() {
+    fn theme_palette_reads_clr_scheme_in_display_order() {
+        let theme = r#"<a:theme xmlns:a="x"><a:themeElements><a:clrScheme name="Office">
+            <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+            <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+            <a:dk2><a:srgbClr val="44546A"/></a:dk2>
+            <a:lt2><a:srgbClr val="E7E6E6"/></a:lt2>
+            <a:accent1><a:srgbClr val="112233"/></a:accent1>
+            <a:accent2><a:srgbClr val="ED7D31"/></a:accent2>
+            <a:accent3><a:srgbClr val="A5A5A5"/></a:accent3>
+            <a:accent4><a:srgbClr val="FFC000"/></a:accent4>
+            <a:accent5><a:srgbClr val="5B9BD5"/></a:accent5>
+            <a:accent6><a:srgbClr val="70AD47"/></a:accent6>
+            <a:hlink><a:srgbClr val="0563C1"/></a:hlink>
+            <a:folHlink><a:srgbClr val="954F72"/></a:folHlink>
+        </a:clrScheme></a:themeElements></a:theme>"#;
+        let palette = parse_theme_palette(theme).unwrap();
+        // display order swaps the pairs: 0=lt1 (white), 1=dk1 (black)
+        assert_eq!(palette[0], (0xFF, 0xFF, 0xFF));
+        assert_eq!(palette[1], (0x00, 0x00, 0x00));
+        assert_eq!(palette[4], (0x11, 0x22, 0x33), "accent1 from the file");
+    }
+
+    #[test]
+    fn truncated_theme_is_an_error() {
+        let theme = r#"<a:theme xmlns:a="x"><a:clrScheme>
+            <a:dk1><a:srgbClr val="000000"/></a:dk1>
+        </a:clrScheme></a:theme>"#;
+        assert!(parse_theme_palette(theme).is_err());
+    }
+
+    #[test]
+    fn multibyte_hex_strings_are_rejected_not_a_panic() {
+        // "Aあ12" is 6 bytes but slicing it at byte 2 would split あ
+        assert_eq!(parse_hex_rgb("Aあ12"), None);
+        assert_eq!(parse_hex_rgb("あdd12"), None, "8-byte variant");
+        assert_eq!(parse_hex_rgb("FF0000"), Some((0xFF, 0, 0)));
+        assert_eq!(parse_hex_rgb("00FF0000"), Some((0xFF, 0, 0)));
+        assert_eq!(parse_hex_rgb("ZZ0000"), None, "non-hex ASCII");
+    }
+
+    #[test]
+    fn an_empty_palette_drops_theme_fills_but_keeps_rgb() {
         let styles = r#"<styleSheet>
-            <dxfs count="1"><numFmt numFmtId="164" formatCode="0.000"/></dxfs>
-            <cellStyleXfs count="1"><xf numFmtId="9"/></cellStyleXfs>
-            <cellXfs count="1"><xf numFmtId="3"/></cellXfs>
+            <fills count="3">
+                <fill><patternFill/></fill>
+                <fill><patternFill patternType="solid"><fgColor rgb="FFFF0000"/></patternFill></fill>
+                <fill><patternFill patternType="solid"><fgColor theme="4"/></patternFill></fill>
+            </fills>
+            <cellXfs count="2">
+                <xf fillId="1"/>
+                <xf fillId="2"/>
+            </cellXfs>
         </styleSheet>"#;
-        let codes = parse_style_codes(styles).unwrap();
-        assert_eq!(codes, vec![Some("#,##0".to_string())]);
+        let styles = parse_styles(styles, &[]).unwrap();
+        assert_eq!(styles[0].fill, Some((0xFF, 0x00, 0x00)));
+        assert_eq!(styles[1].fill, None, "unresolvable theme paints nothing");
+    }
+
+    #[test]
+    fn tint_lightens_and_darkens() {
+        assert_eq!(apply_tint((100, 100, 100), 0.0), (100, 100, 100));
+        assert_eq!(apply_tint((100, 200, 0), 0.5), (178, 228, 128));
+        assert_eq!(apply_tint((100, 200, 0), -0.5), (50, 100, 0));
+        assert_eq!(apply_tint((10, 10, 10), 5.0), (255, 255, 255), "clamped");
     }
 
     #[test]
@@ -416,8 +717,18 @@ mod tests {
         assert_eq!(builtin_format(49), None, "text format must stay unresolved");
     }
 
+    fn percent_style() -> Vec<CellStyle> {
+        vec![
+            CellStyle::default(),
+            CellStyle {
+                format: Some("0%".to_string()),
+                fill: None,
+            },
+        ]
+    }
+
     #[test]
-    fn cell_formats_keep_only_cells_with_a_resolvable_style() {
+    fn cell_styles_keep_only_cells_with_a_visible_style() {
         let sheet = r#"<worksheet><sheetData>
             <row r="1">
                 <c r="A1" s="1"><v>0.15</v></c>
@@ -426,13 +737,11 @@ mod tests {
                 <c r="D1" s="1"><v>0.25</v></c>
             </row>
         </sheetData></worksheet>"#;
-        let codes = vec![None, Some("0%".to_string())];
-        let formats = parse_cell_formats(sheet, &codes).unwrap();
-        assert_eq!(formats.codes, vec!["0%".to_string()]);
-        assert_eq!(formats.cells.get(&(0, 0)), Some(&0));
-        assert_eq!(formats.cells.get(&(0, 3)), Some(&0));
-        assert!(!formats.cells.contains_key(&(0, 1)));
-        assert!(!formats.cells.contains_key(&(0, 2)));
+        let cells = parse_cell_styles(sheet, &percent_style()).unwrap();
+        assert_eq!(cells.get(&(0, 0)), Some(&1));
+        assert_eq!(cells.get(&(0, 3)), Some(&1));
+        assert!(!cells.contains_key(&(0, 1)), "plain style is dropped");
+        assert!(!cells.contains_key(&(0, 2)), "no style at all");
     }
 
     #[test]
@@ -444,10 +753,9 @@ mod tests {
             <row r="5"><c s="1"><v>4</v></c></row>
             <row><c r="B6" s="1"/><c s="1"/></row>
         </sheetData></worksheet>"#;
-        let codes = vec![None, Some("0%".to_string())];
-        let formats = parse_cell_formats(sheet, &codes).unwrap();
+        let cells = parse_cell_styles(sheet, &percent_style()).unwrap();
         let positions: Vec<(u32, u32)> = {
-            let mut p: Vec<_> = formats.cells.keys().copied().collect();
+            let mut p: Vec<_> = cells.keys().copied().collect();
             p.sort_unstable();
             p
         };
@@ -461,7 +769,7 @@ mod tests {
         let sheet = r#"<worksheet><sheetData>
             <row r="1"><c r="A1" s="7"><v>1</v></c></row>
         </sheetData></worksheet>"#;
-        let formats = parse_cell_formats(sheet, &[Some("0%".to_string())]).unwrap();
-        assert!(formats.cells.is_empty());
+        let cells = parse_cell_styles(sheet, &percent_style()).unwrap();
+        assert!(cells.is_empty());
     }
 }

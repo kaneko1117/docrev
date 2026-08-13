@@ -14,9 +14,13 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn reads_format_codes_from_the_workbook() {
-    let formats = xlsx_meta::number_formats(&fixture("formats.xlsx")).unwrap();
-    let sheet = formats.get("書式").expect("sheet with formats");
-    let code_of = |pos: (u32, u32)| sheet.cells.get(&pos).map(|&i| sheet.codes[i].as_str());
+    let styles = xlsx_meta::cell_styles(&fixture("formats.xlsx")).unwrap();
+    let sheet = styles.sheets.get("書式").expect("sheet with styles");
+    let code_of = |pos: (u32, u32)| {
+        sheet
+            .get(&pos)
+            .and_then(|&i| styles.styles[i].format.as_deref())
+    };
     // built-in ids resolve without a numFmt entry in styles.xml
     assert_eq!(code_of((0, 0)), Some("0%"));
     assert_eq!(code_of((0, 1)), Some("#,##0"));
@@ -65,7 +69,7 @@ fn format_parsing_failure_does_not_block_opening() {
     // resolving formats fails, opening must degrade to raw values
     let path = fixture("corrupt_styles.xlsx");
     assert!(
-        xlsx_meta::number_formats(&path).is_err(),
+        xlsx_meta::cell_styles(&path).is_err(),
         "the fixture must actually exercise the failure path"
     );
 
