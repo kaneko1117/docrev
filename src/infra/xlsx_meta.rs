@@ -46,17 +46,18 @@ pub fn column_widths(document: &Path) -> Result<HashMap<String, Vec<ColumnWidth>
     Ok(result)
 }
 
-/// What a cell's `s=` style index resolves to: a number-format code and/or
-/// a solid fill color (sRGB).
+/// What a cell's `s=` style index resolves to: a number-format code, a
+/// solid fill color and/or a font color (sRGB).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CellStyle {
     pub format: Option<String>,
     pub fill: Option<(u8, u8, u8)>,
+    pub font: Option<(u8, u8, u8)>,
 }
 
 impl CellStyle {
     fn is_plain(&self) -> bool {
-        self.format.is_none() && self.fill.is_none()
+        self.format.is_none() && self.fill.is_none() && self.font.is_none()
     }
 }
 
@@ -321,17 +322,22 @@ fn parse_styles(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<CellStyle>, M
     let mut reader = Reader::from_str(xml);
     let mut custom: HashMap<u32, String> = HashMap::new();
     let mut fills: Vec<Option<(u8, u8, u8)>> = Vec::new();
-    let mut xfs: Vec<(u32, usize)> = Vec::new();
-    // `<numFmt>` also appears under `<dxfs>`, `<xf>` under `<cellStyleXfs>`
-    // and `<fill>` under `<dxfs>`; only the `<numFmts>`, `<fills>` and
-    // `<cellXfs>` sections define what cells reference.
+    let mut fonts: Vec<Option<(u8, u8, u8)>> = Vec::new();
+    let mut xfs: Vec<(u32, usize, usize)> = Vec::new();
+    // `<numFmt>` also appears under `<dxfs>`, `<xf>` under `<cellStyleXfs>`,
+    // `<fill>` and `<font>` under `<dxfs>`; only the `<numFmts>`, `<fills>`,
+    // `<fonts>` and `<cellXfs>` sections define what cells reference.
     let mut in_num_fmts = false;
     let mut in_fills = false;
+    let mut in_fonts = false;
     let mut in_cell_xfs = false;
     // fill state: set inside `<fill>` once a solid `<patternFill>` is seen
     let mut fill_depth = 0u32;
     let mut solid = false;
     let mut fill_color: Option<(u8, u8, u8)> = None;
+    // font state: set inside `<font>` when its `<color>` child appears
+    let mut font_depth = 0u32;
+    let mut font_color: Option<(u8, u8, u8)> = None;
     loop {
         let event = reader.read_event().map_err(|e| MetaError(e.to_string()))?;
         match &event {
@@ -340,6 +346,7 @@ fn parse_styles(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<CellStyle>, M
                 match e.local_name().as_ref() {
                     b"numFmts" if !empty => in_num_fmts = true,
                     b"fills" if !empty => in_fills = true,
+                    b"fonts" if !empty => in_fonts = true,
                     b"cellXfs" if !empty => in_cell_xfs = true,
                     b"numFmt" if in_num_fmts => {
                         let mut id = None;
@@ -375,9 +382,21 @@ fn parse_styles(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<CellStyle>, M
                     b"fgColor" if in_fills && fill_depth > 0 && solid => {
                         fill_color = parse_color_attrs(e, &reader, palette);
                     }
+                    b"font" if in_fonts => {
+                        font_color = None;
+                        if empty {
+                            fonts.push(None);
+                        } else {
+                            font_depth += 1;
+                        }
+                    }
+                    b"color" if in_fonts && font_depth > 0 => {
+                        font_color = parse_color_attrs(e, &reader, palette);
+                    }
                     b"xf" if in_cell_xfs => {
                         let mut num_fmt = 0u32;
                         let mut fill_id = 0usize;
+                        let mut font_id = 0usize;
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"numFmtId" => {
@@ -388,10 +407,14 @@ fn parse_styles(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<CellStyle>, M
                                     fill_id =
                                         attr_value(&attr, reader.decoder()).parse().unwrap_or(0)
                                 }
+                                b"fontId" => {
+                                    font_id =
+                                        attr_value(&attr, reader.decoder()).parse().unwrap_or(0)
+                                }
                                 _ => {}
                             }
                         }
-                        xfs.push((num_fmt, fill_id));
+                        xfs.push((num_fmt, fill_id, font_id));
                     }
                     _ => {}
                 }
@@ -399,10 +422,15 @@ fn parse_styles(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<CellStyle>, M
             Event::End(e) => match e.local_name().as_ref() {
                 b"numFmts" => in_num_fmts = false,
                 b"fills" => in_fills = false,
+                b"fonts" => in_fonts = false,
                 b"cellXfs" => in_cell_xfs = false,
                 b"fill" if in_fills && fill_depth > 0 => {
                     fill_depth -= 1;
                     fills.push(if solid { fill_color } else { None });
+                }
+                b"font" if in_fonts && font_depth > 0 => {
+                    font_depth -= 1;
+                    fonts.push(font_color);
                 }
                 _ => {}
             },
@@ -412,12 +440,20 @@ fn parse_styles(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<CellStyle>, M
     }
     Ok(xfs
         .into_iter()
-        .map(|(num_fmt, fill_id)| CellStyle {
+        .map(|(num_fmt, fill_id, font_id)| CellStyle {
             format: match custom.get(&num_fmt) {
                 Some(code) => Some(code.clone()),
                 None => builtin_format(num_fmt).map(str::to_string),
             },
             fill: fills.get(fill_id).copied().flatten(),
+            // font 0 is the workbook default — its color is the stock text
+            // color (whatever the theme paints it), not an author's choice,
+            // so inheriting it would restyle every plain cell
+            font: if font_id == 0 {
+                None
+            } else {
+                fonts.get(font_id).copied().flatten()
+            },
         })
         .collect())
 }
@@ -702,6 +738,41 @@ mod tests {
     }
 
     #[test]
+    fn the_default_font_is_skipped_by_id_not_by_color() {
+        // a theme may paint the default font a near-black like 0D0D0D:
+        // matching on the color value would let every stock cell through
+        let styles = r#"<styleSheet>
+            <fonts count="2">
+                <font><color rgb="FF0D0D0D"/></font>
+                <font><color rgb="FFFF0000"/></font>
+            </fonts>
+            <cellXfs count="2">
+                <xf fontId="0"/>
+                <xf fontId="1"/>
+            </cellXfs>
+        </styleSheet>"#;
+        let styles = parse_styles(styles, &default_palette()).unwrap();
+        assert_eq!(styles[0].font, None, "font 0 is never an author's choice");
+        assert_eq!(styles[1].font, Some((0xFF, 0x00, 0x00)));
+    }
+
+    #[test]
+    fn multibyte_font_colors_are_rejected_not_a_panic() {
+        // the same crafted-hex attack as fills, through the fonts entrance
+        let styles = r#"<styleSheet>
+            <fonts count="2">
+                <font/>
+                <font><color rgb="Aあ12"/></font>
+            </fonts>
+            <cellXfs count="1">
+                <xf fontId="1"/>
+            </cellXfs>
+        </styleSheet>"#;
+        let styles = parse_styles(styles, &default_palette()).unwrap();
+        assert_eq!(styles[0].font, None);
+    }
+
+    #[test]
     fn tint_lightens_and_darkens() {
         assert_eq!(apply_tint((100, 100, 100), 0.0), (100, 100, 100));
         assert_eq!(apply_tint((100, 200, 0), 0.5), (178, 228, 128));
@@ -723,6 +794,7 @@ mod tests {
             CellStyle {
                 format: Some("0%".to_string()),
                 fill: None,
+                font: None,
             },
         ]
     }

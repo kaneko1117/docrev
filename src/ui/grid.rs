@@ -10,7 +10,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::comment::CommentThread;
 use crate::domain::number_format::FormatColor;
-use crate::domain::sheet::{FillColor, Sheet};
+use crate::domain::sheet::{Rgb, Sheet};
 
 use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
 
@@ -65,18 +65,23 @@ fn format_fg(color: FormatColor) -> Color {
     }
 }
 
-/// The cell's format color, if its value carries one.
-fn cell_fg(cell: &CellValue, style: Style) -> Style {
-    match cell {
-        CellValue::FormattedNumber {
-            color: Some(color), ..
-        } => style.fg(format_fg(*color)),
+/// Text color precedence, matching Excel: a color from the number format
+/// (`[Red]` sections) wins over the cell's font color.
+fn cell_fg(cell: &CellValue, font: Option<Rgb>, style: Style) -> Style {
+    match (cell, font) {
+        (
+            CellValue::FormattedNumber {
+                color: Some(color), ..
+            },
+            _,
+        ) => style.fg(format_fg(*color)),
+        (_, Some(c)) => style.fg(Color::Rgb(c.r, c.g, c.b)),
         _ => style,
     }
 }
 
 /// Canvas painted with the workbook fill when the cell has one.
-fn filled_canvas(fill: Option<FillColor>) -> Style {
+fn filled_canvas(fill: Option<Rgb>) -> Style {
     match fill {
         Some(f) => canvas().bg(Color::Rgb(f.r, f.g, f.b)),
         None => canvas(),
@@ -254,7 +259,14 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                     filled_canvas(sheet.fill_at(anchor_row, anchor_col))
                 };
                 let base = if row == anchor_row {
-                    cell_fg(anchor_cell, base)
+                    // font color stays off while the cursor is inside so
+                    // light fonts remain readable on the selection blue
+                    let font = if merge.contains(cursor_row, cursor_col) {
+                        None
+                    } else {
+                        sheet.font_color_at(anchor_row, anchor_col)
+                    };
+                    cell_fg(anchor_cell, font, base)
                 } else {
                     base
                 };
@@ -316,8 +328,16 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
             } else {
                 pad_right(&clipped, span_width)
             };
+            // font color stays off on the cursor cell so light fonts remain
+            // readable on the selection blue
+            let font = if on_cursor {
+                None
+            } else {
+                sheet.font_color_at(row, col)
+            };
             let style = cell_fg(
                 cell,
+                font,
                 if on_cursor {
                     selected()
                 } else {
@@ -628,11 +648,78 @@ mod tests {
     }
 
     #[test]
+    fn font_colors_reach_the_terminal_but_format_colors_win() {
+        use std::collections::HashMap;
+
+        let white = Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let navy = Rgb {
+            r: 0x20,
+            g: 0x38,
+            b: 0x64,
+        };
+        let blue = Rgb { r: 0, g: 0, b: 255 };
+        let sheet = Sheet::new(
+            "フォント",
+            vec![vec![
+                CellValue::Text("白".into()),
+                CellValue::FormattedNumber {
+                    value: -5.0,
+                    text: "▲5".into(),
+                    color: Some(FormatColor::Red),
+                },
+                CellValue::Empty,
+            ]],
+        )
+        .with_fills(HashMap::from([((0, 0), navy)]))
+        .with_font_colors(HashMap::from([((0, 0), white), ((0, 1), blue)]));
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["フォント"],
+            active: 0,
+            cursor: (0, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
+        let mut scroll = Scroll::default();
+        terminal.draw(|f| draw(f, &view, &mut scroll)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let fg_of = |symbol: &str| {
+            (0..buffer.area.width).find_map(|x| {
+                (0..buffer.area.height).find_map(|y| {
+                    buffer
+                        .cell((x, y))
+                        .filter(|c| c.symbol() == symbol)
+                        .map(|c| c.fg)
+                })
+            })
+        };
+        assert_eq!(
+            fg_of("白"),
+            Some(Color::Rgb(255, 255, 255)),
+            "the font color must reach the glyph"
+        );
+        assert_eq!(
+            fg_of("▲"),
+            Some(format_fg(FormatColor::Red)),
+            "the [Red] format color beats the blue font"
+        );
+    }
+
+    #[test]
     fn fills_paint_backgrounds_and_stop_the_spill() {
         use std::collections::HashMap;
 
         let long = "この文章はとても長いのでスピルするはずの文字列";
-        let green = FillColor {
+        let green = Rgb {
             r: 0x00,
             g: 0xB0,
             b: 0x50,
