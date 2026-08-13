@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::comment::CommentThread;
+use crate::domain::number_format::FormatColor;
 use crate::domain::sheet::Sheet;
 
 use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
@@ -47,6 +48,31 @@ fn ruled(style: Style) -> Style {
     style
         .add_modifier(Modifier::UNDERLINED)
         .underline_color(GRIDLINE)
+}
+
+/// Number-format colors tuned for the white canvas: yellow and white as-is
+/// would be unreadable, so they get darkened stand-ins.
+fn format_fg(color: FormatColor) -> Color {
+    match color {
+        FormatColor::Red => Color::Rgb(217, 48, 37),
+        FormatColor::Blue => Color::Rgb(11, 87, 208),
+        FormatColor::Green => Color::Rgb(19, 115, 51),
+        FormatColor::Yellow => Color::Rgb(178, 138, 0),
+        FormatColor::Magenta => Color::Rgb(168, 37, 168),
+        FormatColor::Cyan => Color::Rgb(0, 131, 143),
+        FormatColor::Black => TEXT,
+        FormatColor::White => Color::Rgb(128, 134, 139),
+    }
+}
+
+/// The cell's format color, if its value carries one.
+fn cell_fg(cell: &CellValue, style: Style) -> Style {
+    match cell {
+        CellValue::FormattedNumber {
+            color: Some(color), ..
+        } => style.fg(format_fg(*color)),
+        _ => style,
+    }
 }
 
 fn column_label(index: u32) -> String {
@@ -206,8 +232,9 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                 let span_width: usize =
                     (col..segment_end).map(&width_of).sum::<usize>() + (span_cols - 1);
                 let (anchor_row, anchor_col) = merge.anchor();
+                let anchor_cell = sheet.cell(anchor_row, anchor_col);
                 let text = if row == anchor_row {
-                    cell_text(sheet.cell(anchor_row, anchor_col))
+                    cell_text(anchor_cell)
                 } else {
                     String::new()
                 };
@@ -216,6 +243,11 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
                     selected()
                 } else {
                     canvas()
+                };
+                let base = if row == anchor_row {
+                    cell_fg(anchor_cell, base)
+                } else {
+                    base
                 };
                 // the horizontal gridline only under the region's last row
                 let style = if row == merge.end_row {
@@ -239,7 +271,10 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
             let cell = sheet.cell(row, col);
             let text = cell_text(cell);
             let own_width = width_of(col);
-            let is_number = matches!(cell, CellValue::Number(_));
+            let is_number = matches!(
+                cell,
+                CellValue::Number(_) | CellValue::FormattedNumber { .. }
+            );
             let on_cursor = (row, col) == view.cursor;
 
             // Sheets-style overflow: text wider than its column spills over
@@ -272,7 +307,7 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
             } else {
                 pad_right(&clipped, span_width)
             };
-            let style = if on_cursor { selected() } else { canvas() };
+            let style = cell_fg(cell, if on_cursor { selected() } else { canvas() });
             spans.push(Span::styled(aligned, ruled(style)));
             col += span_cols;
         }
@@ -522,6 +557,58 @@ mod tests {
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 46, 7));
+    }
+
+    #[test]
+    fn formatted_numbers_render_right_aligned_and_colored() {
+        let sheet = Sheet::new(
+            "書式",
+            vec![vec![
+                CellValue::FormattedNumber {
+                    value: -1234.0,
+                    text: "▲1,234".into(),
+                    color: Some(FormatColor::Red),
+                },
+                CellValue::Number(5.0),
+            ]],
+        );
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["書式"],
+            active: 0,
+            cursor: (0, 1),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+        };
+        let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
+        let mut scroll = Scroll::default();
+        terminal.draw(|f| draw(f, &view, &mut scroll)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let text = buffer_text(buffer);
+        assert!(
+            text.contains("▲1,234│"),
+            "formatted number must sit flush right against the gridline:\n{text}"
+        );
+
+        let mut fg = None;
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                if let Some(cell) = buffer.cell((x, y))
+                    && cell.symbol() == "▲"
+                {
+                    fg = Some(cell.fg);
+                }
+            }
+        }
+        assert_eq!(
+            fg,
+            Some(format_fg(FormatColor::Red)),
+            "the [Red] tag must color the cell"
+        );
     }
 
     #[test]

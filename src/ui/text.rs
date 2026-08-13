@@ -7,6 +7,7 @@ pub(crate) fn cell_text(cell: &CellValue) -> String {
         CellValue::Empty => String::new(),
         CellValue::Text(s) | CellValue::DateTime(s) | CellValue::Error(s) => sanitize(s),
         CellValue::Number(n) => n.to_string(),
+        CellValue::FormattedNumber { text, .. } => sanitize(text),
         CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
     }
 }
