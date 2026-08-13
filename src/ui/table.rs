@@ -4,7 +4,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::sheet::Sheet;
 
-use super::text::{cell_text, center, clip, pad_left, pad_right};
+use super::text::{cell_text, center, clip, pad_left, pad_right, wrap};
 
 fn column_label(index: u32) -> String {
     Anchor::column_label(index)
@@ -20,10 +20,23 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
         return out;
     }
 
-    let texts: Vec<Vec<String>> = (0..sheet.row_count())
+    // wrapped lines per cell: text wraps at the cell-width cap (#33),
+    // numbers stay on one clipped line so digit groups never split
+    let texts: Vec<Vec<Vec<String>>> = (0..sheet.row_count())
         .map(|r| {
             (0..col_count)
-                .map(|c| clip(&cell_text(sheet.cell(r, c)), MAX_CELL_WIDTH))
+                .map(|c| {
+                    let cell = sheet.cell(r, c);
+                    let text = cell_text(cell);
+                    if matches!(
+                        cell,
+                        CellValue::Number(_) | CellValue::FormattedNumber { .. }
+                    ) {
+                        vec![clip(&text, MAX_CELL_WIDTH)]
+                    } else {
+                        wrap(&text, MAX_CELL_WIDTH)
+                    }
+                })
                 .collect()
         })
         .collect();
@@ -34,6 +47,7 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
             let body = texts
                 .iter()
                 .filter_map(|row| row.get(c))
+                .flat_map(|lines| lines.iter())
                 .map(|t| t.width())
                 .max()
                 .unwrap_or(0);
@@ -67,22 +81,30 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
     out.push_str(&border('├', '┼', '┤'));
 
     for (r, row) in texts.iter().enumerate() {
-        out.push('│');
-        out.push_str(&format!(" {:>rw$} ", r + 1, rw = row_label_width));
-        for (c, text) in row.iter().enumerate() {
-            let w = col_widths.get(c).copied().unwrap_or(0);
-            let aligned = if matches!(
-                sheet.cell(r, c),
-                CellValue::Number(_) | CellValue::FormattedNumber { .. }
-            ) {
-                pad_left(text, w)
-            } else {
-                pad_right(text, w)
-            };
+        let height = row.iter().map(Vec::len).max().unwrap_or(1);
+        for sub in 0..height {
             out.push('│');
-            out.push_str(&format!(" {aligned} "));
+            if sub == 0 {
+                out.push_str(&format!(" {:>rw$} ", r + 1, rw = row_label_width));
+            } else {
+                out.push_str(&format!(" {} ", " ".repeat(row_label_width)));
+            }
+            for (c, lines) in row.iter().enumerate() {
+                let w = col_widths.get(c).copied().unwrap_or(0);
+                let text = lines.get(sub).map(String::as_str).unwrap_or("");
+                let aligned = if matches!(
+                    sheet.cell(r, c),
+                    CellValue::Number(_) | CellValue::FormattedNumber { .. }
+                ) {
+                    pad_left(text, w)
+                } else {
+                    pad_right(text, w)
+                };
+                out.push('│');
+                out.push_str(&format!(" {aligned} "));
+            }
+            out.push_str("│\n");
         }
-        out.push_str("│\n");
     }
 
     out.push_str(&border('└', '┴', '┘'));

@@ -12,7 +12,7 @@ use crate::domain::comment::CommentThread;
 use crate::domain::number_format::FormatColor;
 use crate::domain::sheet::{Rgb, Sheet};
 
-use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize};
+use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize, wrap};
 
 pub const DEFAULT_CELL_WIDTH: usize = 12;
 /// Formula bar + header line + tab bar + status bar.
@@ -196,11 +196,42 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
     };
 
     let (cursor_row, cursor_col) = view.cursor;
-    follow_cursor(&mut scroll.top, cursor_row, rows_visible);
     follow_col(&mut scroll.left, cursor_col, avail, &width_of);
-
-    let last_row = (scroll.top + rows_visible).min(sheet.row_count());
     let last_col = last_visible_col(scroll.left, sheet.col_count(), avail, &width_of);
+
+    // Wrapped text makes row heights variable: a sheet row is as tall as
+    // its tallest visible cell. Numbers stay single-line (#33), and a
+    // merged region wraps at the merged width, counted on its anchor row.
+    let height_of = |row: usize| -> usize {
+        let mut height = 1;
+        let mut col = scroll.left;
+        while col < last_col {
+            if let Some(merge) = sheet.merge_at(row, col) {
+                let segment_end = (merge.end_col + 1).min(last_col);
+                if row == merge.start_row {
+                    let span_cols = segment_end - col;
+                    let span_width: usize =
+                        (col..segment_end).map(&width_of).sum::<usize>() + (span_cols - 1);
+                    let (anchor_row, anchor_col) = merge.anchor();
+                    let text = cell_text(sheet.cell(anchor_row, anchor_col));
+                    height = height.max(wrap(&text, span_width).len());
+                }
+                col = segment_end;
+                continue;
+            }
+            let cell = sheet.cell(row, col);
+            let is_number = matches!(
+                cell,
+                CellValue::Number(_) | CellValue::FormattedNumber { .. }
+            );
+            if !is_number && !cell.is_empty() {
+                height = height.max(wrap(&cell_text(cell), width_of(col)).len());
+            }
+            col += 1;
+        }
+        height
+    };
+    follow_row_wrapped(&mut scroll.top, cursor_row, rows_visible, &height_of);
 
     let mut lines = Vec::with_capacity(rows_visible + 1);
     let mut header_line = vec![Span::styled(
@@ -216,151 +247,178 @@ fn draw_grid(frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll
     }
     lines.push(Line::from(header_line));
 
-    for row in scroll.top..last_row {
-        let mut spans = vec![Span::styled(
-            pad_left(&(row + 1).to_string(), row_label_width),
-            ruled(header_style),
-        )];
-        let mut col = scroll.left;
-        while col < last_col {
-            // A merged region renders as one cell: the value on its anchor
-            // row spanning all its columns, no gridlines inside, and the
-            // whole region highlights when the cursor is anywhere in it.
-            // A thread on ANY of its cells shows one ● on the first
-            // visible row.
-            if let Some(merge) = sheet.merge_at(row, col) {
-                let first_visible_row = merge.start_row.max(scroll.top);
-                let region_marked = row == first_visible_row
-                    && view.markers.iter().any(|(r, c)| merge.contains(*r, *c));
-                if region_marked {
-                    spans.push(Span::styled(
-                        "●",
-                        ruled(Style::new().bg(CANVAS_BG).fg(MARKER_FG)),
-                    ));
-                } else {
-                    spans.push(Span::styled("│", ruled(canvas().fg(GRIDLINE))));
-                }
-                let segment_end = (merge.end_col + 1).min(last_col);
-                let span_cols = segment_end - col;
-                let span_width: usize =
-                    (col..segment_end).map(&width_of).sum::<usize>() + (span_cols - 1);
-                let (anchor_row, anchor_col) = merge.anchor();
-                let anchor_cell = sheet.cell(anchor_row, anchor_col);
-                let text = if row == anchor_row {
-                    cell_text(anchor_cell)
-                } else {
-                    String::new()
-                };
-                let aligned = pad_right(&clip(&text, span_width), span_width);
-                let base = if merge.contains(cursor_row, cursor_col) {
-                    selected()
-                } else {
-                    // the anchor's fill paints the whole merged region
-                    filled_canvas(sheet.fill_at(anchor_row, anchor_col))
-                };
-                let base = if row == anchor_row {
-                    // font color stays off while the cursor is inside so
-                    // light fonts remain readable on the selection blue
-                    let font = if merge.contains(cursor_row, cursor_col) {
-                        None
+    let mut used = 0;
+    let mut row = scroll.top;
+    while used < rows_visible && row < sheet.row_count() {
+        let height = height_of(row);
+        for sub in 0..height {
+            if used >= rows_visible {
+                break;
+            }
+            // the horizontal gridline sits under a sheet row's LAST line
+            let last_line = sub + 1 == height;
+            let rule = |style: Style| if last_line { ruled(style) } else { style };
+            let label = if sub == 0 {
+                pad_left(&(row + 1).to_string(), row_label_width)
+            } else {
+                " ".repeat(row_label_width)
+            };
+            let mut spans = vec![Span::styled(label, rule(header_style))];
+            let mut col = scroll.left;
+            while col < last_col {
+                // A merged region renders as one cell: the value on its
+                // anchor row wrapped to the merged width, no gridlines
+                // inside, and the whole region highlights when the cursor
+                // is anywhere in it. A thread on ANY of its cells shows
+                // one ● on the first visible line.
+                if let Some(merge) = sheet.merge_at(row, col) {
+                    let first_visible_row = merge.start_row.max(scroll.top);
+                    let region_marked = row == first_visible_row
+                        && sub == 0
+                        && view.markers.iter().any(|(r, c)| merge.contains(*r, *c));
+                    if region_marked {
+                        spans.push(Span::styled(
+                            "●",
+                            rule(Style::new().bg(CANVAS_BG).fg(MARKER_FG)),
+                        ));
                     } else {
-                        sheet.font_color_at(anchor_row, anchor_col)
+                        spans.push(Span::styled("│", rule(canvas().fg(GRIDLINE))));
+                    }
+                    let segment_end = (merge.end_col + 1).min(last_col);
+                    let span_cols = segment_end - col;
+                    let span_width: usize =
+                        (col..segment_end).map(&width_of).sum::<usize>() + (span_cols - 1);
+                    let (anchor_row, anchor_col) = merge.anchor();
+                    let anchor_cell = sheet.cell(anchor_row, anchor_col);
+                    let text = if row == anchor_row {
+                        wrap(&cell_text(anchor_cell), span_width)
+                            .get(sub)
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
                     };
-                    cell_fg(anchor_cell, font, base)
-                } else {
-                    base
-                };
-                // the horizontal gridline only under the region's last row
-                let style = if row == merge.end_row {
-                    ruled(base)
-                } else {
-                    base
-                };
-                spans.push(Span::styled(aligned, style));
-                col += span_cols;
-                continue;
-            }
-
-            let fill = sheet.fill_at(row, col);
-            if view.markers.contains(&(row, col)) {
-                spans.push(Span::styled("●", ruled(filled_canvas(fill).fg(MARKER_FG))));
-            } else {
-                spans.push(Span::styled("│", ruled(canvas().fg(GRIDLINE))));
-            }
-            let cell = sheet.cell(row, col);
-            let text = cell_text(cell);
-            let own_width = width_of(col);
-            let is_number = matches!(
-                cell,
-                CellValue::Number(_) | CellValue::FormattedNumber { .. }
-            );
-            let on_cursor = (row, col) == view.cursor;
-
-            // Sheets-style overflow: text wider than its column spills over
-            // empty neighbors (never numbers; a marker, data, a merged
-            // region, a fill or the cursor stops it; disabled on the cursor
-            // and on filled cells so their boxes keep clean edges).
-            let mut span_cols = 1;
-            let mut span_width = own_width;
-            if !is_number
-                && !on_cursor
-                && fill.is_none()
-                && unicode_width::UnicodeWidthStr::width(text.as_str()) > own_width
-            {
-                let mut next = col + 1;
-                while next < last_col
-                    && unicode_width::UnicodeWidthStr::width(text.as_str()) > span_width
-                    && sheet.cell(row, next).is_empty()
-                    && sheet.merge_at(row, next).is_none()
-                    && sheet.fill_at(row, next).is_none()
-                    && !view.markers.contains(&(row, next))
-                    && (row, next) != view.cursor
-                {
-                    span_width += 1 + width_of(next);
-                    span_cols += 1;
-                    next += 1;
+                    let aligned = pad_right(&clip(&text, span_width), span_width);
+                    let base = if merge.contains(cursor_row, cursor_col) {
+                        selected()
+                    } else {
+                        // the anchor's fill paints the whole merged region
+                        filled_canvas(sheet.fill_at(anchor_row, anchor_col))
+                    };
+                    let base = if row == anchor_row {
+                        // font color stays off while the cursor is inside so
+                        // light fonts remain readable on the selection blue
+                        let font = if merge.contains(cursor_row, cursor_col) {
+                            None
+                        } else {
+                            sheet.font_color_at(anchor_row, anchor_col)
+                        };
+                        cell_fg(anchor_cell, font, base)
+                    } else {
+                        base
+                    };
+                    // the horizontal gridline only under the region's last row
+                    let style = if row == merge.end_row && last_line {
+                        ruled(base)
+                    } else {
+                        base
+                    };
+                    spans.push(Span::styled(aligned, style));
+                    col += span_cols;
+                    continue;
                 }
-            }
 
-            let clipped = clip(&text, span_width);
-            let aligned = if is_number {
-                pad_left(&clipped, span_width)
-            } else {
-                pad_right(&clipped, span_width)
-            };
-            // font color stays off on the cursor cell so light fonts remain
-            // readable on the selection blue
-            let font = if on_cursor {
-                None
-            } else {
-                sheet.font_color_at(row, col)
-            };
-            let style = cell_fg(
-                cell,
-                font,
-                if on_cursor {
-                    selected()
+                let fill = sheet.fill_at(row, col);
+                if sub == 0 && view.markers.contains(&(row, col)) {
+                    spans.push(Span::styled("●", rule(filled_canvas(fill).fg(MARKER_FG))));
                 } else {
-                    filled_canvas(fill)
-                },
-            );
-            spans.push(Span::styled(aligned, ruled(style)));
-            col += span_cols;
+                    spans.push(Span::styled("│", rule(canvas().fg(GRIDLINE))));
+                }
+                let cell = sheet.cell(row, col);
+                let own_width = width_of(col);
+                let is_number = matches!(
+                    cell,
+                    CellValue::Number(_) | CellValue::FormattedNumber { .. }
+                );
+                let on_cursor = (row, col) == view.cursor;
+
+                // text wraps within the column (#33); numbers stay on one
+                // right-aligned line so digit groups never split
+                let line_text = if is_number {
+                    if sub == 0 {
+                        cell_text(cell)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    wrap(&cell_text(cell), own_width)
+                        .get(sub)
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                let clipped = clip(&line_text, own_width);
+                let aligned = if is_number {
+                    pad_left(&clipped, own_width)
+                } else {
+                    pad_right(&clipped, own_width)
+                };
+                // font color stays off on the cursor cell so light fonts
+                // remain readable on the selection blue
+                let font = if on_cursor {
+                    None
+                } else {
+                    sheet.font_color_at(row, col)
+                };
+                let style = cell_fg(
+                    cell,
+                    font,
+                    if on_cursor {
+                        selected()
+                    } else {
+                        filled_canvas(fill)
+                    },
+                );
+                spans.push(Span::styled(aligned, rule(style)));
+                col += 1;
+            }
+            lines.push(Line::from(spans));
+            used += 1;
         }
-        lines.push(Line::from(spans));
+        row += 1;
     }
     frame.render_widget(Paragraph::new(lines).style(canvas()), area);
 }
 
-/// Keeps the cursor inside the visible window by moving the scroll origin.
-fn follow_cursor(origin: &mut usize, cursor: usize, visible: usize) {
+/// Keeps the cursor row inside the visible window when rows have variable
+/// heights. A cursor row taller than the window scrolls to its first line.
+fn follow_row_wrapped(
+    top: &mut usize,
+    cursor: usize,
+    visible: usize,
+    height_of: &impl Fn(usize) -> usize,
+) {
     if visible == 0 {
         return;
     }
-    if cursor < *origin {
-        *origin = cursor;
-    } else if cursor >= *origin + visible {
-        *origin = cursor + 1 - visible;
+    if cursor < *top {
+        *top = cursor;
+        return;
+    }
+    // heights are at least 1, so more than `visible` rows above the cursor
+    // can never fit — jump close before fine-tuning
+    if cursor >= *top + visible {
+        *top = cursor + 1 - visible;
+    }
+    while *top < cursor {
+        let mut span = 0;
+        let fits = (*top..=cursor).all(|r| {
+            span += height_of(r);
+            span <= visible
+        });
+        if fits {
+            break;
+        }
+        *top += 1;
     }
 }
 
@@ -715,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn fills_paint_backgrounds_and_stop_the_spill() {
+    fn fills_paint_backgrounds_while_text_wraps() {
         use std::collections::HashMap;
 
         let long = "この文章はとても長いのでスピルするはずの文字列";
@@ -758,11 +816,16 @@ mod tests {
         });
         assert!(painted, "the fill must reach the terminal background");
 
-        // the filled neighbor stops the overflow, so the long text clips
+        // the long text wraps inside its own column instead of spilling
+        // over the filled neighbor
         let text = buffer_text(buffer);
         assert!(
-            text.contains('…'),
-            "text must clip instead of spilling over the filled cell:\n{text}"
+            text.contains("ても長いので"),
+            "the text continues on a wrapped line:\n{text}"
+        );
+        assert!(
+            !text.contains('…'),
+            "wrapping leaves nothing to clip:\n{text}"
         );
     }
 
@@ -893,10 +956,10 @@ mod tests {
         insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 10));
     }
 
-    fn overflow_sheet() -> Sheet {
+    fn wrap_sheet() -> Sheet {
         let long = "あいうえおかきくけこさしすせそ"; // display width 30
         Sheet::new(
-            "OF",
+            "WR",
             vec![
                 vec![CellValue::Text(long.into())],
                 vec![CellValue::Text(long.into()), CellValue::Text("X".into())],
@@ -906,13 +969,13 @@ mod tests {
     }
 
     #[test]
-    fn overflow_spills_over_empty_cells_only() {
-        let sheet = overflow_sheet();
+    fn long_text_wraps_within_its_column() {
+        let sheet = wrap_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["OF"],
+            sheet_names: vec!["WR"],
             active: 0,
-            cursor: (2, 2),
+            cursor: (2, 1),
             markers: HashSet::new(),
             notice: None,
             thread: None,
@@ -920,15 +983,15 @@ mod tests {
             col_widths: vec![],
         };
         let mut scroll = Scroll::default();
-        insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 8));
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 12));
     }
 
     #[test]
-    fn cursor_on_the_source_cell_suppresses_overflow() {
-        let sheet = overflow_sheet();
+    fn wrapped_lines_carry_no_row_label_and_show_the_tail() {
+        let sheet = wrap_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["OF"],
+            sheet_names: vec!["WR"],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -937,37 +1000,61 @@ mod tests {
             editor: None,
             col_widths: vec![],
         };
-        let text = render_text(&view, &mut Scroll::default(), 50, 8);
-        let grid_row = text
+        let text = render_text(&view, &mut Scroll::default(), 50, 12);
+        // the full text is visible — wrapped, not clipped (the cursor cell
+        // wraps like any other); search bottom-up so the formula bar's
+        // full-text preview doesn't match first
+        let tail = text
             .lines()
-            .find(|l| l.starts_with(" 1│"))
-            .expect("first data row");
+            .rev()
+            .find(|l| l.contains("すせそ"))
+            .expect("wrapped tail line");
         assert!(
-            !grid_row.contains("さしすせそ"),
-            "overflow must be clipped while the cursor sits on the cell:\n{text}"
+            tail.starts_with("  │"),
+            "continuation lines have no row label: {tail:?}"
         );
     }
 
     #[test]
-    fn a_marker_blocks_overflow() {
-        let sheet = overflow_sheet();
+    fn numbers_never_wrap() {
+        let sheet = wrap_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["OF"],
+            sheet_names: vec!["WR"],
             active: 0,
-            cursor: (2, 2),
-            markers: HashSet::from([(0, 1)]),
+            cursor: (0, 0),
+            markers: HashSet::new(),
             notice: None,
             thread: None,
             editor: None,
             col_widths: vec![],
         };
-        let text = render_text(&view, &mut Scroll::default(), 50, 8);
-        assert!(text.contains('●'));
+        let text = render_text(&view, &mut Scroll::default(), 50, 12);
+        let number_row = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("3│"))
+            .expect("number row");
         assert!(
-            !text.contains("さしすせそ"),
-            "overflow must stop at a commented cell:\n{text}"
+            number_row.contains('…'),
+            "a too-wide number clips on one line instead of wrapping: {number_row:?}"
         );
+    }
+
+    #[test]
+    fn follow_row_wrapped_accounts_for_tall_rows() {
+        let heights = [3usize, 1, 1, 1, 1];
+        let h = |r: usize| heights[r];
+
+        let mut top = 0;
+        follow_row_wrapped(&mut top, 3, 4, &h);
+        assert_eq!(top, 1, "row 0 is 3 lines tall; rows 0-3 exceed 4 lines");
+
+        follow_row_wrapped(&mut top, 0, 4, &h);
+        assert_eq!(top, 0, "scrolling back up");
+
+        let mut top = 0;
+        follow_row_wrapped(&mut top, 0, 2, &h);
+        assert_eq!(top, 0, "a row taller than the window shows its top");
     }
 
     #[test]
@@ -1151,7 +1238,7 @@ mod tests {
     }
 
     #[test]
-    fn overflow_does_not_spill_into_a_merge() {
+    fn wrapping_stays_out_of_a_merge() {
         use crate::domain::sheet::MergedRange;
         let sheet = Sheet::new(
             "M",
@@ -1177,14 +1264,18 @@ mod tests {
             editor: None,
             col_widths: vec![],
         };
-        let text = render_text(&view, &mut Scroll::default(), 50, 6);
+        let text = render_text(&view, &mut Scroll::default(), 50, 9);
         let grid_row = text
             .lines()
             .find(|l| l.starts_with(" 1│"))
             .expect("data row");
         assert!(
-            !grid_row.contains("さしすせそ"),
-            "must not overflow into the merged cell:\n{text}"
+            !grid_row.contains("きくけこ"),
+            "the first line holds only the first wrapped segment:\n{text}"
+        );
+        assert!(
+            text.contains("すせそ"),
+            "the tail wraps below instead of entering the merge:\n{text}"
         );
     }
 

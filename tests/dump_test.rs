@@ -41,7 +41,14 @@ fn unknown_sheet_lists_available_names() {
 fn renders_edge_cases() {
     let view = dump(&XlsxSource, &fixture("edge.xlsx"), None).unwrap();
     let out = render(&view.sheet, view.position, view.total);
-    assert!(out.contains('…'), "long CJK text should be clipped");
+    assert!(
+        !out.contains('…'),
+        "long text wraps instead of clipping (#33)"
+    );
+    assert!(
+        out.contains("められるはずの文字列"),
+        "the wrapped tail is visible: {out}"
+    );
     assert!(out.contains("3.14"));
     assert!(out.contains("42"));
     assert!(out.contains("TRUE"));
