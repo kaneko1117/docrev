@@ -51,10 +51,18 @@ enum Token {
     Number,
 }
 
+/// Excel itself caps custom format codes at 255 characters; far beyond that
+/// the code is corrupt or hostile (format codes come from untrusted files,
+/// and a multi-megabyte digit run would make padding quadratic).
+const MAX_CODE_LEN: usize = 512;
+
 impl NumberFormat {
     pub fn parse(code: &str) -> Self {
         let trimmed = code.trim();
-        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("general") {
+        if trimmed.is_empty()
+            || trimmed.len() > MAX_CODE_LEN
+            || trimmed.eq_ignore_ascii_case("general")
+        {
             return Self {
                 kind: Kind::General,
             };
@@ -552,5 +560,18 @@ mod tests {
         let format = NumberFormat::parse("General");
         assert_eq!(format.format(120.0).text, "120");
         assert_eq!(format.format(80.5).text, "80.5");
+    }
+
+    #[test]
+    fn absurdly_long_codes_degrade_to_general_instantly() {
+        // a hostile styles.xml can carry a multi-megabyte digit run; padding
+        // to that many placeholders would be quadratic, so it must not parse
+        let bomb = "0".repeat(5_000_000);
+        let format = NumberFormat::parse(&bomb);
+        assert!(format.is_general());
+        assert_eq!(format.format(1.5).text, "1.5");
+
+        let frac_bomb = format!("0.{}", "0".repeat(5_000_000));
+        assert!(NumberFormat::parse(&frac_bomb).is_general());
     }
 }

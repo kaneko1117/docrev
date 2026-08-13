@@ -71,7 +71,10 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
         out.push_str(&format!(" {:>rw$} ", r + 1, rw = row_label_width));
         for (c, text) in row.iter().enumerate() {
             let w = col_widths.get(c).copied().unwrap_or(0);
-            let aligned = if matches!(sheet.cell(r, c), CellValue::Number(_)) {
+            let aligned = if matches!(
+                sheet.cell(r, c),
+                CellValue::Number(_) | CellValue::FormattedNumber { .. }
+            ) {
                 pad_left(text, w)
             } else {
                 pad_right(text, w)
