@@ -105,7 +105,13 @@ pub(crate) fn grid_layout(
     };
 
     let (cursor_row, cursor_col) = input.cursor;
-    follow_col(&mut scroll.left, cursor_col, avail, &width_of);
+    follow_col(
+        &mut scroll.left,
+        cursor_col,
+        sheet.col_count(),
+        avail,
+        &width_of,
+    );
     let last_col = last_visible_col(scroll.left, sheet.col_count(), avail, &width_of);
 
     // Wrapped text makes row heights variable: a sheet row is as tall as
@@ -300,7 +306,13 @@ fn follow_row_wrapped(
 }
 
 /// Horizontal variant for variable column widths.
-fn follow_col(left: &mut usize, cursor: usize, avail: usize, width_of: &impl Fn(usize) -> usize) {
+fn follow_col(
+    left: &mut usize,
+    cursor: usize,
+    col_count: usize,
+    avail: usize,
+    width_of: &impl Fn(usize) -> usize,
+) {
     if cursor < *left {
         *left = cursor;
         return;
@@ -311,6 +323,16 @@ fn follow_col(left: &mut usize, cursor: usize, avail: usize, width_of: &impl Fn(
             break;
         }
         *left += 1;
+    }
+    // Never leave blank space on the right while columns hide on the left —
+    // otherwise widening the grid (closing the sidebar) would keep the view
+    // scrolled where the narrower grid had pushed it.
+    while *left > 0 {
+        let span: usize = (*left - 1..col_count).map(|c| width_of(c) + 1).sum();
+        if span > avail {
+            break;
+        }
+        *left -= 1;
     }
 }
 
@@ -374,6 +396,38 @@ mod tests {
         let mut top = 0;
         follow_row_wrapped(&mut top, 0, 2, &h);
         assert_eq!(top, 0, "a row taller than the window shows its top");
+    }
+
+    #[test]
+    fn widening_the_grid_scrolls_back_instead_of_leaving_blank_space() {
+        // 8 columns of the default width; the cursor sits on the 7th
+        let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 8]]);
+        let markers = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (0, 6),
+            markers: &markers,
+            col_widths: &[],
+        };
+        let mut scroll = Scroll::default();
+
+        // narrow viewport (the sidebar is open) pushes the view right
+        grid_layout(&input, &Viewport { width: 46, rows: 5 }, &mut scroll);
+        let narrow_left = scroll.left;
+        assert!(narrow_left > 0, "the cursor forced a scroll");
+
+        // closing the sidebar widens it again: the view must come back
+        grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
+        let wide_left = scroll.left;
+        assert!(
+            wide_left < narrow_left,
+            "widening must scroll back, got {wide_left} (was {narrow_left})"
+        );
+
+        // and it must be stable: reopening and closing lands on the same place
+        grid_layout(&input, &Viewport { width: 46, rows: 5 }, &mut scroll);
+        grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
+        assert_eq!(scroll.left, wide_left, "the view must not drift");
     }
 
     #[test]
