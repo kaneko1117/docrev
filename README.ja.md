@@ -11,8 +11,18 @@
 ## インストール
 
 ```text
+# macOS / Linux
+brew install kaneko1117/tap/docrev
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/kaneko1117/docrev/releases/latest/download/docrev-installer.sh | sh
+
+# Windows
+powershell -c "irm https://github.com/kaneko1117/docrev/releases/latest/download/docrev-installer.ps1 | iex"
+
+# Rust の環境がある場合
 cargo install docrev
 ```
+
+macOS・Linux・Windows 向けのビルド済みバイナリは、各[リリース](https://github.com/kaneko1117/docrev/releases)に添付されています。
 
 ## 使い方
 

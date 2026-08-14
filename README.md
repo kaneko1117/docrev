@@ -14,8 +14,19 @@ formula bar) right in your terminal.
 ## Installation
 
 ```text
+# macOS / Linux
+brew install kaneko1117/tap/docrev
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/kaneko1117/docrev/releases/latest/download/docrev-installer.sh | sh
+
+# Windows
+powershell -c "irm https://github.com/kaneko1117/docrev/releases/latest/download/docrev-installer.ps1 | iex"
+
+# with a Rust toolchain
 cargo install docrev
 ```
+
+Prebuilt binaries for macOS, Linux and Windows are attached to every
+[release](https://github.com/kaneko1117/docrev/releases).
 
 ## Usage
 

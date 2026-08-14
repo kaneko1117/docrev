@@ -66,6 +66,10 @@ src/
   1 approval, admin bypass allowed) will be enforced when the repo goes public;
   until then the same rule applies by convention.
 - Keep every PR small — under 1000 lines including tests, ideally far less.
+- Commit messages follow **Conventional Commits** (`feat:`, `fix:`, `docs:`,
+  `refactor:`, `perf:`, `test:`, `chore:`; `feat!:` for a breaking change).
+  release-plz derives the version bump and the changelog from them, so a
+  mislabelled commit ships the wrong version.
 - The user reviews diffs in a live Hunk session and leaves inline comments there;
   fetch them with `hunk session comment list --type user` when the user says they
   commented, and reply inline via `hunk session comment apply`.

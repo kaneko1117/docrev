@@ -1,0 +1,22 @@
+[workspace]
+# cargo-dist owns the GitHub release: it reacts to the tag release-plz pushes
+# and creates the release with binaries and installers attached.
+git_release_enable = false
+git_tag_enable = true
+changelog_update = true
+# a release PR that only bumps the version is still worth seeing
+publish_allow_dirty = false
+
+[changelog]
+protect_breaking_commits = true
+commit_parsers = [
+    { message = "^feat", group = "Added" },
+    { message = "^fix", group = "Fixed" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Changed" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^chore", skip = true },
+    { message = "^test", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^build", skip = true },
+]
