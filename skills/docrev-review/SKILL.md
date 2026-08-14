@@ -43,7 +43,7 @@ writes atomically.
 
    Leave a thread open when you need the user's decision — say so in your reply.
 
-5. Tell the user to press `F5` in the docrev viewer to see your replies.
+5. Your replies appear in the user's open viewer automatically — no action needed on their side.
 
 ## Proactive findings
 
@@ -52,6 +52,22 @@ To flag something the user did not ask about, open a new thread:
 ```bash
 docrev comment add <file.xlsx> --cell "Sheet1!B3" --body "..." --author claude
 ```
+
+## Keep replies short
+
+Comments are read in a narrow sidebar, a few characters wider than a phone
+screen. Write for that space:
+
+- **Two or three short sentences.** Lead with the answer, not the reasoning.
+- One decision or fact per reply. Split unrelated points into their own threads.
+- No headings, no bullet lists, no code blocks — they wrap badly in the panel.
+- Reference cells by their address (`C5`), not by quoting their contents.
+- When something needs a long explanation, say the conclusion in the thread and
+  give the detail in the chat, where the user is already talking to you.
+
+Good: `Checked the source data — 150 is current. Updated C5 and resolved.`
+Too long: a paragraph explaining where the number came from, why it changed,
+and what else it affects.
 
 ## Rules
 

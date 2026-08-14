@@ -42,7 +42,6 @@ docrev dump file.xlsx   # シートをテキスト表として出力(--sheet <�
 | Tab / Shift+Tab | シート切替 |
 | c | セルにコメント(既にスレッドがあるセルでは返信) |
 | r | スレッドに返信 |
-| F5 | コメント再読込(エージェントの返信を反映) |
 | q / Ctrl+C | 終了 |
 
 コメントエディタ内: Enter = 改行、Ctrl+S = 保存、Esc = キャンセル。
@@ -70,7 +69,7 @@ mkdir -p ~/.claude/skills/docrev-review
 cp skills/docrev-review/SKILL.md ~/.claude/skills/docrev-review/
 ```
 
-あとはビューアでコメントを付けて Claude に「budget.xlsx にコメントした」と伝え、`F5` で返信を眺めるだけです。
+あとはビューアでコメントを付けて Claude に「budget.xlsx にコメントした」と伝えるだけ。返信はビューアが自動で拾って表示します。
 
 ## ライセンス
 

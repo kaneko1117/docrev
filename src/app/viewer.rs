@@ -10,7 +10,10 @@ use super::ports::{CommentStore, DocumentSource};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
-    Move { rows: isize, cols: isize },
+    Move {
+        rows: isize,
+        cols: isize,
+    },
     Top,
     Bottom,
     RowStart,
@@ -24,7 +27,9 @@ pub enum Event {
     Backspace,
     Submit,
     CancelEdit,
-    ReloadComments,
+    /// The frontend saw no input for a while — a chance to notice outside
+    /// changes (an agent replying) without any keypress.
+    Tick,
     Quit,
     Noop,
 }
@@ -38,6 +43,23 @@ pub trait Frontend {
 pub enum EditTarget {
     NewThread,
     Reply { thread_id: String },
+}
+
+/// Why a notice is on screen. A reload must not clear a save failure: the
+/// user would take the empty status bar for a successful save and press Esc,
+/// losing the text the editor is still holding.
+#[derive(Debug, Clone, PartialEq)]
+enum Notice {
+    Reload(String),
+    Save(String),
+}
+
+impl Notice {
+    fn text(&self) -> &str {
+        match self {
+            Notice::Reload(text) | Notice::Save(text) => text,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,9 +93,11 @@ pub struct Viewer {
     active: usize,
     quit: bool,
     comments: Vec<CommentThread>,
-    notice: Option<String>,
+    notice: Option<Notice>,
     mode: Mode,
     store: Box<dyn CommentStore>,
+    /// Store revision the loaded comments came from.
+    revision: Option<u64>,
 }
 
 impl Viewer {
@@ -85,17 +109,24 @@ impl Viewer {
         path: &Path,
     ) -> Result<Self, DocumentError> {
         let document = source.load(path)?;
+        // read the revision first: a write that lands while we are loading
+        // must look newer than what we loaded, not older
+        let revision = store.revision();
         let (comments, notice) = match store.load() {
             Ok(comments) => (comments, None),
-            Err(e) => (Vec::new(), Some(format!("comments unavailable: {e}"))),
+            Err(e) => (
+                Vec::new(),
+                Some(Notice::Reload(format!("comments unavailable: {e}"))),
+            ),
         };
-        Self::from_document(document, comments, notice, store)
+        Self::from_document(document, comments, notice, revision, store)
     }
 
     fn from_document(
         document: Document,
         comments: Vec<CommentThread>,
-        notice: Option<String>,
+        notice: Option<Notice>,
+        revision: Option<u64>,
         store: Box<dyn CommentStore>,
     ) -> Result<Self, DocumentError> {
         let mut sheets = document.into_sheets().into_iter();
@@ -112,6 +143,7 @@ impl Viewer {
             comments,
             notice,
             mode: Mode::Grid,
+            revision,
             store,
         })
     }
@@ -121,7 +153,7 @@ impl Viewer {
     }
 
     pub fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+        self.notice.as_ref().map(Notice::text)
     }
 
     pub fn mode(&self) -> &Mode {
@@ -200,9 +232,33 @@ impl Viewer {
     }
 
     pub fn apply(&mut self, event: Event) {
+        // outside changes are picked up in either mode; typing is untouched
+        if event == Event::Tick {
+            self.reload_if_changed();
+            return;
+        }
         match self.mode {
             Mode::Grid => self.apply_grid(event),
             Mode::Editing { .. } => self.apply_editing(event),
+        }
+    }
+
+    /// Re-reads the comments when the store reports a new revision.
+    fn reload_if_changed(&mut self) {
+        let current = self.store.revision();
+        if current.is_none() || current == self.revision {
+            return;
+        }
+        self.revision = current;
+        match self.store.load() {
+            Ok(comments) => {
+                self.comments = comments;
+                // a save failure must survive: the editor still holds that text
+                if matches!(self.notice, Some(Notice::Reload(_))) {
+                    self.notice = None;
+                }
+            }
+            Err(e) => self.notice = Some(Notice::Reload(format!("comments unavailable: {e}"))),
         }
     }
 
@@ -250,16 +306,6 @@ impl Viewer {
                         },
                         buffer: String::new(),
                     };
-                }
-                return;
-            }
-            Event::ReloadComments => {
-                match self.store.load() {
-                    Ok(comments) => {
-                        self.comments = comments;
-                        self.notice = None;
-                    }
-                    Err(e) => self.notice = Some(format!("comments unavailable: {e}")),
                 }
                 return;
             }
@@ -323,8 +369,11 @@ impl Viewer {
                 }
                 self.mode = Mode::Grid;
                 self.notice = None; // a stale "save failed" would lie now
+                // deliberately NOT refreshing `revision` here: our own write
+                // makes the next tick reload, which is how a write an agent
+                // made while the user was typing gets picked up
             }
-            Err(e) => self.notice = Some(format!("save failed: {e}")),
+            Err(e) => self.notice = Some(Notice::Save(format!("save failed: {e}"))),
         }
     }
 }
@@ -443,7 +492,9 @@ mod tests {
             Sheet::new("one", grid),
             Sheet::new("two", vec![vec![CellValue::Bool(true)]]),
         ]);
-        Viewer::from_document(doc, comments, None, store).unwrap()
+        // mirror `open`: the revision is read before the comments are loaded
+        let revision = store.revision();
+        Viewer::from_document(doc, comments, None, revision, store).unwrap()
     }
 
     fn type_text(v: &mut Viewer, text: &str) {
@@ -471,8 +522,14 @@ mod tests {
     #[test]
     fn empty_document_is_rejected() {
         assert!(
-            Viewer::from_document(Document::new(vec![]), Vec::new(), None, Box::new(NullStore))
-                .is_err()
+            Viewer::from_document(
+                Document::new(vec![]),
+                Vec::new(),
+                None,
+                None,
+                Box::new(NullStore)
+            )
+            .is_err()
         );
     }
 
@@ -615,7 +672,7 @@ mod tests {
         let comments = vec![thread("one", 0, 1, false)];
         let store = RecordingStore::default();
         let log = store.log.clone();
-        let mut v = Viewer::from_document(doc, comments, None, Box::new(store)).unwrap();
+        let mut v = Viewer::from_document(doc, comments, None, None, Box::new(store)).unwrap();
         assert!(v.thread_at_cursor().is_some(), "found from A1");
         v.apply(Event::Move { rows: 0, cols: 2 });
         assert!(v.thread_at_cursor().is_some(), "found from C1");
@@ -649,7 +706,7 @@ mod tests {
         ]);
         let store2 = RecordingStore::default();
         let log2 = store2.log.clone();
-        let mut v2 = Viewer::from_document(doc2, Vec::new(), None, Box::new(store2)).unwrap();
+        let mut v2 = Viewer::from_document(doc2, Vec::new(), None, None, Box::new(store2)).unwrap();
         v2.apply(Event::Move { rows: 0, cols: 1 }); // B1, interior, no thread yet
         v2.apply(Event::StartComment);
         type_text(&mut v2, "on merge");
@@ -662,23 +719,132 @@ mod tests {
         drop(log);
     }
 
-    #[test]
-    fn reload_picks_up_new_comments() {
-        #[derive(Clone, Default)]
-        struct SharedStore {
-            threads: Rc<RefCell<Vec<CommentThread>>>,
+    /// A store an "agent" can edit behind the viewer's back.
+    #[derive(Clone, Default)]
+    struct SharedStore {
+        threads: Rc<RefCell<Vec<CommentThread>>>,
+        revision: Rc<RefCell<u64>>,
+        loads: Rc<RefCell<usize>>,
+        broken: Rc<RefCell<bool>>,
+    }
+
+    impl SharedStore {
+        /// Simulates an outside write: new content plus a new revision.
+        fn write_from_outside(&self, threads: Vec<CommentThread>) {
+            *self.threads.borrow_mut() = threads;
+            *self.revision.borrow_mut() += 1;
         }
-        impl CommentStore for SharedStore {
+    }
+
+    impl CommentStore for SharedStore {
+        fn revision(&self) -> Option<u64> {
+            Some(*self.revision.borrow())
+        }
+        fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
+            *self.loads.borrow_mut() += 1;
+            if *self.broken.borrow() {
+                return Err(StoreError("invalid sidecar".into()));
+            }
+            Ok(self.threads.borrow().clone())
+        }
+        fn add_thread(&mut self, _: Anchor, _: &str, _: &str) -> Result<CommentThread, StoreError> {
+            Err(StoreError("read only".into()))
+        }
+        fn add_reply(&mut self, _: &str, _: &str, _: &str) -> Result<CommentThread, StoreError> {
+            Err(StoreError("read only".into()))
+        }
+        fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
+            Err(StoreError("read only".into()))
+        }
+    }
+
+    #[test]
+    fn a_tick_picks_up_an_agents_reply() {
+        let store = SharedStore::default();
+        let shared = store.clone();
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        assert!(v.unresolved_on_active_sheet().is_empty());
+
+        shared.write_from_outside(vec![thread("one", 1, 1, false)]);
+        v.apply(Event::Tick);
+        assert_eq!(v.unresolved_on_active_sheet(), vec![(1, 1)]);
+    }
+
+    #[test]
+    fn ticks_do_not_re_read_an_unchanged_store() {
+        let store = SharedStore::default();
+        let shared = store.clone();
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        let before = *shared.loads.borrow();
+        for _ in 0..10 {
+            v.apply(Event::Tick);
+        }
+        assert_eq!(*shared.loads.borrow(), before, "idle ticks stay cheap");
+    }
+
+    #[test]
+    fn a_tick_reloads_while_editing_without_touching_the_buffer() {
+        let store = SharedStore::default();
+        let shared = store.clone();
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "half-typed");
+
+        shared.write_from_outside(vec![thread("one", 2, 2, false)]);
+        v.apply(Event::Tick);
+
+        assert_eq!(v.unresolved_on_active_sheet(), vec![(2, 2)]);
+        match v.mode() {
+            Mode::Editing { buffer, .. } => assert_eq!(buffer, "half-typed"),
+            other => panic!("still editing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_reload_surfaces_a_notice() {
+        let store = SharedStore::default();
+        let shared = store.clone();
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        *shared.broken.borrow_mut() = true;
+        *shared.revision.borrow_mut() += 1;
+        v.apply(Event::Tick);
+        assert!(v.notice().unwrap().contains("comments unavailable"));
+    }
+
+    /// The review's headline finding: an agent writing while the user typed
+    /// used to be stamped as "already seen" by the save, hiding it forever.
+    #[test]
+    fn a_save_does_not_swallow_an_agents_concurrent_write() {
+        #[derive(Clone, Default)]
+        struct WritableStore {
+            threads: Rc<RefCell<Vec<CommentThread>>>,
+            revision: Rc<RefCell<u64>>,
+        }
+        impl CommentStore for WritableStore {
+            fn revision(&self) -> Option<u64> {
+                Some(*self.revision.borrow())
+            }
             fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
                 Ok(self.threads.borrow().clone())
             }
             fn add_thread(
                 &mut self,
-                _: Anchor,
-                _: &str,
-                _: &str,
+                anchor: Anchor,
+                body: &str,
+                author: &str,
             ) -> Result<CommentThread, StoreError> {
-                Err(StoreError("read only".into()))
+                let thread = CommentThread {
+                    id: format!("mine-{}", self.threads.borrow().len()),
+                    anchor,
+                    author: author.into(),
+                    body: body.into(),
+                    created_at: "2026-08-14T00:00:00Z".into(),
+                    resolved: false,
+                    replies: Vec::new(),
+                };
+                self.threads.borrow_mut().push(thread.clone());
+                *self.revision.borrow_mut() += 1;
+                Ok(thread)
             }
             fn add_reply(
                 &mut self,
@@ -686,21 +852,99 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<CommentThread, StoreError> {
-                Err(StoreError("read only".into()))
+                Err(StoreError("unused".into()))
             }
             fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
-                Err(StoreError("read only".into()))
+                Err(StoreError("unused".into()))
             }
         }
 
-        let store = SharedStore::default();
-        let shared = store.threads.clone();
+        let store = WritableStore::default();
+        let shared = store.clone();
         let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
-        assert!(v.unresolved_on_active_sheet().is_empty());
 
-        shared.borrow_mut().push(thread("one", 1, 1, false)); // an agent replied meanwhile
-        v.apply(Event::ReloadComments);
-        assert_eq!(v.unresolved_on_active_sheet(), vec![(1, 1)]);
+        // the user starts typing; no tick fires while keys keep arriving
+        v.apply(Event::StartComment);
+        type_text(&mut v, "mine");
+
+        // an agent writes to the same sidecar mid-typing
+        shared.threads.borrow_mut().push(thread("one", 2, 2, false));
+        *shared.revision.borrow_mut() += 1;
+
+        v.apply(Event::Submit);
+        v.apply(Event::Tick);
+
+        let mut seen = v.unresolved_on_active_sheet();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![(0, 0), (2, 2)],
+            "both the user's comment and the agent's must be visible"
+        );
+    }
+
+    #[test]
+    fn a_reload_does_not_erase_a_save_failure() {
+        #[derive(Clone, Default)]
+        struct FailingStore {
+            revision: Rc<RefCell<u64>>,
+        }
+        impl CommentStore for FailingStore {
+            fn revision(&self) -> Option<u64> {
+                Some(*self.revision.borrow())
+            }
+            fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
+                Ok(Vec::new())
+            }
+            fn add_thread(
+                &mut self,
+                _: Anchor,
+                _: &str,
+                _: &str,
+            ) -> Result<CommentThread, StoreError> {
+                Err(StoreError("disk full".into()))
+            }
+            fn add_reply(
+                &mut self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<CommentThread, StoreError> {
+                Err(StoreError("disk full".into()))
+            }
+            fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
+                Err(StoreError("disk full".into()))
+            }
+        }
+
+        let store = FailingStore::default();
+        let shared = store.clone();
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "precious");
+        v.apply(Event::Submit);
+        assert!(v.notice().unwrap().contains("save failed"));
+
+        // an unrelated agent write must not make the warning disappear
+        *shared.revision.borrow_mut() += 1;
+        v.apply(Event::Tick);
+        assert!(
+            v.notice().is_some_and(|n| n.contains("save failed")),
+            "the editor still holds unsaved text, so the warning must stay"
+        );
+        match v.mode() {
+            Mode::Editing { buffer, .. } => assert_eq!(buffer, "precious"),
+            other => panic!("editor should stay open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_store_without_a_revision_never_auto_reloads() {
+        let store = RecordingStore::default(); // uses the default revision(): None
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        v.apply(Event::Tick);
+        assert!(v.unresolved_on_active_sheet().is_empty());
+        assert_eq!(v.notice(), None);
     }
 
     #[test]
