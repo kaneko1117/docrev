@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
 
@@ -5,6 +7,9 @@ use crate::app::error::FrontendError;
 use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Viewer};
 use crate::domain::anchor::Anchor;
 use crate::ui::grid::{self, EditorView, GridView, Scroll};
+
+/// How long the viewer waits for input before checking for outside changes.
+const TICK: Duration = Duration::from_millis(500);
 
 pub struct TerminalFrontend {
     terminal: DefaultTerminal,
@@ -80,6 +85,11 @@ impl Frontend for TerminalFrontend {
 
     fn next_event(&mut self) -> Result<Event, FrontendError> {
         loop {
+            // waking up regularly is what lets agent replies appear without
+            // a keypress; the tick itself costs one `stat` upstream
+            if !event::poll(TICK).map_err(|e| FrontendError(e.to_string()))? {
+                return Ok(Event::Tick);
+            }
             match event::read().map_err(|e| FrontendError(e.to_string()))? {
                 TermEvent::Key(key) if key.is_press() => {
                     return Ok(map_key(key, self.page_rows as isize, self.editing));
@@ -129,7 +139,6 @@ fn map_key(key: KeyEvent, page: isize, editing: bool) -> Event {
         KeyCode::End => Event::RowEnd,
         KeyCode::Tab => Event::NextSheet,
         KeyCode::BackTab => Event::PrevSheet,
-        KeyCode::F(5) => Event::ReloadComments,
         _ => Event::Noop,
     }
 }
@@ -157,7 +166,6 @@ mod tests {
             Event::StartComment
         );
         assert_eq!(map_key_grid(key(KeyCode::Char('r')), 10), Event::StartReply);
-        assert_eq!(map_key_grid(key(KeyCode::F(5)), 10), Event::ReloadComments);
     }
 
     #[test]

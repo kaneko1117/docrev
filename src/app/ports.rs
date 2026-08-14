@@ -13,6 +13,12 @@ pub trait DocumentSource {
 /// Comment persistence. Implementations assign ids and timestamps.
 pub trait CommentStore {
     fn load(&self) -> Result<Vec<CommentThread>, StoreError>;
+    /// A cheap token that changes whenever the backing store changes, so the
+    /// viewer can notice an agent's edits without re-reading the file.
+    /// `None` when the store cannot report one — auto-reload then stays off.
+    fn revision(&self) -> Option<u64> {
+        None
+    }
     fn add_thread(
         &mut self,
         anchor: Anchor,

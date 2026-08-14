@@ -63,6 +63,25 @@ impl JsonCommentStore {
 }
 
 impl CommentStore for JsonCommentStore {
+    /// Modification time and size folded together: mtime alone can have
+    /// one-second granularity, which would hide a quick second write.
+    /// A missing sidecar is `Some(0)`, so an agent creating one registers
+    /// as a change.
+    fn revision(&self) -> Option<u64> {
+        let metadata = match std::fs::metadata(&self.sidecar) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(0),
+            Err(_) => return None,
+        };
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as u64;
+        Some(modified.wrapping_mul(31).wrapping_add(metadata.len()))
+    }
+
     fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
         self.read()?
             .comments
@@ -290,6 +309,26 @@ mod tests {
     fn sidecar_path_appends_suffix() {
         let store = JsonCommentStore::for_document(Path::new("dir/budget.xlsx"));
         assert_eq!(store.sidecar, PathBuf::from("dir/budget.xlsx.docrev.json"));
+    }
+
+    #[test]
+    fn revision_changes_when_the_sidecar_changes() {
+        let document = temp_document();
+        let mut store = JsonCommentStore::for_document(&document);
+        assert_eq!(store.revision(), Some(0), "no sidecar yet");
+
+        store
+            .add_thread(Anchor::cell("s", 0, 0), "first", "user")
+            .unwrap();
+        let after_first = store.revision();
+        assert!(after_first.is_some_and(|r| r != 0), "writing changed it");
+        assert_eq!(store.revision(), after_first, "stable while untouched");
+
+        store
+            .add_thread(Anchor::cell("s", 1, 0), "second", "user")
+            .unwrap();
+        assert_ne!(store.revision(), after_first, "a second write is visible");
+        cleanup(&document);
     }
 
     #[test]

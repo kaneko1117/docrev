@@ -35,7 +35,6 @@ docrev dump file.xlsx   # print a sheet as a text table (--sheet <name> to pick 
 | Tab / Shift+Tab | Next / previous sheet |
 | c | Comment on the cell (replies when the cell already has an open thread) |
 | r | Reply to the thread on the cell |
-| F5 | Reload comments (pick up agent replies without restarting) |
 | q / Ctrl+C | Quit |
 
 In the comment editor: Enter inserts a newline, Ctrl+S saves, Esc cancels.
@@ -69,7 +68,7 @@ cp skills/docrev-review/SKILL.md ~/.claude/skills/docrev-review/
 ```
 
 Then comment on cells in the viewer, tell Claude "I commented on budget.xlsx",
-and press `F5` to watch the replies arrive.
+and watch the replies appear — the viewer picks them up on its own.
 
 ## License
 
