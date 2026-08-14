@@ -6,6 +6,7 @@ rust-version = "1.85"
 description = "A terminal document viewer with inline review comments, designed for AI agent workflows"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kaneko1117/docrev"
+homepage = "https://github.com/kaneko1117/docrev"
 readme = "README.md"
 keywords = ["excel", "xlsx", "tui", "review", "agent"]
 categories = ["command-line-utilities"]
@@ -26,3 +27,8 @@ zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 insta = "1.48.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
