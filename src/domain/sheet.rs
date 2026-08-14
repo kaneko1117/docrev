@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::cell::CellValue;
+use super::number_format::FormatColor;
 
 /// A color inherited from the workbook (cell background or font), sRGB.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -8,6 +9,15 @@ pub struct Rgb {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+}
+
+/// The color a cell's text takes, after Excel's precedence rules.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextColor {
+    /// From the number format (`[Red]` sections) — a named Excel color.
+    Format(FormatColor),
+    /// The cell's font color.
+    Font(Rgb),
 }
 
 /// An inclusive rectangle of merged cells; the value lives at the anchor
@@ -91,6 +101,44 @@ impl Sheet {
         self.col_widths.get(col).copied().flatten()
     }
 
+    /// The value a cell displays: inside a merged region that is the
+    /// region's anchor (top-left) value, which is where the workbook keeps it.
+    pub fn display_cell(&self, row: usize, col: usize) -> &CellValue {
+        match self.merge_at(row, col) {
+            Some(merge) => {
+                let (anchor_row, anchor_col) = merge.anchor();
+                self.cell(anchor_row, anchor_col)
+            }
+            None => self.cell(row, col),
+        }
+    }
+
+    /// The fill a cell paints with: inside a merged region the anchor's fill
+    /// covers the whole region.
+    pub fn display_fill_at(&self, row: usize, col: usize) -> Option<Rgb> {
+        let (row, col) = match self.merge_at(row, col) {
+            Some(merge) => merge.anchor(),
+            None => (row, col),
+        };
+        self.fill_at(row, col)
+    }
+
+    /// Excel's text-color precedence: a color carried by the number format
+    /// (`[Red]` sections) wins over the cell's font color. Inside a merged
+    /// region the anchor's styling applies to the whole region.
+    pub fn text_color_at(&self, row: usize, col: usize) -> Option<TextColor> {
+        let (row, col) = match self.merge_at(row, col) {
+            Some(merge) => merge.anchor(),
+            None => (row, col),
+        };
+        match self.cell(row, col) {
+            CellValue::FormattedNumber {
+                color: Some(color), ..
+            } => Some(TextColor::Format(*color)),
+            _ => self.font_color_at(row, col).map(TextColor::Font),
+        }
+    }
+
     pub fn merge_at(&self, row: usize, col: usize) -> Option<&MergedRange> {
         self.merges.iter().find(|m| m.contains(row, col))
     }
@@ -135,5 +183,81 @@ mod tests {
         );
         assert_eq!(sheet.row_count(), 2);
         assert_eq!(sheet.col_count(), 2);
+    }
+
+    fn merged_sheet() -> Sheet {
+        Sheet::new(
+            "s",
+            vec![
+                vec![
+                    CellValue::Text("title".into()),
+                    CellValue::Empty,
+                    CellValue::Empty,
+                ],
+                vec![CellValue::Text("plain".into())],
+            ],
+        )
+        .with_merges(vec![MergedRange {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 2,
+        }])
+    }
+
+    #[test]
+    fn display_cell_resolves_a_merge_to_its_anchor() {
+        let sheet = merged_sheet();
+        assert_eq!(sheet.cell(0, 2), &CellValue::Empty, "the raw cell is empty");
+        assert_eq!(
+            sheet.display_cell(0, 2),
+            &CellValue::Text("title".into()),
+            "but it displays the region's anchor value"
+        );
+        assert_eq!(
+            sheet.display_cell(1, 0),
+            &CellValue::Text("plain".into()),
+            "cells outside a merge are unaffected"
+        );
+    }
+
+    #[test]
+    fn format_color_wins_over_font_color() {
+        let red_number = CellValue::FormattedNumber {
+            value: -1.0,
+            text: "▲1".into(),
+            color: Some(FormatColor::Red),
+        };
+        let blue = Rgb { r: 0, g: 0, b: 255 };
+        let sheet = Sheet::new("s", vec![vec![red_number, CellValue::Text("x".into())]])
+            .with_font_colors(HashMap::from([((0, 0), blue), ((0, 1), blue)]));
+
+        assert_eq!(
+            sheet.text_color_at(0, 0),
+            Some(TextColor::Format(FormatColor::Red)),
+            "the number format's color wins"
+        );
+        assert_eq!(
+            sheet.text_color_at(0, 1),
+            Some(TextColor::Font(blue)),
+            "without a format color the font color applies"
+        );
+    }
+
+    #[test]
+    fn a_merged_region_takes_its_anchor_styling() {
+        let red = Rgb { r: 255, g: 0, b: 0 };
+        let sheet = merged_sheet()
+            .with_font_colors(HashMap::from([((0, 0), red)]))
+            .with_fills(HashMap::from([((0, 0), red)]));
+        assert_eq!(sheet.text_color_at(0, 2), Some(TextColor::Font(red)));
+        assert_eq!(sheet.display_fill_at(0, 2), Some(red));
+        assert_eq!(sheet.fill_at(0, 2), None, "the raw lookup stays raw");
+    }
+
+    #[test]
+    fn cells_without_styling_have_no_color() {
+        let sheet = Sheet::new("s", vec![vec![CellValue::Number(1.0)]]);
+        assert_eq!(sheet.text_color_at(0, 0), None);
     }
 }
