@@ -125,7 +125,9 @@ impl NumberFormat {
     }
 }
 
-fn general(value: f64) -> String {
+/// Excel's General rendering of a bare number — the fallback for cells with
+/// no (or an unsupported) format.
+pub(crate) fn general(value: f64) -> String {
     value.to_string()
 }
 

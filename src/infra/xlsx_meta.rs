@@ -560,7 +560,7 @@ fn parse_cell_styles(
                 let (Some(position), Some(style)) = (position, style) else {
                     continue;
                 };
-                if !styles.get(style).is_some_and(|s| !s.is_plain()) {
+                if styles.get(style).is_none_or(|s| s.is_plain()) {
                     continue;
                 }
                 cells.insert(position, style);

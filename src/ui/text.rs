@@ -2,14 +2,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::domain::cell::CellValue;
 
+/// The workbook's display text, made safe for a terminal line.
 pub(crate) fn cell_text(cell: &CellValue) -> String {
-    match cell {
-        CellValue::Empty => String::new(),
-        CellValue::Text(s) | CellValue::DateTime(s) | CellValue::Error(s) => sanitize(s),
-        CellValue::Number(n) => n.to_string(),
-        CellValue::FormattedNumber { text, .. } => sanitize(text),
-        CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-    }
+    sanitize(&cell.display_text())
 }
 
 /// Control characters would break the grid layout.
