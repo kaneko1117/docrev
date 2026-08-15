@@ -7,21 +7,24 @@ use crate::app::error::FrontendError;
 use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Viewer};
 use crate::domain::anchor::Anchor;
 use crate::ui::grid::{self, EditorView, GridView, Scroll};
+use crate::ui::theme::Theme;
 
 /// How long the viewer waits for input before checking for outside changes.
 const TICK: Duration = Duration::from_millis(500);
 
 pub struct TerminalFrontend {
     terminal: DefaultTerminal,
+    theme: Theme,
     scrolls: Vec<Scroll>,
     page_rows: usize,
     editing: bool,
 }
 
 impl TerminalFrontend {
-    pub fn new(terminal: DefaultTerminal) -> Self {
+    pub fn new(terminal: DefaultTerminal, theme: Theme) -> Self {
         Self {
             terminal,
+            theme,
             scrolls: Vec::new(),
             page_rows: 1,
             editing: false,
@@ -33,6 +36,7 @@ impl Frontend for TerminalFrontend {
     fn draw(&mut self, viewer: &Viewer) -> Result<(), FrontendError> {
         let Self {
             terminal,
+            theme,
             scrolls,
             page_rows,
             editing,
@@ -64,6 +68,7 @@ impl Frontend for TerminalFrontend {
             notice: viewer.notice(),
             thread: viewer.thread_at_cursor(),
             editor,
+            theme: *theme,
             col_widths: (0..viewer.sheet().col_count())
                 .map(|c| {
                     viewer

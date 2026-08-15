@@ -3,3 +3,4 @@ pub mod grid;
 pub(crate) mod layout;
 pub mod table;
 mod text;
+pub mod theme;
