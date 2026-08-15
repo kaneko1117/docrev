@@ -135,6 +135,9 @@ impl CommentStore for JsonCommentStore {
             body: body.to_string(),
             created_at: now(),
         });
+        // a reply reopens the thread: otherwise it is invisible to the viewer
+        // (no marker) and to agents (which list unresolved threads)
+        dto.resolved = false;
         let thread = dto.clone().into_domain()?;
         self.write(&file)?;
         Ok(thread)
@@ -353,6 +356,23 @@ mod tests {
         assert_eq!(reloaded[0].anchor.cell_ref(), "B3");
         assert_eq!(reloaded[0].replies.len(), 1);
         assert_eq!(reloaded[0].replies[0].author, "claude");
+        cleanup(&document);
+    }
+
+    #[test]
+    fn a_reply_reopens_a_resolved_thread() {
+        let document = temp_document();
+        let mut store = JsonCommentStore::for_document(&document);
+        let thread = store
+            .add_thread(Anchor::cell("s", 0, 0), "is this right?", "user")
+            .unwrap();
+        store.resolve(&thread.id).unwrap();
+
+        let replied = store.add_reply(&thread.id, "actually, no", "user").unwrap();
+        assert!(!replied.resolved, "the answer revives the conversation");
+        let reloaded = &store.load().unwrap()[0];
+        assert!(!reloaded.resolved);
+        assert_eq!(reloaded.replies.len(), 1);
         cleanup(&document);
     }
 

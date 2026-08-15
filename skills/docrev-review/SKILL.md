@@ -77,5 +77,7 @@ and what else it affects.
 - Errors exit non-zero with hints on stderr (an unknown sheet lists the
   available sheet names; cell references use the `Sheet!B3` form).
 - Filters for `list`: `--unresolved`, `--author <name>`, `--sheet <name>`.
+- Replying to a resolved thread reopens it. If the user answers a thread you
+  just closed, it comes back to you on the next `list --unresolved`.
 - The full sidecar schema is documented in `docs/sidecar.md` of the docrev
   repository.

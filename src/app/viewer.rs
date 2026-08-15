@@ -883,6 +883,83 @@ mod tests {
         );
     }
 
+    /// #41: the user answers a thread the agent resolved mid-composition.
+    /// The reply must come back into view rather than vanish.
+    #[test]
+    fn replying_to_a_thread_resolved_mid_composition_reopens_it() {
+        #[derive(Clone, Default)]
+        struct ThreadStore {
+            threads: Rc<RefCell<Vec<CommentThread>>>,
+            revision: Rc<RefCell<u64>>,
+        }
+        impl CommentStore for ThreadStore {
+            fn revision(&self) -> Option<u64> {
+                Some(*self.revision.borrow())
+            }
+            fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
+                Ok(self.threads.borrow().clone())
+            }
+            fn add_thread(
+                &mut self,
+                _: Anchor,
+                _: &str,
+                _: &str,
+            ) -> Result<CommentThread, StoreError> {
+                Err(StoreError("unused".into()))
+            }
+            fn add_reply(
+                &mut self,
+                thread_id: &str,
+                body: &str,
+                author: &str,
+            ) -> Result<CommentThread, StoreError> {
+                let mut threads = self.threads.borrow_mut();
+                let Some(t) = threads.iter_mut().find(|t| t.id == thread_id) else {
+                    return Err(StoreError(format!("no thread with id {thread_id}")));
+                };
+                t.replies.push(Reply {
+                    id: "r".into(),
+                    author: author.into(),
+                    body: body.into(),
+                    created_at: "2026-08-15T00:00:00Z".into(),
+                });
+                t.resolved = false; // the store's contract
+                *self.revision.borrow_mut() += 1;
+                Ok(t.clone())
+            }
+            fn resolve(&mut self, thread_id: &str) -> Result<(), StoreError> {
+                let mut threads = self.threads.borrow_mut();
+                if let Some(t) = threads.iter_mut().find(|t| t.id == thread_id) {
+                    t.resolved = true;
+                }
+                *self.revision.borrow_mut() += 1;
+                Ok(())
+            }
+        }
+
+        let store = ThreadStore::default();
+        let shared = store.clone();
+        shared.threads.borrow_mut().push(thread("one", 0, 0, false));
+        let mut v = viewer_with(3, 3, shared.threads.borrow().clone(), Box::new(store));
+
+        v.apply(Event::StartReply);
+        type_text(&mut v, "actually, no");
+
+        // the agent resolves it while the user is still typing
+        shared.threads.borrow_mut()[0].resolved = true;
+        *shared.revision.borrow_mut() += 1;
+
+        v.apply(Event::Submit);
+        v.apply(Event::Tick);
+
+        assert_eq!(
+            v.unresolved_on_active_sheet(),
+            vec![(0, 0)],
+            "the reply must bring the thread back, marker and all"
+        );
+        assert!(v.thread_at_cursor().is_some_and(|t| !t.resolved));
+    }
+
     #[test]
     fn a_reload_does_not_erase_a_save_failure() {
         #[derive(Clone, Default)]
