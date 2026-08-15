@@ -33,12 +33,34 @@ fn header(p: &Palette) -> Style {
     Style::new().bg(p.header_bg).fg(p.header_fg)
 }
 
+fn gridline_style(p: &Palette) -> Style {
+    if p.dim_chrome {
+        canvas(p).add_modifier(Modifier::DIM)
+    } else {
+        canvas(p).fg(p.gridline)
+    }
+}
+
 fn selected(p: &Palette) -> Style {
+    if p.reverse_selection {
+        return canvas(p).add_modifier(Modifier::REVERSED);
+    }
     Style::new().bg(p.selection_bg).fg(p.text)
+}
+
+fn chrome(p: &Palette) -> Style {
+    if p.dim_chrome {
+        canvas(p).add_modifier(Modifier::DIM)
+    } else {
+        header(p)
+    }
 }
 
 /// Horizontal gridlines without spending screen rows: a colored underline.
 fn ruled(p: &Palette, style: Style) -> Style {
+    if p.dim_chrome {
+        return style.add_modifier(Modifier::UNDERLINED);
+    }
     style
         .add_modifier(Modifier::UNDERLINED)
         .underline_color(p.gridline)
@@ -152,7 +174,7 @@ fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView)
             format!(" {address:<7}"),
             canvas(p).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("│ ", Style::new().bg(p.canvas_bg).fg(p.header_fg)),
+        Span::styled("│ ", chrome(p)),
         Span::styled(value, canvas(p)),
     ]);
     frame.render_widget(Paragraph::new(line).style(canvas(p)), area);
@@ -183,20 +205,20 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView, scroll
         ruled(p, header(p)),
     )];
     for label in &grid.header {
-        header_line.push(Span::styled("│", ruled(p, header(p).fg(p.gridline))));
-        header_line.push(Span::styled(label.clone(), ruled(p, header(p))));
+        header_line.push(Span::styled("│", ruled(p, chrome(p))));
+        header_line.push(Span::styled(label.clone(), ruled(p, chrome(p))));
     }
     lines.push(Line::from(header_line));
 
     for body in &grid.lines {
         let rule = |style: Style| if body.ruled { ruled(p, style) } else { style };
-        let mut spans = vec![Span::styled(body.label.clone(), rule(header(p)))];
+        let mut spans = vec![Span::styled(body.label.clone(), rule(chrome(p)))];
         for slot in &body.slots {
             spans.push(match &slot.separator {
                 Separator::Marker { fill } => {
                     Span::styled("●", rule(filled_canvas(p, *fill).fg(p.marker_fg)))
                 }
-                Separator::Gridline => Span::styled("│", rule(canvas(p).fg(p.gridline))),
+                Separator::Gridline => Span::styled("│", rule(gridline_style(p))),
             });
             let base = if slot.cursor {
                 selected(p)
@@ -250,11 +272,7 @@ fn draw_panel(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView, docke
     let panel = Paragraph::new(lines)
         .style(canvas(p))
         .wrap(Wrap { trim: false })
-        .block(
-            Block::new()
-                .borders(Borders::LEFT)
-                .border_style(Style::new().bg(p.canvas_bg).fg(p.header_fg)),
-        );
+        .block(Block::new().borders(Borders::LEFT).border_style(chrome(p)));
     frame.render_widget(panel, thread_area);
 
     if let (Some(rect), Some(editor)) = (editor_area, view.editor.as_ref()) {
@@ -330,7 +348,7 @@ fn draw_editor(p: &Palette, frame: &mut Frame, area: Rect, editor: &EditorView) 
                 // the hint rides on the border so it can never be scrolled
                 // out of a short box
                 .title_bottom(EDITOR_HINT)
-                .border_style(Style::new().bg(p.canvas_bg).fg(p.header_fg)),
+                .border_style(chrome(p)),
         );
     frame.render_widget(widget, area);
 }
@@ -355,11 +373,11 @@ fn draw_tabs(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
         let style = if i == view.active {
             canvas(p).add_modifier(Modifier::BOLD)
         } else {
-            header(p)
+            chrome(p)
         };
         spans.push(Span::styled(format!("[{name}]"), style));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(header(p)), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(chrome(p)), area);
 }
 
 /// Hints and notices only — the cell value lives in the formula bar now.
@@ -379,10 +397,10 @@ fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
     );
     let line = Line::from(vec![
         Span::styled(left, Style::new().bg(p.header_bg).fg(p.notice_fg)),
-        Span::styled(" ".repeat(gap), header(p)),
-        Span::styled(hint, header(p)),
+        Span::styled(" ".repeat(gap), chrome(p)),
+        Span::styled(hint, chrome(p)),
     ]);
-    frame.render_widget(Paragraph::new(line).style(header(p)), area);
+    frame.render_widget(Paragraph::new(line).style(chrome(p)), area);
 }
 
 #[cfg(test)]

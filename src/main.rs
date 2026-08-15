@@ -15,18 +15,12 @@ use docrev::ui::theme::Theme;
 use docrev::ui::{comment_list, table};
 
 #[derive(Parser)]
-#[command(
-    name = "docrev",
-    version,
-    about,
-    args_conflicts_with_subcommands = true
-)]
+#[command(name = "docrev", version, about)]
 struct Cli {
     /// Open a document (.xlsx) in the TUI viewer
     file: Option<PathBuf>,
-    /// Color palette: `sheets` paints a white spreadsheet canvas,
-    /// `terminal` keeps your terminal's own colors [env: DOCREV_THEME]
-    #[arg(long, global = true, value_parser = parse_theme)]
+    /// Viewer colors: `sheets` or `terminal` [env: DOCREV_THEME]
+    #[arg(long, value_parser = parse_theme)]
     theme: Option<Theme>,
     #[command(subcommand)]
     command: Option<Command>,
