@@ -34,6 +34,10 @@ pub(crate) struct Viewport {
 pub(crate) struct GridLayout {
     pub empty: bool,
     pub label_width: usize,
+    /// Columns currently on screen, and how many the sheet has — the status
+    /// bar tells the user where they are in a wide sheet.
+    pub visible_cols: std::ops::Range<usize>,
+    pub col_count: usize,
     /// Centered column letters, one per visible column.
     pub header: Vec<String>,
     pub lines: Vec<BodyLine>,
@@ -88,6 +92,8 @@ pub(crate) fn grid_layout(
         return GridLayout {
             empty: true,
             label_width: 0,
+            visible_cols: 0..0,
+            col_count: 0,
             header: Vec::new(),
             lines: Vec::new(),
         };
@@ -267,8 +273,62 @@ pub(crate) fn grid_layout(
     GridLayout {
         empty: false,
         label_width,
+        visible_cols: scroll.left..last_col,
+        col_count: sheet.col_count(),
         header,
         lines,
+    }
+}
+
+/// The slice of sheet tabs that fits, always including the active one, plus
+/// whether tabs are hidden on either side.
+pub(crate) struct TabStrip {
+    pub more_left: bool,
+    pub more_right: bool,
+    /// (sheet index, rendered label) in display order.
+    pub tabs: Vec<(usize, String)>,
+}
+
+pub(crate) fn tab_strip(names: &[&str], active: usize, width: usize) -> TabStrip {
+    let labels: Vec<String> = names.iter().map(|n| format!("[{n}]")).collect();
+    if labels.is_empty() || width == 0 {
+        return TabStrip {
+            more_left: false,
+            more_right: false,
+            tabs: Vec::new(),
+        };
+    }
+    let w = |i: usize| unicode_width::UnicodeWidthStr::width(labels[i].as_str());
+    let active = active.min(labels.len() - 1);
+
+    // grow around the active tab, preferring the tabs before it so the user
+    // keeps the context they scrolled through
+    let (mut start, mut end) = (active, active + 1);
+    let mut used = w(active);
+    loop {
+        // one column per arrow, only while tabs are actually hidden
+        let budget = width
+            .saturating_sub(usize::from(start > 0))
+            .saturating_sub(usize::from(end < labels.len()));
+        let mut grew = false;
+        if start > 0 && used + w(start - 1) <= budget {
+            start -= 1;
+            used += w(start);
+            grew = true;
+        }
+        if end < labels.len() && used + w(end) <= budget {
+            used += w(end);
+            end += 1;
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
+    }
+    TabStrip {
+        more_left: start > 0,
+        more_right: end < labels.len(),
+        tabs: (start..end).map(|i| (i, labels[i].clone())).collect(),
     }
 }
 
@@ -428,6 +488,70 @@ mod tests {
         grid_layout(&input, &Viewport { width: 46, rows: 5 }, &mut scroll);
         grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
         assert_eq!(scroll.left, wide_left, "the view must not drift");
+    }
+
+    #[test]
+    fn the_tab_strip_always_shows_the_active_sheet() {
+        let names = ["売上", "経費", "集計", "備考", "参考", "旧データ"];
+        let refs: Vec<&str> = names.to_vec();
+
+        // everything fits: no arrows
+        let all = tab_strip(&refs, 0, 200);
+        assert_eq!(all.tabs.len(), names.len());
+        assert!(!all.more_left && !all.more_right);
+
+        // narrow: the active tab is present wherever it is
+        for active in 0..names.len() {
+            let strip = tab_strip(&refs, active, 24);
+            assert!(
+                strip.tabs.iter().any(|(i, _)| *i == active),
+                "active {active} must be visible: {:?}",
+                strip.tabs
+            );
+            assert_eq!(strip.more_left, strip.tabs[0].0 > 0);
+            let last = strip.tabs.last().unwrap().0;
+            assert_eq!(strip.more_right, last + 1 < names.len());
+        }
+    }
+
+    #[test]
+    fn the_tab_strip_fits_its_width() {
+        let names = vec!["とても長い名前のシート1", "2月度実績データ", "集計"];
+        let strip = tab_strip(&names, 1, 30);
+        let used: usize = strip
+            .tabs
+            .iter()
+            .map(|(_, l)| unicode_width::UnicodeWidthStr::width(l.as_str()))
+            .sum::<usize>()
+            + usize::from(strip.more_left)
+            + usize::from(strip.more_right);
+        assert!(used <= 30, "strip must fit: {used} > 30");
+        assert!(strip.tabs.iter().any(|(i, _)| *i == 1));
+    }
+
+    #[test]
+    fn a_single_tab_wider_than_the_bar_is_still_shown() {
+        let names = vec!["これは画面よりずっと長い名前のシートです"];
+        let strip = tab_strip(&names, 0, 10);
+        assert_eq!(strip.tabs.len(), 1);
+        assert!(!strip.more_left && !strip.more_right);
+    }
+
+    #[test]
+    fn the_layout_reports_the_visible_column_range() {
+        let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 30]]);
+        let markers = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (0, 0),
+            markers: &markers,
+            col_widths: &[],
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
+        assert_eq!(layout.col_count, 30);
+        assert_eq!(layout.visible_cols.start, 0);
+        assert!(layout.visible_cols.end < 30, "a wide sheet is clipped");
     }
 
     #[test]
