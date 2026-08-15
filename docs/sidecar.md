@@ -53,7 +53,9 @@ This format is a **public contract**: AI agents read and write it through the
 ## Semantics
 
 - A **thread** is one root comment plus its replies; `resolved` closes the whole
-  thread. Multiple threads per cell are valid in the schema, but the TUI follows
+  thread. **Replying reopens it** (`resolved` returns to `false`): a reply on a
+  closed thread would otherwise be invisible to the viewer, which only marks
+  open threads, and to agents, which list unresolved ones. Multiple threads per cell are valid in the schema, but the TUI follows
   the spreadsheet convention of one open thread per cell (`c` replies to an open
   thread instead of forking a second one).
 
