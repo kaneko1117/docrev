@@ -10,7 +10,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::comment::CommentThread;
 use crate::domain::sheet::{Rgb, Sheet, TextColor};
 
-use super::layout::{self, LayoutInput, Separator, Viewport};
+use super::layout::{self, GridLayout, LayoutInput, Separator, Viewport};
 use super::text::{cell_text, sanitize, wrap};
 use super::theme::{Palette, Theme};
 
@@ -123,7 +123,20 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
         None => (main_area, None),
     };
     draw_formula_bar(p, frame, formula_area, view);
-    draw_grid(p, frame, grid_area, view, scroll);
+    let grid = layout::grid_layout(
+        &LayoutInput {
+            sheet: view.sheet,
+            cursor: view.cursor,
+            markers: &view.markers,
+            col_widths: &view.col_widths,
+        },
+        &Viewport {
+            width: grid_area.width as usize,
+            rows: grid_area.height.saturating_sub(1) as usize,
+        },
+        scroll,
+    );
+    draw_grid(p, frame, grid_area, &grid);
     // the editor docks in the sidebar when there is room for it; otherwise it
     // overlays the whole frame so composing still works on small terminals
     let docked =
@@ -137,7 +150,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
         }
     }
     draw_tabs(p, frame, tabs_area, view);
-    draw_status(p, frame, status_area, view);
+    draw_status(p, frame, status_area, view, &grid);
 }
 
 /// One third of the screen, clamped, and only when the grid keeps its
@@ -182,18 +195,7 @@ fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView)
 
 /// Thin translator (#36): all layout decisions live in `layout::grid_layout`;
 /// this maps the resulting description to `Span`s and nothing else.
-fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView, scroll: &mut Scroll) {
-    let input = LayoutInput {
-        sheet: view.sheet,
-        cursor: view.cursor,
-        markers: &view.markers,
-        col_widths: &view.col_widths,
-    };
-    let viewport = Viewport {
-        width: area.width as usize,
-        rows: area.height.saturating_sub(1) as usize,
-    };
-    let grid = layout::grid_layout(&input, &viewport, scroll);
+fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
     if grid.empty {
         frame.render_widget(Paragraph::new("(empty sheet)").style(canvas(p)), area);
         return;
@@ -331,6 +333,17 @@ fn editor_height(editor: &EditorView, inner_width: usize, available: u16) -> u16
     rows.saturating_add(2).clamp(1, cap)
 }
 
+/// `G–L / 30` while columns are off screen.
+fn visible_range(grid: &GridLayout) -> Option<String> {
+    let visible = grid.visible_cols.len();
+    if grid.empty || visible == 0 || visible >= grid.col_count {
+        return None;
+    }
+    let first = Anchor::column_label(grid.visible_cols.start as u32);
+    let last = Anchor::column_label((grid.visible_cols.end - 1) as u32);
+    Some(format!("{first}–{last} / {}", grid.col_count))
+}
+
 fn draw_editor(p: &Palette, frame: &mut Frame, area: Rect, editor: &EditorView) {
     let lines = editor_lines(editor, editor_inner_width(area.width));
     // the cursor lives on the last line, so scrolling to the bottom keeps it
@@ -368,20 +381,27 @@ fn draw_editor_overlay(p: &Palette, frame: &mut Frame, editor: &EditorView) {
 }
 
 fn draw_tabs(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
-    let mut spans = Vec::with_capacity(view.sheet_names.len());
-    for (i, name) in view.sheet_names.iter().enumerate() {
-        let style = if i == view.active {
+    let strip = layout::tab_strip(&view.sheet_names, view.active, area.width as usize);
+    let mut spans = Vec::with_capacity(strip.tabs.len() + 2);
+    if strip.more_left {
+        spans.push(Span::styled("‹", chrome(p)));
+    }
+    for (i, label) in &strip.tabs {
+        let style = if *i == view.active {
             canvas(p).add_modifier(Modifier::BOLD)
         } else {
             chrome(p)
         };
-        spans.push(Span::styled(format!("[{name}]"), style));
+        spans.push(Span::styled(label.clone(), style));
+    }
+    if strip.more_right {
+        spans.push(Span::styled("›", chrome(p)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)).style(chrome(p)), area);
 }
 
-/// Hints and notices only — the cell value lives in the formula bar now.
-fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
+/// Hints, notices and — for a sheet wider than the screen — where the view is.
+fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView, grid: &GridLayout) {
     let left = match view.notice {
         Some(notice) => format!("⚠ {notice}"),
         None => String::new(),
@@ -391,6 +411,12 @@ fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
     } else {
         "c:comment  q:quit  Tab:sheet"
     };
+    let hint = match visible_range(grid) {
+        // only when something is off screen; otherwise it is noise
+        Some(range) => format!("{range}  {hint}"),
+        None => hint.to_string(),
+    };
+    let hint = hint.as_str();
     let gap = (area.width as usize).saturating_sub(
         unicode_width::UnicodeWidthStr::width(left.as_str())
             + unicode_width::UnicodeWidthStr::width(hint),
@@ -1217,6 +1243,72 @@ mod tests {
         view.theme = Theme::Sheets;
         let sheets_text = render_text(&view, &mut Scroll::default(), 50, 8);
         assert_eq!(terminal_text, sheets_text, "themes must not move anything");
+    }
+
+    #[test]
+    fn a_wide_sheet_shows_where_the_view_is() {
+        let sheet = Sheet::new("wide", vec![vec![CellValue::Text("x".into()); 30]]);
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["wide"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let text = render_text(&view, &mut Scroll::default(), 80, 8);
+        assert!(
+            text.contains("/ 30"),
+            "the sheet width must be visible:\n{text}"
+        );
+        assert!(text.contains("A–"), "the range starts at the first column");
+
+        // a sheet that fits entirely says nothing
+        let small = sheet_3x3();
+        let mut small_view = view;
+        small_view.sheet = &small;
+        let text = render_text(&small_view, &mut Scroll::default(), 80, 8);
+        assert!(!text.contains(" / "), "no indicator when nothing is hidden");
+    }
+
+    #[test]
+    fn hidden_sheet_tabs_are_signalled() {
+        let sheet = sheet_3x3();
+        let names = vec![
+            "とても長い名前のシート1",
+            "2月度実績データ",
+            "3月度実績データ",
+            "4月度実績データ",
+            "集計",
+        ];
+        let mut view = GridView {
+            sheet: &sheet,
+            sheet_names: names.clone(),
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let text = render_text(&view, &mut Scroll::default(), 60, 8);
+        assert!(text.contains('›'), "more sheets to the right:\n{text}");
+        assert!(!text.contains('‹'), "none hidden on the left yet");
+
+        view.active = names.len() - 1;
+        let text = render_text(&view, &mut Scroll::default(), 60, 8);
+        assert!(
+            text.contains('‹'),
+            "sheets are now hidden to the left:\n{text}"
+        );
+        assert!(text.contains("集計"), "the active sheet must be visible");
+        assert!(!text.contains('›'), "nothing left to the right");
     }
 
     #[test]
