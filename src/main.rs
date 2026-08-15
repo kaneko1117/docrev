@@ -11,6 +11,7 @@ use docrev::app::comments;
 use docrev::app::dump::dump;
 use docrev::app::viewer::{self, Viewer};
 use docrev::infra::terminal;
+use docrev::ui::theme::Theme;
 use docrev::ui::{comment_list, table};
 
 #[derive(Parser)]
@@ -23,6 +24,10 @@ use docrev::ui::{comment_list, table};
 struct Cli {
     /// Open a document (.xlsx) in the TUI viewer
     file: Option<PathBuf>,
+    /// Color palette: `sheets` paints a white spreadsheet canvas,
+    /// `terminal` keeps your terminal's own colors [env: DOCREV_THEME]
+    #[arg(long, global = true, value_parser = parse_theme)]
+    theme: Option<Theme>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -93,12 +98,20 @@ enum CommentAction {
     },
 }
 
+fn parse_theme(value: &str) -> Result<Theme, String> {
+    value
+        .parse()
+        .map_err(|e: docrev::ui::theme::UnknownTheme| e.to_string())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // an explicit flag wins over the environment, which wins over the default
+    let theme = cli.theme.unwrap_or_else(Theme::from_env);
     match (cli.command, cli.file) {
         (Some(Command::Dump { file, sheet }), _) => run_dump(&file, sheet.as_deref()),
         (Some(Command::Comment { action }), _) => run_comment(action),
-        (None, Some(file)) => run_viewer(&file),
+        (None, Some(file)) => run_viewer(&file, theme),
         (None, None) => {
             let _ = Cli::command().print_help();
             ExitCode::FAILURE
@@ -182,7 +195,7 @@ fn print_stdout(text: &str) -> ExitCode {
     }
 }
 
-fn run_viewer(file: &Path) -> ExitCode {
+fn run_viewer(file: &Path, theme: Theme) -> ExitCode {
     let store = JsonCommentStore::for_document(file);
     let viewer = match Viewer::open(&XlsxSource, Box::new(store), file) {
         Ok(viewer) => viewer,
@@ -192,7 +205,7 @@ fn run_viewer(file: &Path) -> ExitCode {
         Ok(terminal) => terminal,
         Err(e) => return fail(&e),
     };
-    let result = viewer::run(viewer, &mut TerminalFrontend::new(terminal));
+    let result = viewer::run(viewer, &mut TerminalFrontend::new(terminal, theme));
     terminal::restore();
     match result {
         Ok(()) => ExitCode::SUCCESS,

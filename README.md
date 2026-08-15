@@ -52,6 +52,19 @@ In the comment editor: Enter inserts a newline, Ctrl+S saves, Esc cancels.
 The status bar shows the full value of the selected cell; cells with an open
 thread are marked with `●` and their thread appears in a side panel.
 
+### Colors
+
+The viewer paints a spreadsheet-style white canvas by default. To keep your
+terminal's own palette instead:
+
+```text
+docrev file.xlsx --theme terminal
+export DOCREV_THEME=terminal        # or set it once
+```
+
+`--theme` wins over `DOCREV_THEME`. Workbook fill and font colors are absolute
+RGB meant for white paper, so the `terminal` theme leaves them out.
+
 ## Agent CLI
 
 The other half of the loop — an AI agent reads your comments, acts, and replies:
