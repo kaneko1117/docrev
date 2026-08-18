@@ -157,11 +157,15 @@ mod tests {
     }
 
     fn map_key_grid(key: KeyEvent, page: isize) -> Event {
-        map_key(key, page, false)
+        map_key(key, page, InputMode::Grid)
     }
 
     fn map_key_editing(key: KeyEvent) -> Event {
-        map_key(key, 10, true)
+        map_key(key, 10, InputMode::Editing)
+    }
+
+    fn map_key_picker(key: KeyEvent) -> Event {
+        map_key(key, 10, InputMode::Picker)
     }
 
     #[test]
@@ -217,6 +221,41 @@ mod tests {
         assert_eq!(map_key_grid(ctrl_home, 10), Event::Top);
         let ctrl_end = KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL);
         assert_eq!(map_key_grid(ctrl_end, 10), Event::Bottom);
+    }
+
+    #[test]
+    fn picker_mode_maps_filter_and_selection_keys() {
+        assert_eq!(map_key_picker(key(KeyCode::Char('q'))), Event::Insert('q'));
+        assert_eq!(
+            map_key_picker(key(KeyCode::Char('達'))),
+            Event::Insert('達')
+        );
+        assert_eq!(map_key_picker(key(KeyCode::Backspace)), Event::Backspace);
+        assert_eq!(map_key_picker(key(KeyCode::Esc)), Event::CancelEdit);
+        assert_eq!(map_key_picker(key(KeyCode::Enter)), Event::Submit);
+        assert_eq!(
+            map_key_picker(key(KeyCode::Up)),
+            Event::Move { rows: -1, cols: 0 }
+        );
+        assert_eq!(
+            map_key_picker(key(KeyCode::Down)),
+            Event::Move { rows: 1, cols: 0 }
+        );
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(map_key_picker(ctrl_c), Event::Quit, "the exit hatch stays");
+        assert_eq!(map_key_picker(key(KeyCode::Tab)), Event::Noop);
+    }
+
+    #[test]
+    fn ctrl_g_and_f5_open_the_sheet_picker() {
+        let ctrl_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        assert_eq!(map_key_grid(ctrl_g, 10), Event::OpenSheetPicker);
+        assert_eq!(map_key_grid(key(KeyCode::F(5)), 10), Event::OpenSheetPicker);
+        assert_eq!(
+            map_key_editing(key(KeyCode::F(5))),
+            Event::Noop,
+            "not while composing a comment"
+        );
     }
 
     #[test]

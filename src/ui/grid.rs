@@ -497,6 +497,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -526,6 +527,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -595,6 +597,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -653,6 +656,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -698,6 +702,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -719,6 +724,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -749,6 +755,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -787,6 +794,7 @@ mod tests {
             notice: None,
             thread: Some(&thread),
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -807,6 +815,7 @@ mod tests {
                 title: " Comment on B2 ".into(),
                 buffer,
             }),
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         }
@@ -916,6 +925,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -935,6 +945,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -965,6 +976,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -998,6 +1010,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![20, 6, 8],
             theme: Theme::default(),
         };
@@ -1021,6 +1034,7 @@ mod tests {
                 title: " Comment on A1 ".into(),
                 buffer: &long,
             }),
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1074,6 +1088,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1093,6 +1108,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1127,6 +1143,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1154,6 +1171,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1193,6 +1211,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1223,6 +1242,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::Terminal,
         };
@@ -1257,6 +1277,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1294,6 +1315,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
@@ -1323,10 +1345,161 @@ mod tests {
             notice: Some("comments unavailable: invalid sidecar"),
             thread: None,
             editor: None,
+            picker: None,
             col_widths: vec![],
             theme: Theme::default(),
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 60, 7));
+    }
+
+    fn picker(
+        query: &str,
+        selected: usize,
+        total: usize,
+        names: &[(&str, usize, bool)],
+    ) -> PickerView {
+        PickerView {
+            query: query.into(),
+            selected,
+            total,
+            items: names
+                .iter()
+                .map(|(name, count, active)| PickerItem {
+                    name: (*name).to_string(),
+                    count: *count,
+                    active: *active,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_sheet_picker_overlays_the_grid() {
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上", "経費", "集計"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: Some(picker(
+                "",
+                0,
+                3,
+                &[("売上", 2, true), ("経費", 0, false), ("集計", 1, false)],
+            )),
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 46, 12));
+    }
+
+    #[test]
+    fn the_picker_reports_no_match() {
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: Some(picker("zzz", 0, 1, &[])),
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 46, 10));
+    }
+
+    #[test]
+    fn a_tall_candidate_list_keeps_its_bottom_border_above_the_tab_bar() {
+        let sheet = sheet_3x3();
+        let names: Vec<String> = (1..=32).map(|i| format!("Sheet{i:02}")).collect();
+        let items: Vec<(&str, usize, bool)> =
+            names.iter().map(|n| (n.as_str(), 0, false)).collect();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: names.iter().map(String::as_str).collect(),
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: Some(picker("", 0, 32, &items)),
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let mut scroll = Scroll::default();
+        let text = render_text(&view, &mut scroll, 80, 30);
+        assert!(text.contains("32/32"), "the counter must survive:\n{text}");
+        assert!(
+            text.contains("Enter:switch"),
+            "the hint must survive:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_long_query_keeps_its_cursor_on_screen() {
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: Some(picker(
+                "a very long query that outgrows the popup width",
+                0,
+                1,
+                &[],
+            )),
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let mut scroll = Scroll::default();
+        let text = render_text(&view, &mut scroll, 28, 12);
+        assert!(text.contains('█'), "the cursor must stay visible:\n{text}");
+    }
+
+    #[test]
+    fn the_picker_survives_a_tiny_terminal() {
+        let sheet = sheet_3x3();
+        for (w, h) in [(1, 1), (5, 3), (10, 4), (24, 5), (40, 6)] {
+            let view = GridView {
+                sheet: &sheet,
+                sheet_names: vec!["売上", "経費"],
+                active: 0,
+                cursor: (0, 0),
+                markers: HashSet::new(),
+                notice: None,
+                thread: None,
+                editor: None,
+                picker: Some(picker(
+                    "とても長い絞り込みの文字列",
+                    1,
+                    2,
+                    &[
+                        ("とても長い名前のシートその一", 120, false),
+                        ("経費", 0, true),
+                    ],
+                )),
+                col_widths: vec![],
+                theme: Theme::default(),
+            };
+            let mut scroll = Scroll::default();
+            render_text(&view, &mut scroll, w, h); // must not panic
+        }
     }
 }

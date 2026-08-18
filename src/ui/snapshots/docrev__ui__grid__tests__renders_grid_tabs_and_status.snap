@@ -1,5 +1,6 @@
 ---
 source: src/ui/grid.rs
+assertion_line: 570
 expression: "render_text(&view, &mut scroll, 46, 7)"
 ---
  B2     │ 120
@@ -8,4 +9,4 @@ expression: "render_text(&view, &mut scroll, 46, 7)"
  2│りんご      │         120│           3
  3│みかん      │          80│           5
 [売上][経費]
-                  c:comment  q:quit  Tab:sheet
+                   c:comment  q:quit  ^G:sheet
