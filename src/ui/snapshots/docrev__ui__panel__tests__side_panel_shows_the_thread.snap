@@ -1,5 +1,5 @@
 ---
-source: src/ui/grid.rs
+source: src/ui/panel.rs
 expression: "render_text(&view, &mut scroll, 76, 10)"
 ---
  B2     │ 120

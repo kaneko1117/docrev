@@ -1,6 +1,5 @@
 ---
 source: src/ui/grid.rs
-assertion_line: 1083
 expression: "render_text(&view, &mut scroll, 50, 6)"
 ---
  C1     │ ok
