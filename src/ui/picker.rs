@@ -1,3 +1,105 @@
+//! Pure sheet-picker layout: which candidates are visible around the
+//! selection and how each row is formatted. No ratatui; `grid.rs` renders.
+
+use super::text::{clip, pad_left, pad_right};
+
+/// What the frontend hands the renderer, already filtered by the viewer.
+pub struct PickerView {
+    pub query: String,
+    /// Index into `items`.
+    pub selected: usize,
+    /// Sheets in the workbook, for the `5/32` counter.
+    pub total: usize,
+    pub items: Vec<PickerItem>,
+}
+
+pub struct PickerItem {
+    pub name: String,
+    /// Unresolved threads on the sheet; 0 renders blank.
+    pub count: usize,
+    /// The sheet open behind the picker.
+    pub active: bool,
+}
+
+pub(crate) struct PickerLayout {
+    pub lines: Vec<PickerLine>,
+    /// `5/32` — matches / sheets in the workbook.
+    pub counter: String,
+    pub no_match: bool,
+}
+
+/// One candidate row: `▸ name    ● 2`, pre-padded to the popup width.
+pub(crate) struct PickerLine {
+    pub name: String,
+    /// Right-aligned marker + count, empty when the sheet has no threads.
+    pub count: String,
+    pub selected: bool,
+    pub active: bool,
+}
+
+const COUNT_WIDTH: usize = 4;
+
+pub(crate) fn picker_layout(view: &PickerView, width: usize, visible: usize) -> PickerLayout {
+    let counter = format!("{}/{}", view.items.len(), view.total);
+    let rows = window(view.items.len(), view.selected, visible);
+    let lines = rows
+        .clone()
+        .map(|i| {
+            let item = &view.items[i];
+            let prefix = if i == view.selected { "▸ " } else { "  " };
+            let count = if item.count > 0 {
+                pad_left(&format!("● {}", item.count), COUNT_WIDTH)
+            } else {
+                String::new()
+            };
+            // name and count split the row: their widths always sum to `width`
+            let count_width = unicode_width::UnicodeWidthStr::width(count.as_str());
+            let name_width = width.saturating_sub(count_width);
+            let name = clip(&item.name, name_width.saturating_sub(2));
+            PickerLine {
+                name: pad_right(&format!("{prefix}{name}"), name_width),
+                count,
+                selected: i == view.selected,
+                active: item.active,
+            }
+        })
+        .collect();
+    PickerLayout {
+        lines,
+        counter,
+        no_match: view.items.is_empty(),
+    }
+}
+
+/// The query line with its cursor block, clipped from the front: when the
+/// query outgrows the popup, the end being typed is what must stay visible.
+pub(crate) fn query_line(query: &str, width: usize) -> String {
+    let mut out = String::from("█");
+    let mut used = 1;
+    for ch in query.chars().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.insert(0, ch);
+        used += w;
+    }
+    out
+}
+
+/// The slice of `len` rows that keeps `selected` visible, centered when
+/// possible — opening on sheet 20 of 32 shows it mid-list, not at an edge.
+fn window(len: usize, selected: usize, visible: usize) -> std::ops::Range<usize> {
+    if visible == 0 || len == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(len - 1);
+    let start = selected
+        .saturating_sub(visible / 2)
+        .min(len.saturating_sub(visible));
+    start..(start + visible).min(len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

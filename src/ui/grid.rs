@@ -15,6 +15,7 @@ use super::text::{cell_text, sanitize, wrap};
 use super::theme::{Palette, Theme};
 
 pub use super::layout::{DEFAULT_CELL_WIDTH, Scroll};
+pub use super::picker::{PickerItem, PickerView};
 
 /// Formula bar + header line + tab bar + status bar.
 pub const CHROME_ROWS: u16 = 4;
@@ -91,6 +92,8 @@ pub struct GridView<'a> {
     pub thread: Option<&'a CommentThread>,
     /// Comment editor state — shown as a popup.
     pub editor: Option<EditorView<'a>>,
+    /// Sheet picker state — shown as a centered popup.
+    pub picker: Option<PickerView>,
     /// Per-column display widths; missing entries use `DEFAULT_CELL_WIDTH`.
     pub col_widths: Vec<usize>,
     pub theme: Theme,
@@ -151,6 +154,11 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
     }
     draw_tabs(p, frame, tabs_area, view);
     draw_status(p, frame, status_area, view, &grid);
+    // last, so a tall candidate list never loses its bottom border (and the
+    // counter riding on it) to the tab bar
+    if let Some(picker) = &view.picker {
+        draw_picker(p, frame, picker);
+    }
 }
 
 /// One third of the screen, clamped, and only when the grid keeps its
@@ -380,6 +388,88 @@ fn draw_editor_overlay(p: &Palette, frame: &mut Frame, editor: &EditorView) {
     draw_editor(p, frame, popup, editor);
 }
 
+const PICKER_HINT: &str = " Enter:switch  Esc:cancel ";
+
+/// The dialog surface: the header gray, so it reads as a layer above the
+/// white cells instead of blending into them. On the terminal palette both
+/// colors are `Reset` and the scrim alone carries the depth.
+fn dialog(p: &Palette) -> Style {
+    Style::new().bg(p.header_bg).fg(p.text)
+}
+
+/// Centered popup: the query line, a rule, then the candidates windowed
+/// around the selection. The grid behind never moves until Enter.
+fn draw_picker(p: &Palette, frame: &mut Frame, picker: &PickerView) {
+    let area = frame.area();
+    // a scrim: dim everything behind, so the dialog is unmistakably on top
+    frame.render_widget(
+        Block::new().style(Style::new().add_modifier(Modifier::DIM)),
+        area,
+    );
+    let width = area
+        .width
+        .saturating_sub(4)
+        .clamp(24, 50)
+        .min(area.width.max(1));
+    let inner_width = width.saturating_sub(2) as usize;
+    // borders + query line + rule take 4 rows; candidates get the rest
+    let visible = picker
+        .items
+        .len()
+        .clamp(1, area.height.saturating_sub(6).max(1) as usize);
+    let height = (visible as u16 + 4).min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let layout = super::picker::picker_layout(picker, inner_width, visible);
+
+    let mut lines = Vec::with_capacity(visible + 2);
+    // the input field keeps the canvas white — a light well in the gray
+    lines.push(Line::styled(
+        super::picker::query_line(&sanitize(&picker.query), inner_width),
+        canvas(p),
+    ));
+    lines.push(Line::styled(
+        "─".repeat(inner_width),
+        dialog(p).add_modifier(Modifier::DIM),
+    ));
+    if layout.no_match {
+        lines.push(Line::styled(
+            "  no match",
+            dialog(p).add_modifier(Modifier::DIM),
+        ));
+    }
+    for row in &layout.lines {
+        let base = if row.selected { selected(p) } else { dialog(p) };
+        let base = if row.active {
+            base.add_modifier(Modifier::BOLD)
+        } else {
+            base
+        };
+        lines.push(Line::from(vec![
+            Span::styled(row.name.clone(), base),
+            Span::styled(row.count.clone(), base.fg(p.marker_fg)),
+        ]));
+    }
+
+    frame.render_widget(Clear, popup);
+    // a crisp, undimmed frame — against the scrim it is the one sharp edge
+    let widget = Paragraph::new(lines).style(dialog(p)).block(
+        Block::bordered()
+            .title(Line::styled(
+                " Go to sheet ",
+                dialog(p).add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(PICKER_HINT)
+            .title_bottom(Line::from(format!(" {} ", layout.counter)).right_aligned())
+            .border_style(dialog(p)),
+    );
+    frame.render_widget(widget, popup);
+}
+
 fn draw_tabs(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
     let strip = layout::tab_strip(&view.sheet_names, view.active, area.width as usize);
     let mut spans = Vec::with_capacity(strip.tabs.len() + 2);
@@ -409,7 +499,7 @@ fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView, grid
     let hint = if view.thread.is_some() {
         "r:reply  c:comment  q:quit"
     } else {
-        "c:comment  q:quit  Tab:sheet"
+        "c:comment  q:quit  ^G:sheet"
     };
     let hint = match visible_range(grid) {
         // only when something is off screen; otherwise it is noise

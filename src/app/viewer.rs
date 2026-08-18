@@ -20,6 +20,7 @@ pub enum Event {
     RowEnd,
     NextSheet,
     PrevSheet,
+    OpenSheetPicker,
     StartComment,
     StartReply,
     Insert(char),
@@ -65,7 +66,46 @@ impl Notice {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Grid,
-    Editing { target: EditTarget, buffer: String },
+    Editing {
+        target: EditTarget,
+        buffer: String,
+    },
+    /// The sheet picker: type to filter, Enter to switch, Esc to cancel.
+    /// `selected` indexes the *filtered* candidate list, not the workbook.
+    SheetPicker {
+        query: String,
+        selected: usize,
+    },
+}
+
+/// What the picker shows this frame; `candidates` are sheet indices in
+/// workbook order.
+pub struct PickerState<'a> {
+    pub query: &'a str,
+    pub selected: usize,
+    pub candidates: Vec<usize>,
+}
+
+/// Substring match after folding case and full-width characters, so an IME
+/// left on full-width still finds `IT-01`.
+fn sheet_matches(name: &str, query: &str) -> bool {
+    fold(name).contains(&fold(query))
+}
+
+fn fold(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let c = match c {
+                '０'..='９' => char::from(b'0' + (c as u32 - '０' as u32) as u8),
+                'Ａ'..='Ｚ' => char::from(b'A' + (c as u32 - 'Ａ' as u32) as u8),
+                'ａ'..='ｚ' => char::from(b'a' + (c as u32 - 'ａ' as u32) as u8),
+                '－' => '-',
+                '　' => ' ',
+                c => c,
+            };
+            c.to_lowercase()
+        })
+        .collect()
 }
 
 /// Non-empty by construction: `first` always exists.
@@ -205,6 +245,44 @@ impl Viewer {
             .collect()
     }
 
+    pub fn picker_state(&self) -> Option<PickerState<'_>> {
+        let Mode::SheetPicker { query, selected } = &self.mode else {
+            return None;
+        };
+        let candidates = self
+            .sheet_names()
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| sheet_matches(name, query))
+            .map(|(i, _)| i)
+            .collect();
+        Some(PickerState {
+            query,
+            selected: *selected,
+            candidates,
+        })
+    }
+
+    /// Unresolved threads per sheet, aligned with `sheet_names()`. Indexed
+    /// through a map: the sidecar is agent-written and can hold thousands of
+    /// threads, and this runs on every keystroke while the picker is open.
+    pub fn unresolved_counts(&self) -> Vec<usize> {
+        let names = self.sheet_names();
+        let index: std::collections::HashMap<&str, usize> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (*name, i))
+            .collect();
+        let mut counts = vec![0; names.len()];
+        for thread in self.comments.iter().filter(|t| !t.resolved) {
+            let Anchor::Cell { sheet, .. } = &thread.anchor;
+            if let Some(&i) = index.get(sheet.as_str()) {
+                counts[i] += 1;
+            }
+        }
+        counts
+    }
+
     pub fn sheet(&self) -> &Sheet {
         self.sheets.get(self.active)
     }
@@ -240,6 +318,7 @@ impl Viewer {
         match self.mode {
             Mode::Grid => self.apply_grid(event),
             Mode::Editing { .. } => self.apply_editing(event),
+            Mode::SheetPicker { .. } => self.apply_picker(event),
         }
     }
 
@@ -283,6 +362,14 @@ impl Viewer {
                 self.active = (self.active + self.sheets.len() - 1) % self.sheets.len();
                 return;
             }
+            // opens on the active sheet so the picker doubles as "where am I"
+            Event::OpenSheetPicker => {
+                self.mode = Mode::SheetPicker {
+                    query: String::new(),
+                    selected: self.active,
+                };
+                return;
+            }
             // Sheets model: one open thread per cell — `c` replies to it if
             // present, otherwise starts a new thread.
             Event::StartComment => {
@@ -317,6 +404,47 @@ impl Viewer {
         };
         if let Some(cursor) = self.cursors.get_mut(self.active) {
             *cursor = next;
+        }
+    }
+
+    fn apply_picker(&mut self, event: Event) {
+        let candidates = match self.picker_state() {
+            Some(state) => state.candidates,
+            None => return,
+        };
+        let Mode::SheetPicker { query, selected } = &mut self.mode else {
+            return;
+        };
+        match event {
+            // every edit resets the selection: "type, then arrow down" always
+            // behaves the same, whatever survived the previous filter
+            Event::Insert(c) => {
+                query.push(c);
+                *selected = 0;
+            }
+            // only an actual edit resets — Backspace on an empty query must
+            // not throw away the selection the picker opened on
+            Event::Backspace => {
+                if query.pop().is_some() {
+                    *selected = 0;
+                }
+            }
+            Event::Move { rows, .. } => {
+                if !candidates.is_empty() {
+                    let max = candidates.len() - 1;
+                    *selected = add_clamped(*selected, rows, max);
+                }
+            }
+            // Enter only — a single remaining candidate never auto-switches
+            Event::Submit => {
+                if let Some(&sheet) = candidates.get(*selected) {
+                    self.active = sheet;
+                    self.mode = Mode::Grid;
+                }
+            }
+            Event::CancelEdit => self.mode = Mode::Grid,
+            Event::Quit => self.quit = true,
+            _ => {}
         }
     }
 
