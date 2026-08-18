@@ -20,6 +20,7 @@ impl DocumentSource for XlsxSource {
         // block opening; cells then simply show their raw, unpainted values
         let widths = xlsx_meta::column_widths(path).unwrap_or_default();
         let styles = xlsx_meta::cell_styles(path).unwrap_or_default();
+        let frozen = xlsx_meta::frozen_panes(path).unwrap_or_default();
         // parse each distinct format once per workbook, not per cell
         let formats: Vec<Option<NumberFormat>> = styles
             .styles
@@ -41,6 +42,8 @@ impl DocumentSource for XlsxSource {
                         end_col: end.1 as usize,
                     })
                     .collect();
+                let (frozen_rows, frozen_cols) =
+                    frozen.get(&raw_sheet.name).copied().unwrap_or((0, 0));
                 let sheet = to_sheet(
                     raw_sheet.name,
                     raw_sheet.cells,
@@ -48,7 +51,8 @@ impl DocumentSource for XlsxSource {
                     &styles.styles,
                     &formats,
                 )
-                .with_merges(merges);
+                .with_merges(merges)
+                .with_frozen(frozen_rows, frozen_cols);
                 match cols {
                     Some(cols) => {
                         let expanded = expand_widths(cols, sheet.col_count());

@@ -62,3 +62,25 @@ pub(crate) fn filled_canvas(p: &Palette, fill: Option<Rgb>) -> Style {
 pub(crate) fn dialog(p: &Palette) -> Style {
     Style::new().bg(p.header_bg).fg(p.text)
 }
+
+/// The frozen-pane boundary, horizontal: Excel's hairline translated — the
+/// same underline, drawn darker than its neighbors (undimmed, on the
+/// terminal palette, where naming a color is not allowed).
+pub(crate) fn freeze_ruled(p: &Palette, style: Style) -> Style {
+    if p.dim_chrome {
+        return style
+            .add_modifier(Modifier::UNDERLINED)
+            .remove_modifier(Modifier::DIM);
+    }
+    style
+        .add_modifier(Modifier::UNDERLINED)
+        .underline_color(p.header_fg)
+}
+
+/// The frozen-pane boundary, vertical: the `│` separator, emphasized.
+pub(crate) fn freeze_gridline(p: &Palette) -> Style {
+    if p.dim_chrome {
+        return canvas(p);
+    }
+    canvas(p).fg(p.header_fg)
+}

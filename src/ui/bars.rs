@@ -141,7 +141,9 @@ fn draw_search(p: &Palette, frame: &mut Frame, area: Rect, search: &SearchView) 
 /// `G–L / 30` while columns are off screen.
 fn visible_range(grid: &GridLayout) -> Option<String> {
     let visible = grid.visible_cols.len();
-    if grid.empty || visible == 0 || visible >= grid.col_count {
+    // pinned columns are on screen too: with a freeze, "hidden" means
+    // hidden, not merely scrolled past the pin
+    if grid.empty || visible == 0 || grid.frozen_cols + visible >= grid.col_count {
         return None;
     }
     let first = Anchor::column_label(grid.visible_cols.start as u32);

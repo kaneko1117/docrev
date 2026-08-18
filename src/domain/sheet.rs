@@ -53,6 +53,8 @@ pub struct Sheet {
     fills: HashMap<(usize, usize), Rgb>,
     /// Author-set font colors from the workbook, keyed by (row, col).
     font_colors: HashMap<(usize, usize), Rgb>,
+    /// Frozen panes from the workbook: (rows, cols) pinned while scrolling.
+    frozen: (usize, usize),
 }
 
 impl Sheet {
@@ -66,6 +68,7 @@ impl Sheet {
             merges: Vec::new(),
             fills: HashMap::new(),
             font_colors: HashMap::new(),
+            frozen: (0, 0),
         }
     }
 
@@ -95,6 +98,21 @@ impl Sheet {
     pub fn with_merges(mut self, merges: Vec<MergedRange>) -> Self {
         self.merges = merges;
         self
+    }
+
+    /// Frozen panes: the workbook pins the first `rows`/`cols` while the
+    /// rest scrolls.
+    pub fn with_frozen(mut self, rows: usize, cols: usize) -> Self {
+        self.frozen = (rows, cols);
+        self
+    }
+
+    pub fn frozen_rows(&self) -> usize {
+        self.frozen.0
+    }
+
+    pub fn frozen_cols(&self) -> usize {
+        self.frozen.1
     }
 
     pub fn col_width(&self, col: usize) -> Option<u16> {

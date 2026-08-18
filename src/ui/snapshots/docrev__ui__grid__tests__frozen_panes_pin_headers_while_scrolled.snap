@@ -1,0 +1,13 @@
+---
+source: src/ui/grid.rs
+expression: "render_text(&view, &mut scroll, 40, 9)"
+---
+ C51    │ OK
+  │  A   │   B    │  C
+ 1│項番  │内容    │結果
+48│No47  │手順47  │OK
+49│No48  │手順48  │OK
+50│No49  │手順49  │OK
+51│No50  │手順50  │OK
+[凍結]
+    c:comment  q:quit  ^G:sheet  ^F:find
