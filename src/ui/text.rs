@@ -92,6 +92,16 @@ mod tests {
     }
 
     #[test]
+    fn the_query_clips_from_the_front_keeping_the_cursor() {
+        assert_eq!(query_line("abc", 10), "abc█");
+        assert_eq!(query_line("", 10), "█");
+        assert_eq!(query_line("abcdefgh", 5), "efgh█", "the tail stays");
+        // CJK: a char that would half-fit is dropped whole
+        assert_eq!(query_line("あいうえお", 5), "えお█");
+        assert_eq!(query_line("abc", 0), "█", "never empty, renderer clips");
+    }
+
+    #[test]
     fn wraps_by_display_width() {
         assert_eq!(wrap("abcdef", 4), vec!["abcd", "ef"]);
         // CJK chars are 2 cells wide: 4 cells fit two of them

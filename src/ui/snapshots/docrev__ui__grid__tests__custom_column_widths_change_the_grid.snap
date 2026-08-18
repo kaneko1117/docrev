@@ -7,4 +7,4 @@ expression: "render_text(&view, &mut scroll, 50, 6)"
  1│幅20の列です        │    42│ok
 
 [W]
-                       c:comment  q:quit  ^G:sheet
+              c:comment  q:quit  ^G:sheet  ^F:find

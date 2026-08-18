@@ -293,6 +293,25 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_f_opens_search_and_search_keys_mirror_the_picker() {
+        let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert_eq!(map_key_grid(ctrl_f, 10), Event::OpenSearch);
+        assert_eq!(
+            map_key(ctrl_f, 10, InputMode::Editing),
+            Event::Noop,
+            "not while composing a comment"
+        );
+
+        let search = |code| map_key(key(code), 10, InputMode::Search);
+        assert_eq!(search(KeyCode::Char('q')), Event::Insert('q'));
+        assert_eq!(search(KeyCode::Esc), Event::CancelEdit);
+        assert_eq!(search(KeyCode::Enter), Event::Submit);
+        assert_eq!(search(KeyCode::Down), Event::Move { rows: 1, cols: 0 });
+        assert_eq!(search(KeyCode::Up), Event::Move { rows: -1, cols: 0 });
+        assert_eq!(search(KeyCode::Backspace), Event::Backspace);
+    }
+
+    #[test]
     fn ctrl_g_and_f5_open_the_sheet_picker() {
         let ctrl_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
         assert_eq!(map_key_grid(ctrl_g, 10), Event::OpenSheetPicker);

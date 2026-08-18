@@ -136,6 +136,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: None,
             col_widths: vec![],
             theme: Theme::default(),
@@ -153,6 +154,41 @@ mod tests {
         small_view.sheet = &small;
         let text = render_text(&small_view, &mut Scroll::default(), 80, 8);
         assert!(!text.contains(" / "), "no indicator when nothing is hidden");
+    }
+
+    #[test]
+    fn the_search_prompt_takes_over_the_status_bar() {
+        let sheet = sheet_3x3();
+        let mut view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: Some("this notice must yield to the prompt"),
+            thread: None,
+            editor: None,
+            search: Some(super::SearchView {
+                query: "合計".into(),
+                current: 3,
+                total: 17,
+            }),
+            picker: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let text = render_text(&view, &mut Scroll::default(), 46, 7);
+        assert!(text.contains("Find: 合計█"), "prompt with cursor:\n{text}");
+        assert!(text.contains("3/17"), "counter:\n{text}");
+        assert!(!text.contains("⚠"), "the notice waits its turn:\n{text}");
+
+        view.search = Some(super::SearchView {
+            query: "zzz".into(),
+            current: 0,
+            total: 0,
+        });
+        let text = render_text(&view, &mut Scroll::default(), 46, 7);
+        assert!(text.contains("0/0"), "no-match counter:\n{text}");
     }
 
     #[test]
@@ -174,6 +210,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: None,
             col_widths: vec![],
             theme: Theme::default(),

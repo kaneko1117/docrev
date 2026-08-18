@@ -127,6 +127,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker(
                 "",
                 0,
@@ -152,6 +153,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker("zzz", 0, 1, &[])),
             col_widths: vec![],
             theme: Theme::default(),
@@ -175,6 +177,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker("", 0, 32, &items)),
             col_widths: vec![],
             theme: Theme::default(),
@@ -200,6 +203,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker(
                 "a very long query that outgrows the popup width",
                 0,
@@ -227,6 +231,7 @@ mod tests {
                 notice: None,
                 thread: None,
                 editor: None,
+                search: None,
                 picker: Some(picker(
                     "とても長い絞り込みの文字列",
                     1,
