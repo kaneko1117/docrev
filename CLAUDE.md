@@ -4,7 +4,7 @@ docrev — a terminal document viewer with inline review comments, designed for 
 
 A user opens a document in a TUI, leaves comments anchored to locations in it (cells, later paragraphs), and an AI agent reads those comments through a CLI, acts on them, and replies. Think "hunk, but for documents instead of diffs".
 
-v0.1 scope: Excel (`.xlsx`) only, read-only viewer, comments stored in a sidecar JSON file, agent-facing CLI. Word (`.docx`) support is planned — never let that door close.
+Scope: Excel (`.xlsx`) only, read-only viewer, comments stored in a sidecar JSON file, agent-facing CLI. Word (`.docx`) support is planned — never let that door close. (No version numbers or progress snapshots in docs — that state lives in GitHub issues and milestones, see Roadmap.)
 
 ## Architecture
 
@@ -61,7 +61,7 @@ src/
 ## Workflow
 
 - Trunk-based: `main` is the trunk, one feature branch per stage, PR into `main`.
-  No `develop` branch. Releases are git tags (`v0.1.0`) published to crates.io.
+  No `develop` branch.
 - Never push directly to `main` — always via PR. Branch protection (PR required,
   1 approval, admin bypass allowed) will be enforced when the repo goes public;
   until then the same rule applies by convention.
@@ -69,27 +69,33 @@ src/
 - Commit messages follow **Conventional Commits** (`feat:`, `fix:`, `docs:`,
   `refactor:`, `perf:`, `test:`, `chore:`; `feat!:` for a breaking change).
   release-plz derives the version bump and the changelog from them, so a
-  mislabelled commit ships the wrong version.
+  mislabelled commit ships the wrong version. `fix:` is only for defects a
+  user could hit; internal cleanups, CI and tooling tweaks are `chore:`.
 - The user reviews diffs in a live Hunk session and leaves inline comments there;
   fetch them with `hunk session comment list --type user` when the user says they
   commented, and reply inline via `hunk session comment apply`.
-- An adversarial review pass runs before merge (user-invoked skill). Expect it.
+- After finishing an implementation, launch the `adversarial-reviewer` agent
+  (`.claude/agents/adversarial-reviewer.md`) as a background subagent and fix
+  what it confirms before asking for the merge.
 - Do not run `cargo init`, `git init`, or create repositories — the user does
   scaffolding themselves.
 
+## Releases
+
+release-plz opens a release PR from the Conventional Commit history; merging
+it tags the version, and the tag triggers cargo-dist, which builds the
+platform binaries and installers and pushes the Homebrew formula to
+`kaneko1117/homebrew-tap`. Notes learned the hard way:
+
+- The tag must be pushed with credentials that can trigger downstream
+  workflows (a PAT), or the dist jobs never start.
+- The tap repository must contain at least one commit; publishing a formula
+  into a completely empty repository fails with
+  "couldn't find remote ref refs/heads/main".
+
 ## Roadmap
 
-Progress is tracked in **GitHub Issues** (milestone `v0.1.0`) — Issues are the source
-of truth; the table below is a static summary. Check current state with
-`gh issue list --milestone v0.1.0`. Each stage PR closes its issue via `Closes #N`.
-
-| Stage | Issue | Deliverable |
-|-------|-------|-------------|
-| 1 | #1 | CLI skeleton + `docrev dump file.xlsx` (calamine parsing proven) |
-| 2 | #2 | Read-only TUI: grid, cursor, sheet switching, status bar |
-| 3 | #3 | Comment input in TUI + sidecar JSON store |
-| 4 | #4 | Agent CLI: `docrev comment list/add/resolve --json` |
-| 5 | #5 | Agent skill (SKILL.md), README polish, LICENSE, v0.1.0 to crates.io |
-
-Post-v0.1 backlog (no milestone): #6 live reload, #7 native xlsx threaded-comment
-write-back, #8 `.docx` support.
+Progress lives in **GitHub Issues and milestones** — the source of truth,
+never mirrored into docs. Check state with `gh issue list --milestone <name>`
+(`gh api repos/{owner}/{repo}/milestones` lists the names). Each PR closes
+its issue via `Closes #N`.

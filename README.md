@@ -9,7 +9,7 @@ AI agent read them through a CLI, act on them, and reply — think code review, 
 documents. The viewer paints a spreadsheet-style grid (white canvas, gridlines,
 formula bar) right in your terminal.
 
-> v0.1 targets Excel (`.xlsx`), read-only. Word (`.docx`) support is planned.
+> Excel (`.xlsx`), read-only. Word (`.docx`) support is planned.
 
 ## Installation
 
@@ -51,8 +51,10 @@ docrev dump file.xlsx   # print a sheet as a text table (--sheet <name> to pick 
 | q / Ctrl+C | Quit |
 
 In the comment editor: Enter inserts a newline, Ctrl+S saves, Esc cancels.
-The status bar shows the full value of the selected cell; cells with an open
-thread are marked with `●` and their thread appears in a side panel.
+The formula bar shows the full value of the selected cell; cells with an open
+thread are marked with `●` and their thread appears in a side panel. Frozen
+panes saved in the workbook are honored: pinned rows and columns stay on
+screen while the rest scrolls.
 
 ### Colors
 
