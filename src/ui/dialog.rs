@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::picker::{self, PickerView};
 use super::style::{canvas, dialog, selected};
-use super::text::sanitize;
+use super::text::{query_line, sanitize};
 use super::theme::Palette;
 
 const PICKER_HINT: &str = " Enter:switch  Esc:cancel ";
@@ -45,7 +45,7 @@ pub(crate) fn draw_picker(p: &Palette, frame: &mut Frame, view: &PickerView) {
     let mut lines = Vec::with_capacity(visible + 2);
     // the input field keeps the canvas white — a light well in the gray
     lines.push(Line::styled(
-        picker::query_line(&sanitize(&view.query), inner_width),
+        query_line(&sanitize(&view.query), inner_width),
         canvas(p),
     ));
     lines.push(Line::styled(

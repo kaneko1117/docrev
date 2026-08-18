@@ -73,6 +73,22 @@ pub(crate) fn center(text: &str, width: usize) -> String {
     format!("{}{text}{}", " ".repeat(left), " ".repeat(pad - left))
 }
 
+/// A query line with its cursor block, clipped from the front: when the
+/// query outgrows the field, the end being typed is what must stay visible.
+pub(crate) fn query_line(query: &str, width: usize) -> String {
+    let mut out = String::from("█");
+    let mut used = 1;
+    for ch in query.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.insert(0, ch);
+        used += w;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,6 +17,7 @@ use super::style::{canvas, chrome, filled_canvas, gridline_style, header, ruled,
 use super::theme::{Palette, Theme};
 use super::{bars, dialog, panel};
 
+pub use super::bars::SearchView;
 pub use super::layout::{DEFAULT_CELL_WIDTH, Scroll};
 pub use super::picker::{PickerItem, PickerView};
 
@@ -37,6 +38,8 @@ pub struct GridView<'a> {
     pub editor: Option<EditorView<'a>>,
     /// Sheet picker state — shown as a centered popup.
     pub picker: Option<PickerView>,
+    /// Search prompt state — takes over the status bar.
+    pub search: Option<SearchView>,
     /// Per-column display widths; missing entries use `DEFAULT_CELL_WIDTH`.
     pub col_widths: Vec<usize>,
     pub theme: Theme,

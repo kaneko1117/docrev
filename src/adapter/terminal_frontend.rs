@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, Key
 use crate::app::error::FrontendError;
 use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Viewer};
 use crate::domain::anchor::Anchor;
-use crate::ui::grid::{self, EditorView, GridView, PickerItem, PickerView, Scroll};
+use crate::ui::grid::{self, EditorView, GridView, PickerItem, PickerView, Scroll, SearchView};
 use crate::ui::theme::Theme;
 
 /// How long the viewer waits for input before checking for outside changes.
@@ -18,6 +18,7 @@ enum InputMode {
     Grid,
     Editing,
     Picker,
+    Search,
 }
 
 pub struct TerminalFrontend {
@@ -84,10 +85,16 @@ impl Frontend for TerminalFrontend {
                     .collect(),
             }
         });
+        let search = viewer.search_state().map(|state| SearchView {
+            query: state.query.to_string(),
+            current: state.current,
+            total: state.total,
+        });
         *input_mode = match viewer.mode() {
             Mode::Grid => InputMode::Grid,
             Mode::Editing { .. } => InputMode::Editing,
             Mode::SheetPicker { .. } => InputMode::Picker,
+            Mode::Search { .. } => InputMode::Search,
         };
         let view = GridView {
             sheet: viewer.sheet(),
@@ -99,6 +106,7 @@ impl Frontend for TerminalFrontend {
             thread: viewer.thread_at_cursor(),
             editor,
             picker,
+            search,
             theme: *theme,
             col_widths: (0..viewer.sheet().col_count())
                 .map(|c| {
@@ -150,7 +158,9 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
             _ => Event::Noop,
         };
     }
-    if mode == InputMode::Picker {
+    // the picker and the search prompt share one grammar: type to filter,
+    // arrows to move, Enter to commit, Esc to cancel
+    if mode == InputMode::Picker || mode == InputMode::Search {
         return match key.code {
             KeyCode::Esc => Event::CancelEdit,
             KeyCode::Enter => Event::Submit,
@@ -172,6 +182,8 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
         // Excel's Go To key, plus F5 for the same muscle memory
         KeyCode::Char('g') if ctrl => Event::OpenSheetPicker,
         KeyCode::F(5) => Event::OpenSheetPicker,
+        // Excel's Find key
+        KeyCode::Char('f') if ctrl => Event::OpenSearch,
         KeyCode::Home if ctrl => Event::Top,
         KeyCode::End if ctrl => Event::Bottom,
         KeyCode::Up => Event::Move { rows: -1, cols: 0 },

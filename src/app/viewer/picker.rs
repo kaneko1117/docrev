@@ -2,6 +2,7 @@
 
 use crate::domain::anchor::Anchor;
 
+use super::matching::{contains_folded, fold};
 use super::{Event, Mode, Viewer, add_clamped};
 
 /// What the picker shows this frame; `candidates` are sheet indices in
@@ -12,38 +13,17 @@ pub struct PickerState<'a> {
     pub candidates: Vec<usize>,
 }
 
-/// Substring match after folding case and full-width characters, so an IME
-/// left on full-width still finds `IT-01`.
-fn sheet_matches(name: &str, query: &str) -> bool {
-    fold(name).contains(&fold(query))
-}
-
-fn fold(text: &str) -> String {
-    text.chars()
-        .flat_map(|c| {
-            let c = match c {
-                '０'..='９' => char::from(b'0' + (c as u32 - '０' as u32) as u8),
-                'Ａ'..='Ｚ' => char::from(b'A' + (c as u32 - 'Ａ' as u32) as u8),
-                'ａ'..='ｚ' => char::from(b'a' + (c as u32 - 'ａ' as u32) as u8),
-                '－' => '-',
-                '　' => ' ',
-                c => c,
-            };
-            c.to_lowercase()
-        })
-        .collect()
-}
-
 impl Viewer {
     pub fn picker_state(&self) -> Option<PickerState<'_>> {
         let Mode::SheetPicker { query, selected } = &self.mode else {
             return None;
         };
+        let needle = fold(query);
         let candidates = self
             .sheet_names()
             .iter()
             .enumerate()
-            .filter(|(_, name)| sheet_matches(name, query))
+            .filter(|(_, name)| contains_folded(name, &needle))
             .map(|(i, _)| i)
             .collect();
         Some(PickerState {

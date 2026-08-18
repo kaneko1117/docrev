@@ -11,8 +11,16 @@ use crate::domain::anchor::Anchor;
 use super::grid::GridView;
 use super::layout::{self, GridLayout};
 use super::style::{canvas, chrome};
-use super::text::{cell_text, sanitize};
+use super::text::{cell_text, query_line, sanitize};
 use super::theme::Palette;
+
+/// Search prompt state — takes over the status bar while searching.
+pub struct SearchView {
+    pub query: String,
+    /// 1-based position among the matches; 0 when there is none.
+    pub current: usize,
+    pub total: usize,
+}
 
 fn column_label(index: u32) -> String {
     Anchor::column_label(index)
@@ -76,6 +84,9 @@ pub(crate) fn draw_status(
     view: &GridView,
     grid: &GridLayout,
 ) {
+    if let Some(search) = &view.search {
+        return draw_search(p, frame, area, search);
+    }
     let left = match view.notice {
         Some(notice) => format!("⚠ {notice}"),
         None => String::new(),
@@ -83,7 +94,7 @@ pub(crate) fn draw_status(
     let hint = if view.thread.is_some() {
         "r:reply  c:comment  q:quit"
     } else {
-        "c:comment  q:quit  ^G:sheet"
+        "c:comment  q:quit  ^G:sheet  ^F:find"
     };
     let hint = match visible_range(grid) {
         // only when something is off screen; otherwise it is noise
@@ -99,6 +110,30 @@ pub(crate) fn draw_status(
         Span::styled(left, Style::new().bg(p.header_bg).fg(p.notice_fg)),
         Span::styled(" ".repeat(gap), chrome(p)),
         Span::styled(hint, chrome(p)),
+    ]);
+    frame.render_widget(Paragraph::new(line).style(chrome(p)), area);
+}
+
+/// `Find: 合計█            3/17` — the input well is white like the grid so
+/// it reads as a place to type; `0/0` turns warning-colored when a non-empty
+/// query finds nothing.
+fn draw_search(p: &Palette, frame: &mut Frame, area: Rect, search: &SearchView) {
+    let label = " Find: ";
+    let counter = format!(" {}/{} ", search.current, search.total);
+    let width = |s: &str| unicode_width::UnicodeWidthStr::width(s);
+    let field = (area.width as usize).saturating_sub(width(label) + width(&counter));
+    let query = query_line(&sanitize(&search.query), field);
+    let gap = field.saturating_sub(width(&query));
+    let counter_style = if search.total == 0 && !search.query.is_empty() {
+        Style::new().bg(p.header_bg).fg(p.notice_fg)
+    } else {
+        chrome(p)
+    };
+    let line = Line::from(vec![
+        Span::styled(label, chrome(p)),
+        Span::styled(query, canvas(p)),
+        Span::styled(" ".repeat(gap), canvas(p)),
+        Span::styled(counter, counter_style),
     ]);
     frame.render_widget(Paragraph::new(line).style(chrome(p)), area);
 }

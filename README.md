@@ -45,6 +45,7 @@ docrev dump file.xlsx   # print a sheet as a text table (--sheet <name> to pick 
 | Ctrl+Home / Ctrl+End | Top / bottom of the sheet |
 | Tab / Shift+Tab | Next / previous sheet |
 | Ctrl+G / F5 | Go to a sheet by name (type to filter, Enter to switch) |
+| Ctrl+F | Find on the active sheet (type to jump, ↓/↑ next/previous, Enter to stay, Esc to go back) |
 | c | Comment on the cell (replies when the cell already has an open thread) |
 | r | Reply to the thread on the cell |
 | q / Ctrl+C | Quit |

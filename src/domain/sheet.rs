@@ -143,6 +143,17 @@ impl Sheet {
         self.merges.iter().find(|m| m.contains(row, col))
     }
 
+    /// All merged regions — for whole-sheet scans that cannot afford a
+    /// `merge_at` lookup per cell.
+    pub fn merges(&self) -> &[MergedRange] {
+        &self.merges
+    }
+
+    /// Cells actually stored in a row; cells beyond are `Empty`.
+    pub fn row_len(&self, row: usize) -> usize {
+        self.rows.get(row).map(Vec::len).unwrap_or(0)
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

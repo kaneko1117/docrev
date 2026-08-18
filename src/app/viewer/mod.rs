@@ -3,11 +3,14 @@
 //! their modes' rules.
 
 mod editing;
+mod matching;
 mod picker;
+mod search;
 #[cfg(test)]
 mod test_support;
 
 pub use picker::PickerState;
+pub use search::SearchState;
 
 use std::path::Path;
 
@@ -32,6 +35,7 @@ pub enum Event {
     NextSheet,
     PrevSheet,
     OpenSheetPicker,
+    OpenSearch,
     StartComment,
     StartReply,
     Insert(char),
@@ -86,6 +90,15 @@ pub enum Mode {
     SheetPicker {
         query: String,
         selected: usize,
+    },
+    /// Search on the active sheet: type to jump, ↓/↑ to cycle matches,
+    /// Enter to stay, Esc to go back to `origin`. `matches` is cached —
+    /// the sheet cannot change within a session, so it never goes stale.
+    Search {
+        query: String,
+        origin: (usize, usize),
+        matches: Vec<(usize, usize)>,
+        index: usize,
     },
 }
 
@@ -262,6 +275,7 @@ impl Viewer {
             Mode::Grid => self.apply_grid(event),
             Mode::Editing { .. } => self.apply_editing(event),
             Mode::SheetPicker { .. } => self.apply_picker(event),
+            Mode::Search { .. } => self.apply_search(event),
         }
     }
 
@@ -310,6 +324,15 @@ impl Viewer {
                 self.mode = Mode::SheetPicker {
                     query: String::new(),
                     selected: self.active,
+                };
+                return;
+            }
+            Event::OpenSearch => {
+                self.mode = Mode::Search {
+                    query: String::new(),
+                    origin: (row, col),
+                    matches: Vec::new(),
+                    index: 0,
                 };
                 return;
             }
