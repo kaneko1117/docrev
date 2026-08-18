@@ -1,0 +1,15 @@
+---
+source: src/ui/grid.rs
+assertion_line: 1484
+expression: "render_text(&view, &mut scroll, 46, 10)"
+---
+ A1     │ 項目
+  │     A      │     B      │     C
+ 1┌ Go to sheet ───────────────────────────┐
+ 2│zzz█                                    │
+ 3│────────────────────────────────────────│
+  │  no match                              │
+  └ Enter:switch  Esc:cancel ───────── 0/1 ┘
+
+[売上]
+                   c:comment  q:quit  ^G:sheet

@@ -1,5 +1,6 @@
 ---
 source: src/ui/grid.rs
+assertion_line: 1418
 expression: "render_text(&view, &mut scroll, 60, 7)"
 ---
  A1     │ 項目
@@ -8,4 +9,4 @@ expression: "render_text(&view, &mut scroll, 60, 7)"
  2│りんご      ●         120│           3
  3│みかん      │          80│           5
 [売上]
-⚠ comments unavailable: invalid sidecarc:comment  q:quit  Ta
+⚠ comments unavailable: invalid sidecarc:comment  q:quit  ^G
