@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::picker::{self, PickerView};
 use super::style::{canvas, dialog, selected};
-use super::text::sanitize;
+use super::text::{query_line, sanitize};
 use super::theme::Palette;
 
 const PICKER_HINT: &str = " Enter:switch  Esc:cancel ";
@@ -45,7 +45,7 @@ pub(crate) fn draw_picker(p: &Palette, frame: &mut Frame, view: &PickerView) {
     let mut lines = Vec::with_capacity(visible + 2);
     // the input field keeps the canvas white — a light well in the gray
     lines.push(Line::styled(
-        picker::query_line(&sanitize(&view.query), inner_width),
+        query_line(&sanitize(&view.query), inner_width),
         canvas(p),
     ));
     lines.push(Line::styled(
@@ -127,6 +127,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker(
                 "",
                 0,
@@ -152,6 +153,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker("zzz", 0, 1, &[])),
             col_widths: vec![],
             theme: Theme::default(),
@@ -175,6 +177,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker("", 0, 32, &items)),
             col_widths: vec![],
             theme: Theme::default(),
@@ -200,6 +203,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             picker: Some(picker(
                 "a very long query that outgrows the popup width",
                 0,
@@ -227,6 +231,7 @@ mod tests {
                 notice: None,
                 thread: None,
                 editor: None,
+                search: None,
                 picker: Some(picker(
                     "とても長い絞り込みの文字列",
                     1,

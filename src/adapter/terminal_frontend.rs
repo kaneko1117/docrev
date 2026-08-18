@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, Key
 use crate::app::error::FrontendError;
 use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Viewer};
 use crate::domain::anchor::Anchor;
-use crate::ui::grid::{self, EditorView, GridView, PickerItem, PickerView, Scroll};
+use crate::ui::grid::{self, EditorView, GridView, PickerItem, PickerView, Scroll, SearchView};
 use crate::ui::theme::Theme;
 
 /// How long the viewer waits for input before checking for outside changes.
@@ -18,6 +18,7 @@ enum InputMode {
     Grid,
     Editing,
     Picker,
+    Search,
 }
 
 pub struct TerminalFrontend {
@@ -84,10 +85,16 @@ impl Frontend for TerminalFrontend {
                     .collect(),
             }
         });
+        let search = viewer.search_state().map(|state| SearchView {
+            query: state.query.to_string(),
+            current: state.current,
+            total: state.total,
+        });
         *input_mode = match viewer.mode() {
             Mode::Grid => InputMode::Grid,
             Mode::Editing { .. } => InputMode::Editing,
             Mode::SheetPicker { .. } => InputMode::Picker,
+            Mode::Search { .. } => InputMode::Search,
         };
         let view = GridView {
             sheet: viewer.sheet(),
@@ -99,6 +106,7 @@ impl Frontend for TerminalFrontend {
             thread: viewer.thread_at_cursor(),
             editor,
             picker,
+            search,
             theme: *theme,
             col_widths: (0..viewer.sheet().col_count())
                 .map(|c| {
@@ -150,7 +158,9 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
             _ => Event::Noop,
         };
     }
-    if mode == InputMode::Picker {
+    // the picker and the search prompt share one grammar: type to filter,
+    // arrows to move, Enter to commit, Esc to cancel
+    if mode == InputMode::Picker || mode == InputMode::Search {
         return match key.code {
             KeyCode::Esc => Event::CancelEdit,
             KeyCode::Enter => Event::Submit,
@@ -172,6 +182,8 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
         // Excel's Go To key, plus F5 for the same muscle memory
         KeyCode::Char('g') if ctrl => Event::OpenSheetPicker,
         KeyCode::F(5) => Event::OpenSheetPicker,
+        // Excel's Find key
+        KeyCode::Char('f') if ctrl => Event::OpenSearch,
         KeyCode::Home if ctrl => Event::Top,
         KeyCode::End if ctrl => Event::Bottom,
         KeyCode::Up => Event::Move { rows: -1, cols: 0 },
@@ -290,6 +302,25 @@ mod tests {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(map_key_picker(ctrl_c), Event::Quit, "the exit hatch stays");
         assert_eq!(map_key_picker(key(KeyCode::Tab)), Event::Noop);
+    }
+
+    #[test]
+    fn ctrl_f_opens_search_and_search_keys_mirror_the_picker() {
+        let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert_eq!(map_key_grid(ctrl_f, 10), Event::OpenSearch);
+        assert_eq!(
+            map_key(ctrl_f, 10, InputMode::Editing),
+            Event::Noop,
+            "not while composing a comment"
+        );
+
+        let search = |code| map_key(key(code), 10, InputMode::Search);
+        assert_eq!(search(KeyCode::Char('q')), Event::Insert('q'));
+        assert_eq!(search(KeyCode::Esc), Event::CancelEdit);
+        assert_eq!(search(KeyCode::Enter), Event::Submit);
+        assert_eq!(search(KeyCode::Down), Event::Move { rows: 1, cols: 0 });
+        assert_eq!(search(KeyCode::Up), Event::Move { rows: -1, cols: 0 });
+        assert_eq!(search(KeyCode::Backspace), Event::Backspace);
     }
 
     #[test]

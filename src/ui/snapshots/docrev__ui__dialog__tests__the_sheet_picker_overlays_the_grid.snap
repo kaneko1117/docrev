@@ -13,4 +13,4 @@ expression: "render_text(&view, &mut scroll, 46, 12)"
   └ Enter:switch  Esc:cancel ───────── 3/3 ┘
 
 [売上][経費][集計]
-                   c:comment  q:quit  ^G:sheet
+          c:comment  q:quit  ^G:sheet  ^F:find

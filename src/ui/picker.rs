@@ -71,22 +71,6 @@ pub(crate) fn picker_layout(view: &PickerView, width: usize, visible: usize) -> 
     }
 }
 
-/// The query line with its cursor block, clipped from the front: when the
-/// query outgrows the popup, the end being typed is what must stay visible.
-pub(crate) fn query_line(query: &str, width: usize) -> String {
-    let mut out = String::from("█");
-    let mut used = 1;
-    for ch in query.chars().rev() {
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > width {
-            break;
-        }
-        out.insert(0, ch);
-        used += w;
-    }
-    out
-}
-
 /// The slice of `len` rows that keeps `selected` visible, centered when
 /// possible — opening on sheet 20 of 32 shows it mid-list, not at an edge.
 fn window(len: usize, selected: usize, visible: usize) -> std::ops::Range<usize> {
@@ -164,16 +148,6 @@ mod tests {
         let name = &layout.lines[0].name;
         assert!(name.contains('…'), "clipped: {name}");
         assert!(unicode_width::UnicodeWidthStr::width(name.as_str()) <= 16);
-    }
-
-    #[test]
-    fn the_query_clips_from_the_front_keeping_the_cursor() {
-        assert_eq!(query_line("abc", 10), "abc█");
-        assert_eq!(query_line("", 10), "█");
-        assert_eq!(query_line("abcdefgh", 5), "efgh█", "the tail stays");
-        // CJK: a char that would half-fit is dropped whole
-        assert_eq!(query_line("あいうえお", 5), "えお█");
-        assert_eq!(query_line("abc", 0), "█", "never empty, renderer clips");
     }
 
     #[test]

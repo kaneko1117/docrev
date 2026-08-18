@@ -40,6 +40,8 @@ docrev dump file.xlsx   # シートをテキスト表として出力(--sheet <�
 | Home / End | 行の先頭 / 末尾 |
 | Ctrl+Home / Ctrl+End | シートの先頭 / 末尾 |
 | Tab / Shift+Tab | シート切替 |
+| Ctrl+G / F5 | シート名で移動(文字で絞り込み、Enter で切替) |
+| Ctrl+F | シート内検索(文字で移動、↓↑で次/前、Enter でその場に留まる、Esc で元の場所へ) |
 | c | セルにコメント(既にスレッドがあるセルでは返信) |
 | r | スレッドに返信 |
 | q / Ctrl+C | 終了 |

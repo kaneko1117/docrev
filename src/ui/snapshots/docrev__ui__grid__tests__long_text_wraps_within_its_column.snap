@@ -13,4 +13,4 @@ expression: "render_text(&view, &mut scroll, 50, 12)"
  3│12345678901…│
 
 [WR]
-                       c:comment  q:quit  ^G:sheet
+              c:comment  q:quit  ^G:sheet  ^F:find
