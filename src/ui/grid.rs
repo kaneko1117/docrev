@@ -13,7 +13,10 @@ use crate::domain::comment::CommentThread;
 use crate::domain::sheet::{Sheet, TextColor};
 
 use super::layout::{self, GridLayout, LayoutInput, Separator, Viewport};
-use super::style::{canvas, chrome, filled_canvas, gridline_style, header, ruled, selected};
+use super::style::{
+    canvas, chrome, filled_canvas, freeze_gridline, freeze_ruled, gridline_style, header, ruled,
+    selected,
+};
 use super::theme::{Palette, Theme};
 use super::{bars, dialog, panel};
 
@@ -122,19 +125,36 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
         " ".repeat(grid.label_width),
         ruled(p, header(p)),
     )];
-    for label in &grid.header {
-        header_line.push(Span::styled("│", ruled(p, chrome(p))));
+    for (i, label) in grid.header.iter().enumerate() {
+        let separator = if grid.header_boundary == Some(i) {
+            ruled(p, freeze_gridline(p))
+        } else {
+            ruled(p, chrome(p))
+        };
+        header_line.push(Span::styled("│", separator));
         header_line.push(Span::styled(label.clone(), ruled(p, chrome(p))));
     }
     lines.push(Line::from(header_line));
 
     for body in &grid.lines {
-        let rule = |style: Style| if body.ruled { ruled(p, style) } else { style };
+        let rule = |style: Style| {
+            if !body.ruled {
+                return style;
+            }
+            if body.freeze_boundary {
+                freeze_ruled(p, style)
+            } else {
+                ruled(p, style)
+            }
+        };
         let mut spans = vec![Span::styled(body.label.clone(), rule(chrome(p)))];
         for slot in &body.slots {
             spans.push(match &slot.separator {
                 Separator::Marker { fill } => {
                     Span::styled("●", rule(filled_canvas(p, *fill).fg(p.marker_fg)))
+                }
+                Separator::Gridline if slot.freeze_boundary => {
+                    Span::styled("│", rule(freeze_gridline(p)))
                 }
                 Separator::Gridline => Span::styled("│", rule(gridline_style(p))),
             });
@@ -151,7 +171,15 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
                 Some(TextColor::Font(_)) => base,
                 None => base,
             };
-            let style = if slot.ruled { ruled(p, base) } else { base };
+            let style = if slot.ruled {
+                if body.freeze_boundary {
+                    freeze_ruled(p, base)
+                } else {
+                    ruled(p, base)
+                }
+            } else {
+                base
+            };
             spans.push(Span::styled(slot.text.clone(), style));
         }
         lines.push(Line::from(spans));
@@ -801,6 +829,78 @@ mod tests {
         view.theme = Theme::Sheets;
         let sheets_text = render_text(&view, &mut Scroll::default(), 50, 8);
         assert_eq!(terminal_text, sheets_text, "themes must not move anything");
+    }
+
+    fn frozen_sheet() -> Sheet {
+        let mut rows = vec![vec![
+            CellValue::Text("項番".into()),
+            CellValue::Text("内容".into()),
+            CellValue::Text("結果".into()),
+        ]];
+        rows.extend((1..60).map(|r| {
+            vec![
+                CellValue::Text(format!("No{r}")),
+                CellValue::Text(format!("手順{r}")),
+                CellValue::Text("OK".into()),
+            ]
+        }));
+        Sheet::new("凍結", rows).with_frozen(1, 1)
+    }
+
+    #[test]
+    fn frozen_panes_pin_headers_while_scrolled() {
+        let sheet = frozen_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["凍結"],
+            active: 0,
+            cursor: (50, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            search: None,
+            picker: None,
+            col_widths: vec![6, 8, 6],
+            theme: Theme::default(),
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 40, 9));
+    }
+
+    #[test]
+    fn the_freeze_boundary_is_emphasized() {
+        let sheet = frozen_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["凍結"],
+            active: 0,
+            cursor: (50, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            search: None,
+            picker: None,
+            col_widths: vec![6, 8, 6],
+            theme: Theme::default(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 9)).unwrap();
+        terminal
+            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let p = &Theme::default().palette();
+        // row 2 is the pinned header row: its underline is the boundary
+        let pinned = buffer.cell((1, 2)).unwrap();
+        assert_eq!(
+            pinned.style().underline_color,
+            Some(p.header_fg),
+            "the horizontal boundary is darker than a gridline"
+        );
+        // an ordinary body row keeps the ordinary gridline color
+        let body = buffer.cell((1, 3)).unwrap();
+        assert_ne!(body.style().underline_color, Some(p.header_fg));
     }
 
     #[test]

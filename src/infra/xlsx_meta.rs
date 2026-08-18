@@ -46,6 +46,65 @@ pub fn column_widths(document: &Path) -> Result<HashMap<String, Vec<ColumnWidth>
     Ok(result)
 }
 
+/// Frozen panes per sheet name: `(rows, cols)` pinned while scrolling.
+/// calamine does not expose `<pane>` either, so this reads each sheet's
+/// `<sheetView><pane xSplit ySplit state="frozen"/>` from the zip.
+pub fn frozen_panes(document: &Path) -> Result<HashMap<String, (usize, usize)>, MetaError> {
+    let mut archive = open_archive(document)?;
+
+    let workbook = read_entry(&mut archive, "xl/workbook.xml")?;
+    let rels = read_entry(&mut archive, "xl/_rels/workbook.xml.rels")?;
+    let sheets = parse_sheet_ids(&workbook)?;
+    let targets = parse_rel_targets(&rels)?;
+
+    let mut result = HashMap::new();
+    for (name, rid) in sheets {
+        let Some(target) = targets.get(&rid) else {
+            continue;
+        };
+        let Ok(xml) = read_entry(&mut archive, &entry_path(target)) else {
+            continue;
+        };
+        if let Some(frozen) = parse_pane(&xml)? {
+            result.insert(name, frozen);
+        }
+    }
+    Ok(result)
+}
+
+/// The first frozen `<pane>`. Non-frozen splits measure their offsets in
+/// twips, not cells, so anything without a frozen state is ignored; frozen
+/// splits carry whole cell counts in `xSplit`/`ySplit`.
+fn parse_pane(xml: &str) -> Result<Option<(usize, usize)>, MetaError> {
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"pane" => {
+                let mut x = 0f64;
+                let mut y = 0f64;
+                let mut frozen = false;
+                for attr in e.attributes().flatten() {
+                    let value = attr_value(&attr, reader.decoder());
+                    match attr.key.as_ref() {
+                        b"xSplit" => x = value.parse().unwrap_or(0.0),
+                        b"ySplit" => y = value.parse().unwrap_or(0.0),
+                        b"state" => frozen = value == "frozen" || value == "frozenSplit",
+                        _ => {}
+                    }
+                }
+                if frozen && (x > 0.0 || y > 0.0) && x.is_finite() && y.is_finite() {
+                    return Ok(Some((y.max(0.0) as usize, x.max(0.0) as usize)));
+                }
+                return Ok(None);
+            }
+            // panes live in <sheetViews> at the top; stop before cell data
+            Event::Start(e) if e.local_name().as_ref() == b"sheetData" => return Ok(None),
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
 /// What a cell's `s=` style index resolves to: a number-format code, a
 /// solid fill color and/or a font color (sRGB).
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -607,6 +666,35 @@ mod tests {
 
     fn formats_of(styles: &[CellStyle]) -> Vec<Option<&str>> {
         styles.iter().map(|s| s.format.as_deref()).collect()
+    }
+
+    #[test]
+    fn a_frozen_pane_yields_row_and_col_counts() {
+        let xml = r#"<worksheet><sheetViews>
+            <sheetView workbookViewId="0">
+                <pane xSplit="1" ySplit="2" topLeftCell="B3" state="frozen"/>
+            </sheetView>
+        </sheetViews><sheetData/></worksheet>"#;
+        assert_eq!(parse_pane(xml).unwrap(), Some((2, 1)));
+    }
+
+    #[test]
+    fn frozen_split_counts_too_and_axes_may_be_absent() {
+        let rows_only = r#"<sheetView><pane ySplit="1" state="frozenSplit"/></sheetView>"#;
+        assert_eq!(parse_pane(rows_only).unwrap(), Some((1, 0)));
+        let cols_only = r#"<sheetView><pane xSplit="3" state="frozen"/></sheetView>"#;
+        assert_eq!(parse_pane(cols_only).unwrap(), Some((0, 3)));
+    }
+
+    #[test]
+    fn non_frozen_splits_and_garbage_are_ignored() {
+        // a plain split measures in twips, not cells — not a freeze
+        let split = r#"<sheetView><pane xSplit="2310" ySplit="1050"/></sheetView>"#;
+        assert_eq!(parse_pane(split).unwrap(), None);
+        let garbage = r#"<sheetView><pane xSplit="NaN" ySplit="-3" state="frozen"/></sheetView>"#;
+        assert_eq!(parse_pane(garbage).unwrap(), None);
+        let none = r"<worksheet><sheetData/></worksheet>";
+        assert_eq!(parse_pane(none).unwrap(), None);
     }
 
     #[test]
