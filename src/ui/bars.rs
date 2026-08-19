@@ -56,24 +56,43 @@ pub(crate) fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view:
     frame.render_widget(Paragraph::new(line).style(canvas(p)), area);
 }
 
-pub(crate) fn draw_tabs(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
+/// Where each tab landed, in absolute columns, for the mouse hit map.
+pub(crate) type TabSpans = Vec<(usize, std::ops::Range<u16>)>;
+
+/// Draws the tab strip and reports where each tab (and the `‹` / `›`
+/// arrows) landed.
+pub(crate) fn draw_tabs(
+    p: &Palette,
+    frame: &mut Frame,
+    area: Rect,
+    view: &GridView,
+) -> (TabSpans, Option<u16>, Option<u16>) {
     let strip = layout::tab_strip(&view.sheet_names, view.active, area.width as usize);
     let mut spans = Vec::with_capacity(strip.tabs.len() + 2);
-    if strip.more_left {
+    let mut tab_spans = Vec::with_capacity(strip.tabs.len());
+    let mut x = area.x;
+    let arrow_left = strip.more_left.then(|| {
         spans.push(Span::styled("‹", chrome(p)));
-    }
+        x += 1;
+        x - 1
+    });
     for (i, label) in &strip.tabs {
         let style = if *i == view.active {
             canvas(p).add_modifier(Modifier::BOLD)
         } else {
             chrome(p)
         };
+        let width = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
+        tab_spans.push((*i, x..x + width));
+        x += width;
         spans.push(Span::styled(label.clone(), style));
     }
-    if strip.more_right {
+    let arrow_right = strip.more_right.then(|| {
         spans.push(Span::styled("›", chrome(p)));
-    }
+        x
+    });
     frame.render_widget(Paragraph::new(Line::from(spans)).style(chrome(p)), area);
+    (tab_spans, arrow_left, arrow_right)
 }
 
 /// Hints, notices and — for a sheet wider than the screen — where the view is.
@@ -173,6 +192,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -205,6 +225,7 @@ mod tests {
             notice: Some("this notice must yield to the prompt"),
             thread: None,
             editor: None,
+            selection: None,
             search: Some(super::SearchView {
                 query: "合計".into(),
                 current: 3,
@@ -247,6 +268,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],

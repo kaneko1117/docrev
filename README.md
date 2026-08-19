@@ -50,6 +50,15 @@ docrev dump file.xlsx   # print a sheet as a text table (--sheet <name> to pick 
 | r | Reply to the thread on the cell |
 | q / Ctrl+C | Quit |
 
+### Mouse
+
+Click a cell to select it, a sheet tab to switch, `‹`/`›` to step through
+sheets; the wheel scrolls (Shift+wheel sideways). **Drag across cells to
+copy the range** — the clipboard receives the full underlying values as
+tab-separated text, ready to paste into Excel or Google Sheets as a table.
+Copying uses OSC 52, so it reaches your local clipboard even over SSH. A
+click always wins over an open prompt.
+
 In the comment editor: Enter inserts a newline, Ctrl+S saves, Esc cancels.
 The formula bar shows the full value of the selected cell. Cells with an open
 thread are marked with `●`; press `c` on one to open its thread in a side

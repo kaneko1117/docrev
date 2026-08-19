@@ -1,12 +1,19 @@
+use std::io::Write;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 
 use crate::app::error::FrontendError;
 use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Viewer};
 use crate::domain::anchor::Anchor;
-use crate::ui::grid::{self, EditorView, GridView, PickerItem, PickerView, Scroll, SearchView};
+use crate::infra::clipboard;
+use crate::ui::grid::{
+    self, EditorView, GridView, Hit, HitMap, PickerItem, PickerView, Scroll, SearchView,
+};
 use crate::ui::theme::Theme;
 
 /// How long the viewer waits for input before checking for outside changes.
@@ -27,6 +34,9 @@ pub struct TerminalFrontend {
     scrolls: Vec<Scroll>,
     page_rows: usize,
     input_mode: InputMode,
+    /// Where things were drawn last frame — clicks resolve through this.
+    hits: HitMap,
+    drag: DragState,
 }
 
 impl TerminalFrontend {
@@ -37,7 +47,75 @@ impl TerminalFrontend {
             scrolls: Vec::new(),
             page_rows: 1,
             input_mode: InputMode::Grid,
+            hits: HitMap::default(),
+            drag: DragState::default(),
         }
+    }
+}
+
+/// A left press on a cell, until its release; `dragged` turns true the
+/// moment the drag reaches another cell, telling release from click.
+#[derive(Default)]
+struct DragState {
+    pressed: bool,
+    dragged: bool,
+}
+
+fn map_mouse(hits: &HitMap, mode: InputMode, drag: &mut DragState, mouse: MouseEvent) -> Event {
+    let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+    // wheel steps match what terminals faked as arrow keys before capture;
+    // prompts scroll their selection one entry at a time
+    let step: isize = match mode {
+        InputMode::Picker | InputMode::Search => 1,
+        _ => 3,
+    };
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => match hits.at(mouse.column, mouse.row) {
+            Some(Hit::Cell { row, col }) => {
+                drag.pressed = true;
+                drag.dragged = false;
+                Event::SelectCell { row, col }
+            }
+            Some(Hit::Tab(index)) => Event::SelectSheet(index),
+            Some(Hit::PrevTabs) => Event::PrevSheet,
+            Some(Hit::NextTabs) => Event::NextSheet,
+            None => Event::Noop,
+        },
+        MouseEventKind::Drag(MouseButton::Left) if drag.pressed => {
+            match hits.at(mouse.column, mouse.row) {
+                Some(Hit::Cell { row, col }) => {
+                    drag.dragged = true;
+                    Event::DragTo { row, col }
+                }
+                _ => Event::Noop,
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) if drag.pressed => {
+            drag.pressed = false;
+            // the viewer must always learn the button came up, or the
+            // selection would outlive the press; a release that never left
+            // its cell was a click and copies nothing
+            Event::DragEnd {
+                copy: std::mem::take(&mut drag.dragged),
+            }
+        }
+        MouseEventKind::ScrollUp => Event::Move {
+            rows: if shift { 0 } else { -step },
+            cols: if shift { -step } else { 0 },
+        },
+        MouseEventKind::ScrollDown => Event::Move {
+            rows: if shift { 0 } else { step },
+            cols: if shift { step } else { 0 },
+        },
+        MouseEventKind::ScrollLeft => Event::Move {
+            rows: 0,
+            cols: -step,
+        },
+        MouseEventKind::ScrollRight => Event::Move {
+            rows: 0,
+            cols: step,
+        },
+        _ => Event::Noop,
     }
 }
 
@@ -49,6 +127,8 @@ impl Frontend for TerminalFrontend {
             scrolls,
             page_rows,
             input_mode,
+            hits,
+            ..
         } = self;
         if scrolls.len() < viewer.sheet_count() {
             scrolls.resize(viewer.sheet_count(), Scroll::default());
@@ -107,6 +187,7 @@ impl Frontend for TerminalFrontend {
             editor,
             picker,
             search,
+            selection: viewer.selection(),
             theme: *theme,
             col_widths: (0..viewer.sheet().col_count())
                 .map(|c| {
@@ -121,7 +202,7 @@ impl Frontend for TerminalFrontend {
         terminal
             .draw(|frame| {
                 *page_rows = frame.area().height.saturating_sub(grid::CHROME_ROWS).max(1) as usize;
-                grid::draw(frame, &view, scroll);
+                *hits = grid::draw(frame, &view, scroll);
             })
             .map_err(|e| FrontendError(e.to_string()))?;
         Ok(())
@@ -138,10 +219,26 @@ impl Frontend for TerminalFrontend {
                 TermEvent::Key(key) if key.is_press() => {
                     return Ok(map_key(key, self.page_rows as isize, self.input_mode));
                 }
+                TermEvent::Mouse(mouse) => {
+                    return Ok(map_mouse(
+                        &self.hits,
+                        self.input_mode,
+                        &mut self.drag,
+                        mouse,
+                    ));
+                }
                 TermEvent::Resize(..) => return Ok(Event::Noop),
                 _ => {}
             }
         }
+    }
+
+    /// OSC 52: the terminal is asked to put the text on the clipboard.
+    fn copy(&mut self, text: &str) -> Result<(), FrontendError> {
+        let mut out = std::io::stdout();
+        out.write_all(clipboard::osc52(text).as_bytes())
+            .and_then(|()| out.flush())
+            .map_err(|e| FrontendError(e.to_string()))
     }
 }
 
@@ -350,5 +447,157 @@ mod tests {
         for code in ['h', 'j', 'k', 'l', 'g', 'G'] {
             assert_eq!(map_key_grid(key(KeyCode::Char(code)), 10), Event::Noop);
         }
+    }
+
+    fn hitmap() -> HitMap {
+        HitMap {
+            grid: ratatui::layout::Rect {
+                x: 0,
+                y: 1,
+                width: 40,
+                height: 6,
+            },
+            col_spans: vec![(0, 2..15), (1, 15..28)],
+            line_rows: vec![0, 1, 2],
+            tabs_y: 7,
+            tab_spans: vec![(0, 1..7), (1, 7..13)],
+            arrow_left: Some(0),
+            arrow_right: Some(13),
+        }
+    }
+
+    fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_click_resolves_to_a_cell_and_a_plain_click_never_copies() {
+        let hits = hitmap();
+        let mut drag = DragState::default();
+        // y=2 is the first body line (y=1 is the column-letter header)
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::Down(MouseButton::Left), 3, 2)
+            ),
+            Event::SelectCell { row: 0, col: 0 }
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::Up(MouseButton::Left), 3, 2)
+            ),
+            Event::DragEnd { copy: false },
+            "release still reaches the viewer, but a plain click never copies"
+        );
+    }
+
+    #[test]
+    fn a_drag_crosses_cells_and_release_ends_it() {
+        let hits = hitmap();
+        let mut drag = DragState::default();
+        map_mouse(
+            &hits,
+            InputMode::Grid,
+            &mut drag,
+            mouse(MouseEventKind::Down(MouseButton::Left), 3, 2),
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::Drag(MouseButton::Left), 16, 3)
+            ),
+            Event::DragTo { row: 1, col: 1 }
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::Up(MouseButton::Left), 16, 3)
+            ),
+            Event::DragEnd { copy: true }
+        );
+        // a drag that never began (press missed the grid) stays inert
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::Drag(MouseButton::Left), 16, 3)
+            ),
+            Event::Noop
+        );
+    }
+
+    #[test]
+    fn tabs_arrows_and_dead_zones_resolve() {
+        let hits = hitmap();
+        let mut drag = DragState::default();
+        let down = |x, y| mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(8, 7)),
+            Event::SelectSheet(1)
+        );
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(0, 7)),
+            Event::PrevSheet
+        );
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(13, 7)),
+            Event::NextSheet
+        );
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(3, 0)),
+            Event::Noop,
+            "the formula bar is not clickable"
+        );
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(3, 1)),
+            Event::Noop,
+            "the column-letter header is not a cell"
+        );
+    }
+
+    #[test]
+    fn the_wheel_moves_the_cursor_and_prompts_step_by_one() {
+        let hits = HitMap::default();
+        let mut drag = DragState::default();
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::ScrollDown, 5, 5)
+            ),
+            Event::Move { rows: 3, cols: 0 }
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Picker,
+                &mut drag,
+                mouse(MouseEventKind::ScrollUp, 5, 5)
+            ),
+            Event::Move { rows: -1, cols: 0 }
+        );
+        let mut shifted = mouse(MouseEventKind::ScrollDown, 5, 5);
+        shifted.modifiers = KeyModifiers::SHIFT;
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, shifted),
+            Event::Move { rows: 0, cols: 3 },
+            "shift turns the wheel sideways"
+        );
     }
 }

@@ -14,8 +14,8 @@ use crate::domain::sheet::{Sheet, TextColor};
 
 use super::layout::{self, GridLayout, LayoutInput, Separator, Viewport};
 use super::style::{
-    canvas, chrome, filled_canvas, freeze_gridline, freeze_ruled, gridline_style, header, ruled,
-    selected,
+    canvas, chrome, filled_canvas, freeze_gridline, freeze_ruled, gridline_style, header,
+    range_selected, ruled, selected,
 };
 use super::theme::{Palette, Theme};
 use super::{bars, dialog, panel};
@@ -44,6 +44,8 @@ pub struct GridView<'a> {
     pub picker: Option<PickerView>,
     /// Search prompt state — takes over the status bar.
     pub search: Option<SearchView>,
+    /// A drag in progress, highlighted like the cursor.
+    pub selection: Option<((usize, usize), (usize, usize))>,
     /// Per-column display widths; missing entries use `DEFAULT_CELL_WIDTH`.
     pub col_widths: Vec<usize>,
     pub theme: Theme,
@@ -54,7 +56,56 @@ pub struct EditorView<'a> {
     pub buffer: &'a str,
 }
 
-pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
+/// Where things were drawn last frame — the frontend maps mouse coordinates
+/// through this.
+#[derive(Default, Clone)]
+pub struct HitMap {
+    /// The grid area; its first line is the column-letter header.
+    pub(crate) grid: Rect,
+    /// Visible columns as (col, x-range) relative to the grid's left edge.
+    pub(crate) col_spans: Vec<(usize, std::ops::Range<usize>)>,
+    /// Sheet row per body line, starting under the header line.
+    pub(crate) line_rows: Vec<usize>,
+    /// The tab bar's row, its clickable spans, and the `‹` / `›` arrows.
+    pub(crate) tabs_y: u16,
+    pub(crate) tab_spans: Vec<(usize, std::ops::Range<u16>)>,
+    pub(crate) arrow_left: Option<u16>,
+    pub(crate) arrow_right: Option<u16>,
+}
+
+/// What a click landed on.
+#[derive(Debug, PartialEq)]
+pub enum Hit {
+    Cell { row: usize, col: usize },
+    Tab(usize),
+    PrevTabs,
+    NextTabs,
+}
+
+impl HitMap {
+    pub fn at(&self, x: u16, y: u16) -> Option<Hit> {
+        if y == self.tabs_y {
+            if Some(x) == self.arrow_left {
+                return Some(Hit::PrevTabs);
+            }
+            if Some(x) == self.arrow_right {
+                return Some(Hit::NextTabs);
+            }
+            let (index, _) = self.tab_spans.iter().find(|(_, s)| s.contains(&x))?;
+            return Some(Hit::Tab(*index));
+        }
+        if !self.grid.contains(ratatui::layout::Position { x, y }) {
+            return None;
+        }
+        let rel_y = (y - self.grid.y) as usize;
+        let row = *self.line_rows.get(rel_y.checked_sub(1)?)?;
+        let rel_x = (x - self.grid.x) as usize;
+        let (col, _) = self.col_spans.iter().find(|(_, s)| s.contains(&rel_x))?;
+        Some(Hit::Cell { row, col: *col })
+    }
+}
+
+pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
     let p = &view.theme.palette();
     let [formula_area, main_area, tabs_area, status_area] = Layout::vertical([
         Constraint::Length(1),
@@ -85,6 +136,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
             cursor: view.cursor,
             markers: &view.markers,
             col_widths: &view.col_widths,
+            selection: view.selection,
         },
         &Viewport {
             width: grid_area.width as usize,
@@ -105,12 +157,21 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
             panel::draw_editor_overlay(p, frame, editor);
         }
     }
-    bars::draw_tabs(p, frame, tabs_area, view);
+    let (tab_spans, arrow_left, arrow_right) = bars::draw_tabs(p, frame, tabs_area, view);
     bars::draw_status(p, frame, status_area, view, &grid);
     // last, so a tall candidate list never loses its bottom border (and the
     // counter riding on it) to the tab bar
     if let Some(picker) = &view.picker {
         dialog::draw_picker(p, frame, picker);
+    }
+    HitMap {
+        grid: grid_area,
+        col_spans: grid.col_spans,
+        line_rows: grid.lines.iter().map(|l| l.row).collect(),
+        tabs_y: tabs_area.y,
+        tab_spans,
+        arrow_left,
+        arrow_right,
     }
 }
 
@@ -162,6 +223,8 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
             });
             let base = if slot.cursor {
                 selected(p)
+            } else if slot.selected {
+                range_selected(p)
             } else {
                 filled_canvas(p, slot.fill)
             };
@@ -214,6 +277,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -245,6 +309,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -252,7 +317,11 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
         let mut scroll = Scroll::default();
-        terminal.draw(|f| draw(f, &view, &mut scroll)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &view, &mut scroll);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer();
 
         let text = buffer_text(buffer);
@@ -316,6 +385,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -323,7 +393,11 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
         let mut scroll = Scroll::default();
-        terminal.draw(|f| draw(f, &view, &mut scroll)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &view, &mut scroll);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer();
 
         let fg_of = |symbol: &str| {
@@ -376,6 +450,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -383,7 +458,11 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
         let mut scroll = Scroll::default();
-        terminal.draw(|f| draw(f, &view, &mut scroll)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &view, &mut scroll);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer();
 
         let painted = (0..buffer.area.width).any(|x| {
@@ -423,6 +502,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -446,6 +526,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -453,7 +534,9 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(46, 8)).unwrap();
         terminal
-            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .draw(|f| {
+                draw(f, &view, &mut Scroll::default());
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let p = &Theme::default().palette();
@@ -478,6 +561,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -511,6 +595,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -532,6 +617,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -564,6 +650,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -599,6 +686,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![20, 6, 8],
@@ -650,6 +738,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -671,6 +760,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -678,7 +768,9 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
         terminal
-            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .draw(|f| {
+                draw(f, &view, &mut Scroll::default());
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         // row 2 is the merged A1:C1 row; column x=3 is inside column A
@@ -707,6 +799,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -714,7 +807,9 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
         terminal
-            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .draw(|f| {
+                draw(f, &view, &mut Scroll::default());
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         // A2:A3 merge: row 3 (A2, mid-merge) has no underline, row 4 (A3, last) does
@@ -736,6 +831,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -777,6 +873,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -809,6 +906,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],
@@ -816,7 +914,9 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
         terminal
-            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .draw(|f| {
+                draw(f, &view, &mut Scroll::default());
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let plain = buffer.cell((10, 3)).unwrap();
@@ -861,6 +961,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![6, 8, 6],
@@ -868,6 +969,75 @@ mod tests {
         };
         let mut scroll = Scroll::default();
         insta::assert_snapshot!(render_text(&view, &mut scroll, 40, 9));
+    }
+
+    fn hit_map_of(view: &GridView, width: u16, height: u16) -> HitMap {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| {
+                hits = draw(f, view, &mut Scroll::default());
+            })
+            .unwrap();
+        hits
+    }
+
+    #[test]
+    fn the_hit_map_matches_what_was_drawn() {
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上", "経費"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: None,
+            selection: None,
+            search: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let hits = hit_map_of(&view, 46, 8);
+        // rows: 0 formula bar, 1 column letters, 2.. data; labels are 2 wide
+        assert_eq!(hits.at(3, 2), Some(Hit::Cell { row: 0, col: 0 }));
+        assert_eq!(hits.at(16, 3), Some(Hit::Cell { row: 1, col: 1 }));
+        assert_eq!(hits.at(3, 0), None, "the formula bar is dead");
+        assert_eq!(hits.at(3, 1), None, "the letter header is dead");
+        // tab bar sits above the status line: [売上][経費]
+        assert_eq!(hits.at(1, 6), Some(Hit::Tab(0)));
+        assert_eq!(hits.at(7, 6), Some(Hit::Tab(1)));
+        assert_eq!(hits.at(45, 6), None, "the empty tab tail is dead");
+    }
+
+    #[test]
+    fn the_hit_map_respects_frozen_panes() {
+        let sheet = frozen_sheet();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["凍結"],
+            active: 0,
+            cursor: (50, 2),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: None,
+            selection: None,
+            search: None,
+            col_widths: vec![6, 8, 6],
+            theme: Theme::default(),
+        };
+        let hits = hit_map_of(&view, 40, 9);
+        // the pinned header row is line 1 of the grid (screen row 2)
+        assert_eq!(hits.at(3, 2), Some(Hit::Cell { row: 0, col: 0 }));
+        // the body below it is scrolled near the cursor, not row 1
+        let Some(Hit::Cell { row, .. }) = hits.at(3, 3) else {
+            panic!("expected a body cell");
+        };
+        assert!(row > 40, "the body is scrolled to the cursor, got {row}");
     }
 
     #[test]
@@ -882,6 +1052,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![6, 8, 6],
@@ -889,7 +1060,9 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 9)).unwrap();
         terminal
-            .draw(|f| draw(f, &view, &mut Scroll::default()))
+            .draw(|f| {
+                draw(f, &view, &mut Scroll::default());
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let p = &Theme::default().palette();
@@ -917,6 +1090,7 @@ mod tests {
             notice: Some("comments unavailable: invalid sidecar"),
             thread: None,
             editor: None,
+            selection: None,
             search: None,
             picker: None,
             col_widths: vec![],

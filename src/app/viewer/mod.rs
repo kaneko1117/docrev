@@ -4,6 +4,7 @@
 
 mod editing;
 mod matching;
+mod mouse;
 mod picker;
 mod search;
 #[cfg(test)]
@@ -36,6 +37,22 @@ pub enum Event {
     PrevSheet,
     OpenSheetPicker,
     OpenSearch,
+    /// A click on a grid cell (also the press that may begin a drag).
+    SelectCell {
+        row: usize,
+        col: usize,
+    },
+    /// A click on a sheet tab.
+    SelectSheet(usize),
+    /// The drag extended to another cell — the selection grows.
+    DragTo {
+        row: usize,
+        col: usize,
+    },
+    /// The button came up; `copy` when it was a real drag, not a click.
+    DragEnd {
+        copy: bool,
+    },
     StartComment,
     StartReply,
     Insert(char),
@@ -53,6 +70,11 @@ pub enum Event {
 pub trait Frontend {
     fn draw(&mut self, viewer: &Viewer) -> Result<(), FrontendError>;
     fn next_event(&mut self) -> Result<Event, FrontendError>;
+    /// Hands finished-drag TSV to the clipboard; the default drops it, for
+    /// frontends without one.
+    fn copy(&mut self, _text: &str) -> Result<(), FrontendError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,12 +90,14 @@ pub enum EditTarget {
 enum Notice {
     Reload(String),
     Save(String),
+    /// `Copied 3×2 cells` — cleared by the next input.
+    Copy(String),
 }
 
 impl Notice {
     fn text(&self) -> &str {
         match self {
-            Notice::Reload(text) | Notice::Save(text) => text,
+            Notice::Reload(text) | Notice::Save(text) | Notice::Copy(text) => text,
         }
     }
 }
@@ -132,6 +156,11 @@ pub struct Viewer {
     store: Box<dyn CommentStore>,
     /// Store revision the loaded comments came from.
     revision: Option<u64>,
+    /// A drag in progress: (press cell, current cell). Transient — it exists
+    /// only while the button is down.
+    selection: Option<((usize, usize), (usize, usize))>,
+    /// TSV waiting for the frontend to hand to the clipboard.
+    copy_request: Option<String>,
 }
 
 impl Viewer {
@@ -179,6 +208,8 @@ impl Viewer {
             mode: Mode::Grid,
             revision,
             store,
+            selection: None,
+            copy_request: None,
         })
     }
 
@@ -265,11 +296,41 @@ impl Viewer {
         self.quit
     }
 
+    /// The drag rectangle in progress, as (press cell, current cell).
+    pub fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.selection
+    }
+
+    /// TSV produced by a finished drag; the run loop hands it to the frontend.
+    pub fn take_copy_request(&mut self) -> Option<String> {
+        self.copy_request.take()
+    }
+
     pub fn apply(&mut self, event: Event) {
         // outside changes are picked up in either mode; typing is untouched
         if event == Event::Tick {
             self.reload_if_changed();
             return;
+        }
+        // a copy notice is a receipt, not a warning — the next real input
+        // retires it (Noop covers bare pointer motion, which would kill it
+        // within milliseconds of the drag that earned it)
+        if event != Event::Noop && matches!(self.notice, Some(Notice::Copy(_))) {
+            self.notice = None;
+        }
+        // the selection lives exactly as long as the drag: any event that
+        // is not part of one (a key, a sheet switch) dissolves it, so a
+        // stale rectangle can never survive onto another sheet or screen
+        if !matches!(
+            event,
+            Event::SelectCell { .. } | Event::DragTo { .. } | Event::DragEnd { .. } | Event::Noop
+        ) {
+            self.selection = None;
+        }
+        // clicks win over any open prompt (#49): the modal closes and the
+        // click acts, in one motion — a draft being composed is discarded
+        if Self::is_mouse(event) && !matches!(self.mode, Mode::Grid) {
+            self.mode = Mode::Grid;
         }
         match self.mode {
             Mode::Grid => self.apply_grid(event),
@@ -277,6 +338,16 @@ impl Viewer {
             Mode::SheetPicker { .. } => self.apply_picker(event),
             Mode::Search { .. } => self.apply_search(event),
         }
+    }
+
+    fn is_mouse(event: Event) -> bool {
+        matches!(
+            event,
+            Event::SelectCell { .. }
+                | Event::SelectSheet(_)
+                | Event::DragTo { .. }
+                | Event::DragEnd { .. }
+        )
     }
 
     /// Re-reads the comments when the store reports a new revision.
@@ -362,6 +433,13 @@ impl Viewer {
                 }
                 return;
             }
+            Event::SelectCell { .. }
+            | Event::SelectSheet(_)
+            | Event::DragTo { .. }
+            | Event::DragEnd { .. } => {
+                self.apply_mouse(event);
+                return;
+            }
             Event::Quit => {
                 self.quit = true;
                 return;
@@ -383,6 +461,9 @@ pub fn run(mut viewer: Viewer, frontend: &mut impl Frontend) -> Result<(), Front
         frontend.draw(&viewer)?;
         let event = frontend.next_event()?;
         viewer.apply(event);
+        if let Some(text) = viewer.take_copy_request() {
+            frontend.copy(&text)?;
+        }
     }
     Ok(())
 }
