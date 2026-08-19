@@ -44,6 +44,11 @@ impl DocumentSource for XlsxSource {
                     .collect();
                 let (frozen_rows, frozen_cols) =
                     frozen.get(&raw_sheet.name).copied().unwrap_or((0, 0));
+                let formulas: HashMap<(usize, usize), String> = raw_sheet
+                    .formulas
+                    .into_iter()
+                    .map(|((row, col), f)| ((row as usize, col as usize), f))
+                    .collect();
                 let sheet = to_sheet(
                     raw_sheet.name,
                     raw_sheet.cells,
@@ -52,7 +57,8 @@ impl DocumentSource for XlsxSource {
                     &formats,
                 )
                 .with_merges(merges)
-                .with_frozen(frozen_rows, frozen_cols);
+                .with_frozen(frozen_rows, frozen_cols)
+                .with_formulas(formulas);
                 match cols {
                     Some(cols) => {
                         let expanded = expand_widths(cols, sheet.col_count());

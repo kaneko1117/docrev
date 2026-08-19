@@ -35,6 +35,9 @@ enum Command {
         /// Sheet name to print (defaults to the first sheet)
         #[arg(long)]
         sheet: Option<String>,
+        /// Show formulas instead of their results (like Excel's Ctrl+`)
+        #[arg(long)]
+        formulas: bool,
     },
     /// Read and write review comments (built for AI agents)
     Comment {
@@ -103,7 +106,14 @@ fn main() -> ExitCode {
     // an explicit flag wins over the environment, which wins over the default
     let theme = cli.theme.unwrap_or_else(Theme::from_env);
     match (cli.command, cli.file) {
-        (Some(Command::Dump { file, sheet }), _) => run_dump(&file, sheet.as_deref()),
+        (
+            Some(Command::Dump {
+                file,
+                sheet,
+                formulas,
+            }),
+            _,
+        ) => run_dump(&file, sheet.as_deref(), formulas),
         (Some(Command::Comment { action }), _) => run_comment(action),
         (None, Some(file)) => run_viewer(&file, theme),
         (None, None) => {
@@ -181,9 +191,14 @@ fn print_json(rendered: Result<String, docrev::app::error::StoreError>) -> ExitC
     }
 }
 
-fn run_dump(file: &Path, sheet: Option<&str>) -> ExitCode {
+fn run_dump(file: &Path, sheet: Option<&str>, formulas: bool) -> ExitCode {
     match dump(&XlsxSource, file, sheet) {
-        Ok(view) => print_stdout(&table::render(&view.sheet, view.position, view.total)),
+        Ok(view) => print_stdout(&table::render(
+            &view.sheet,
+            view.position,
+            view.total,
+            formulas,
+        )),
         Err(e) => fail(&e),
     }
 }

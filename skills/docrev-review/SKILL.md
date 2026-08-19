@@ -32,6 +32,7 @@ writes atomically.
 
    ```bash
    docrev dump <file.xlsx> --sheet <name>
+   docrev dump <file.xlsx> --sheet <name> --formulas   # when asked to check a total or a formula
    ```
 
    Then answer on the thread:

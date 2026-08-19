@@ -11,7 +11,7 @@ use crate::domain::anchor::Anchor;
 use super::grid::GridView;
 use super::layout::{self, GridLayout};
 use super::style::{canvas, chrome};
-use super::text::{cell_text, query_line, sanitize};
+use super::text::{cell_text, clip, query_line, sanitize};
 use super::theme::Palette;
 
 /// Search prompt state — takes over the status bar while searching.
@@ -26,30 +26,38 @@ fn column_label(index: u32) -> String {
     Anchor::column_label(index)
 }
 
-/// Sheets' name box + formula bar: `B2      │ 120`; a merged region shows
-/// its range and the anchor value.
+/// Sheets' name box + formula bar: `B2      │ 120`. A merged region shows
+/// its range and the anchor value; a cell with a formula shows the formula
+/// (`=SUM(E7:E34)`) — the grid keeps showing the result, like Excel.
 pub(crate) fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
     let (row, col) = view.cursor;
-    let (address, value) = match view.sheet.merge_at(row, col) {
+    let (address, cell) = match view.sheet.merge_at(row, col) {
         Some(merge) => {
             let start = Anchor::cell("", merge.start_row as u32, merge.start_col as u32);
             let end = Anchor::cell("", merge.end_row as u32, merge.end_col as u32);
-            let (anchor_row, anchor_col) = merge.anchor();
             (
                 format!("{}:{}", start.cell_ref(), end.cell_ref()),
-                sanitize(&cell_text(view.sheet.cell(anchor_row, anchor_col))),
+                merge.anchor(),
             )
         }
         None => (
             format!("{}{}", column_label(col as u32), row + 1),
-            sanitize(&cell_text(view.sheet.cell(row, col))),
+            (row, col),
         ),
     };
+    let value = match view.sheet.formula_at(cell.0, cell.1) {
+        Some(formula) => format!("={formula}"),
+        None => cell_text(view.sheet.cell(cell.0, cell.1)),
+    };
+    // one line only: clip with … and leave the full text to the agent CLI
+    let address = format!(" {address:<7}");
+    let used = unicode_width::UnicodeWidthStr::width(address.as_str()) + 2;
+    let value = clip(
+        &sanitize(&value),
+        (area.width as usize).saturating_sub(used),
+    );
     let line = Line::from(vec![
-        Span::styled(
-            format!(" {address:<7}"),
-            canvas(p).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(address, canvas(p).add_modifier(Modifier::BOLD)),
         Span::styled("│ ", chrome(p)),
         Span::styled(value, canvas(p)),
     ]);
@@ -211,6 +219,82 @@ mod tests {
         small_view.sheet = &small;
         let text = render_text(&small_view, &mut Scroll::default(), 80, 8);
         assert!(!text.contains(" / "), "no indicator when nothing is hidden");
+    }
+
+    #[test]
+    fn the_formula_bar_shows_formulas_and_the_grid_keeps_results() {
+        use std::collections::HashMap;
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![
+                CellValue::Number(5.0),
+                CellValue::Number(2.0),
+                CellValue::Number(3.0),
+            ]],
+        )
+        .with_formulas(HashMap::from([((0, 0), "SUM(B1:C1)".to_string())]));
+        let mut view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["s"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: None,
+            selection: None,
+            search: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let text = render_text(&view, &mut Scroll::default(), 46, 6);
+        let bar = text.lines().next().unwrap();
+        assert!(
+            bar.contains("=SUM(B1:C1)"),
+            "the bar shows the formula:\n{text}"
+        );
+        assert!(
+            text.lines().nth(2).unwrap().contains('5'),
+            "the grid keeps the result:\n{text}"
+        );
+
+        view.cursor = (0, 1);
+        let text = render_text(&view, &mut Scroll::default(), 46, 6);
+        assert!(
+            text.lines().next().unwrap().contains('2'),
+            "a plain cell keeps showing its value:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_long_formula_clips_in_the_one_line_bar() {
+        use std::collections::HashMap;
+        let long = format!("SUM({})", "A1,".repeat(40));
+        let sheet = Sheet::new("s", vec![vec![CellValue::Number(1.0)]])
+            .with_formulas(HashMap::from([((0, 0), long)]));
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["s"],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notice: None,
+            thread: None,
+            editor: None,
+            picker: None,
+            selection: None,
+            search: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let text = render_text(&view, &mut Scroll::default(), 40, 5);
+        let bar = text.lines().next().unwrap();
+        assert!(bar.contains('…'), "clipped with an ellipsis:\n{bar}");
+        assert!(
+            unicode_width::UnicodeWidthStr::width(bar) <= 40,
+            "never wider than the bar:\n{bar}"
+        );
     }
 
     #[test]
