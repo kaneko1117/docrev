@@ -1,0 +1,16 @@
+---
+source: src/ui/panel.rs
+expression: "render_text(&view, &mut scroll, 76, 12)"
+---
+ B2     │ 120
+  │     A      │     B      │     C         │
+ 1│項目        │単価        │数量           │ user:
+ 2│りんご      ●         120│           3   │  単価が古いのでは?
+ 3│みかん      │          80│           5   │
+                                            │ claude:
+                                            │  確認しました。150円です
+                                            ┌ Reply on B2 ─────────────────┐
+                                            │█                             │
+                                            └ Ctrl+S:save  Esc:cancel ─────┘
+[売上]
+                                                  r:reply  c:comment  q:quit

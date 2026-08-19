@@ -48,7 +48,9 @@ writes atomically.
 
    Leave a thread open when you need the user's decision — say so in your reply.
 
-5. Your replies appear in the user's open viewer automatically — no action needed on their side.
+5. The user's open viewer picks up your replies automatically: the cell's `●`
+   marker reappears, and pressing `c` on it shows the thread (on terminals
+   wide enough for the side panel). No action needed on your side.
 
 ## Proactive findings
 

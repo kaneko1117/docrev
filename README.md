@@ -51,8 +51,11 @@ docrev dump file.xlsx   # print a sheet as a text table (--sheet <name> to pick 
 | q / Ctrl+C | Quit |
 
 In the comment editor: Enter inserts a newline, Ctrl+S saves, Esc cancels.
-The formula bar shows the full value of the selected cell; cells with an open
-thread are marked with `●` and their thread appears in a side panel. Frozen
+The formula bar shows the full value of the selected cell. Cells with an open
+thread are marked with `●`; press `c` on one to open its thread in a side
+panel — read and `Esc` out, or type and `Ctrl+S` to reply. (On terminals too
+narrow for the panel, `c` still opens the reply editor.) Moving the cursor
+alone never opens the panel, so the grid keeps its width. Frozen
 panes saved in the workbook are honored: pinned rows and columns stay on
 screen while the rest scrolls.
 
