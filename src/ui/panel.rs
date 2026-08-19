@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::grid::{EditorView, GridView};
 use super::style::{canvas, chrome};
@@ -48,6 +48,10 @@ pub(crate) fn draw_panel(
         None => (area, None),
     };
 
+    // wrapped by us, not ratatui: the height must be known so the panel can
+    // follow its tail — with the editor docked below (#48), the newest reply
+    // is what the user came to read, and it must never hide behind the box
+    let inner_width = thread_area.width.saturating_sub(1).max(1) as usize;
     let mut lines = Vec::new();
     if let Some(thread) = view.thread {
         let title = if thread.resolved {
@@ -57,15 +61,16 @@ pub(crate) fn draw_panel(
         };
         lines.push(Line::styled(title, canvas(p).add_modifier(Modifier::BOLD)));
         lines.push(Line::raw(""));
-        push_message(p, &mut lines, &thread.author, &thread.body);
+        push_message(p, &mut lines, &thread.author, &thread.body, inner_width);
         for reply in &thread.replies {
             lines.push(Line::raw(""));
-            push_message(p, &mut lines, &reply.author, &reply.body);
+            push_message(p, &mut lines, &reply.author, &reply.body, inner_width);
         }
     }
+    let scroll = lines.len().saturating_sub(thread_area.height as usize) as u16;
     let panel = Paragraph::new(lines)
         .style(canvas(p))
-        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0))
         .block(Block::new().borders(Borders::LEFT).border_style(chrome(p)));
     frame.render_widget(panel, thread_area);
 
@@ -74,7 +79,7 @@ pub(crate) fn draw_panel(
     }
 }
 
-fn push_message(p: &Palette, lines: &mut Vec<Line>, author: &str, body: &str) {
+fn push_message(p: &Palette, lines: &mut Vec<Line>, author: &str, body: &str, width: usize) {
     let color = if author == "user" {
         p.user_fg
     } else {
@@ -85,7 +90,9 @@ fn push_message(p: &Palette, lines: &mut Vec<Line>, author: &str, body: &str) {
         Style::new().bg(p.canvas_bg).fg(color),
     ));
     for part in body.split('\n') {
-        lines.push(Line::raw(format!("  {}", sanitize(part))));
+        for wrapped in wrap(&sanitize(part), width.saturating_sub(2).max(1)) {
+            lines.push(Line::raw(format!("  {wrapped}")));
+        }
     }
 }
 
@@ -193,10 +200,69 @@ mod tests {
     }
 
     #[test]
-    fn side_panel_shows_the_thread() {
+    fn the_panel_shows_the_thread_while_composing() {
         let sheet = sheet_3x3();
         let thread = sample_thread();
         let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (1, 1),
+            markers: HashSet::from([(1, 1)]),
+            notice: None,
+            thread: Some(&thread),
+            editor: Some(EditorView {
+                title: " Reply on B2 ".into(),
+                buffer: "",
+            }),
+            search: None,
+            picker: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 76, 12));
+    }
+
+    /// #48: with the editor docked below, the panel follows its tail — the
+    /// newest reply is what the user came to read.
+    #[test]
+    fn the_newest_reply_stays_visible_above_the_editor() {
+        let sheet = sheet_3x3();
+        let thread = sample_thread();
+        for height in [10u16, 12, 24] {
+            let view = GridView {
+                sheet: &sheet,
+                sheet_names: vec!["売上"],
+                active: 0,
+                cursor: (1, 1),
+                markers: HashSet::from([(1, 1)]),
+                notice: None,
+                thread: Some(&thread),
+                editor: Some(EditorView {
+                    title: " Reply on B2 ".into(),
+                    buffer: "one\ntwo\nthree",
+                }),
+                search: None,
+                picker: None,
+                col_widths: vec![],
+                theme: Theme::default(),
+            };
+            let text = render_text(&view, &mut Scroll::default(), 76, height);
+            assert!(
+                text.contains("150円です"),
+                "the latest reply must be readable at height {height}:\n{text}"
+            );
+        }
+    }
+
+    /// #48: the marker alone says a thread is there — moving onto the cell
+    /// must not reshape the grid.
+    #[test]
+    fn a_thread_under_the_cursor_alone_never_moves_the_layout() {
+        let sheet = sheet_3x3();
+        let thread = sample_thread();
+        let mut view = GridView {
             sheet: &sheet,
             sheet_names: vec!["売上"],
             active: 0,
@@ -210,8 +276,24 @@ mod tests {
             col_widths: vec![],
             theme: Theme::default(),
         };
-        let mut scroll = Scroll::default();
-        insta::assert_snapshot!(render_text(&view, &mut scroll, 76, 10));
+        let with_thread = render_text(&view, &mut Scroll::default(), 76, 10);
+        assert!(
+            with_thread.contains("r:reply"),
+            "the hint still points at the thread:\n{with_thread}"
+        );
+        assert!(
+            !with_thread.contains("単価が古い"),
+            "the thread body stays closed:\n{with_thread}"
+        );
+
+        view.thread = None;
+        let without_thread = render_text(&view, &mut Scroll::default(), 76, 10);
+        let body = |s: &str| s.rsplit_once('\n').map(|(b, _)| b.to_string()).unwrap();
+        assert_eq!(
+            body(&with_thread),
+            body(&without_thread),
+            "everything but the status hint is identical"
+        );
     }
 
     fn composing_view<'a>(sheet: &'a Sheet, buffer: &'a str) -> GridView<'a> {

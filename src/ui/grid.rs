@@ -35,7 +35,8 @@ pub struct GridView<'a> {
     /// Cells with an unresolved comment thread, marked with `●`.
     pub markers: HashSet<(usize, usize)>,
     pub notice: Option<&'a str>,
-    /// Thread under the cursor — shown in the side panel.
+    /// Thread under the cursor — drives the status hint, and fills the side
+    /// panel while composing.
     pub thread: Option<&'a CommentThread>,
     /// Comment editor state — shown as a popup.
     pub editor: Option<EditorView<'a>>,
@@ -62,9 +63,10 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) {
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    // the sidebar carries the thread and, while composing, the editor —
-    // so it opens for either one
-    let wants_panel = view.thread.is_some() || view.editor.is_some();
+    // the sidebar opens only while composing (#48): the ● marker already
+    // says a thread is there, and opening it is the user's decision (`c`) —
+    // the grid must not lose a third of its width to a cursor move
+    let wants_panel = view.editor.is_some();
     let (grid_area, panel_area) = match panel::panel_width(main_area.width, wants_panel) {
         Some(width) => {
             let [g, p] = Layout::horizontal([
