@@ -31,8 +31,9 @@ Prebuilt binaries for macOS, Linux and Windows are attached to every
 ## Usage
 
 ```text
-docrev file.xlsx        # browse the workbook in a TUI
-docrev dump file.xlsx   # print a sheet as a text table (--sheet <name> to pick one)
+docrev file.xlsx                   # browse the workbook in a TUI
+docrev dump file.xlsx              # print a sheet as a text table (--sheet <name> to pick one)
+docrev dump file.xlsx --formulas   # formulas instead of results, like Excel's Ctrl+`
 ```
 
 ### Viewer keys
@@ -60,7 +61,9 @@ Copying uses OSC 52, so it reaches your local clipboard even over SSH. A
 click always wins over an open prompt.
 
 In the comment editor: Enter inserts a newline, Ctrl+S saves, Esc cancels.
-The formula bar shows the full value of the selected cell. Cells with an open
+The formula bar shows the selected cell's formula (`=SUM(E7:E34)`) when it
+has one, and its full value otherwise — the grid keeps showing results,
+like Excel. Cells with an open
 thread are marked with `●`; press `c` on one to open its thread in a side
 panel — read and `Esc` out, or type and `Ctrl+S` to reply. (On terminals too
 narrow for the panel, `c` still opens the reply editor.) Moving the cursor

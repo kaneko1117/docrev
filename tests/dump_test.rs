@@ -13,7 +13,7 @@ fn fixture(name: &str) -> PathBuf {
 #[test]
 fn dumps_first_sheet_by_default() {
     let view = dump(&XlsxSource, &fixture("basic.xlsx"), None).unwrap();
-    let out = render(&view.sheet, view.position, view.total);
+    let out = render(&view.sheet, view.position, view.total, false);
     assert!(out.contains("Sheet: 売上 (1/1)"));
     assert!(out.contains("│ りんご"));
     assert!(out.contains(" 120 │"), "numbers should be right-aligned");
@@ -40,7 +40,7 @@ fn unknown_sheet_lists_available_names() {
 #[test]
 fn renders_edge_cases() {
     let view = dump(&XlsxSource, &fixture("edge.xlsx"), None).unwrap();
-    let out = render(&view.sheet, view.position, view.total);
+    let out = render(&view.sheet, view.position, view.total, false);
     assert!(
         !out.contains('…'),
         "long text wraps instead of clipping (#33)"

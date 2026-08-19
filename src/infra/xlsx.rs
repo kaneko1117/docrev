@@ -18,11 +18,14 @@ pub enum ReadError {
 }
 
 /// One sheet as read from the file: values plus merged regions
-/// (0-based inclusive (row, col) rectangles).
+/// (0-based inclusive (row, col) rectangles) and per-cell formulas.
 pub struct RawSheet {
     pub name: String,
     pub cells: Range<Data>,
     pub merges: Vec<((u32, u32), (u32, u32))>,
+    /// Formulas without their leading `=`; shared formulas arrive already
+    /// expanded per cell by calamine.
+    pub formulas: Vec<((u32, u32), String)>,
 }
 
 pub fn read_workbook(path: &Path) -> Result<Vec<RawSheet>, ReadError> {
@@ -44,10 +47,27 @@ pub fn read_workbook(path: &Path) -> Result<Vec<RawSheet>, ReadError> {
             .merge_cells_by_sheet_name(&name)
             .map(|dims| dims.into_iter().map(|d| (d.start, d.end)).collect())
             .unwrap_or_default();
+        // formulas are review context, not the data — a parse failure must
+        // not block opening; cells then simply show their values only
+        let formulas = workbook
+            .worksheet_formula(&name)
+            .map(|range| {
+                // used_cells positions are relative to the range's corner
+                let (start_row, start_col) = range.start().unwrap_or((0, 0));
+                range
+                    .used_cells()
+                    .filter(|(_, _, f)| !f.is_empty())
+                    .map(|(row, col, f)| {
+                        ((start_row + row as u32, start_col + col as u32), f.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         sheets.push(RawSheet {
             name,
             cells,
             merges,
+            formulas,
         });
     }
     Ok(sheets)

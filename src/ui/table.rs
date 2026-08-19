@@ -4,7 +4,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::sheet::Sheet;
 
-use super::text::{cell_text, center, clip, pad_left, pad_right, wrap};
+use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize, wrap};
 
 fn column_label(index: u32) -> String {
     Anchor::column_label(index)
@@ -12,7 +12,9 @@ fn column_label(index: u32) -> String {
 
 const MAX_CELL_WIDTH: usize = 24;
 
-pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
+/// `formulas` switches formula cells to their formulas (`=SUM(...)`) instead
+/// of their results — Excel's "show formulas" mode for the agent CLI.
+pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> String {
     let mut out = format!("Sheet: {} ({}/{})\n\n", sheet.name(), position + 1, total);
     let col_count = sheet.col_count();
     if sheet.row_count() == 0 || col_count == 0 {
@@ -26,6 +28,9 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
         .map(|r| {
             (0..col_count)
                 .map(|c| {
+                    if formulas && let Some(formula) = sheet.formula_at(r, c) {
+                        return wrap(&sanitize(&format!("={formula}")), MAX_CELL_WIDTH);
+                    }
                     let cell = sheet.cell(r, c);
                     let text = cell_text(cell);
                     if matches!(
@@ -92,10 +97,14 @@ pub fn render(sheet: &Sheet, position: usize, total: usize) -> String {
             for (c, lines) in row.iter().enumerate() {
                 let w = col_widths.get(c).copied().unwrap_or(0);
                 let text = lines.get(sub).map(String::as_str).unwrap_or("");
-                let aligned = if matches!(
-                    sheet.cell(r, c),
-                    CellValue::Number(_) | CellValue::FormattedNumber { .. }
-                ) {
+                // formulas read as text and align left, whatever their
+                // result type — Excel's formula view does the same
+                let shows_formula = formulas && sheet.formula_at(r, c).is_some();
+                let aligned = if !shows_formula
+                    && matches!(
+                        sheet.cell(r, c),
+                        CellValue::Number(_) | CellValue::FormattedNumber { .. }
+                    ) {
                     pad_left(text, w)
                 } else {
                     pad_right(text, w)
@@ -134,7 +143,7 @@ Sheet: S (1/1)
 │ 2 │ c  │   7 │
 └───┴────┴─────┘
 ";
-        assert_eq!(render(&sheet, 0, 1), expected);
+        assert_eq!(render(&sheet, 0, 1, false), expected);
     }
 
     #[test]
@@ -146,7 +155,7 @@ Sheet: S (1/1)
                 vec![CellValue::Text("ああああ".into())],
             ],
         );
-        let out = render(&sheet, 2, 5);
+        let out = render(&sheet, 2, 5, false);
         assert!(out.contains("Sheet: 日本語 (3/5)"));
         let widths: Vec<usize> = out.lines().skip(2).map(|l| l.width()).collect();
         assert!(
@@ -158,7 +167,7 @@ Sheet: S (1/1)
     #[test]
     fn empty_sheet_has_placeholder() {
         let sheet = Sheet::new("empty", vec![]);
-        assert!(render(&sheet, 0, 1).contains("(empty sheet)"));
+        assert!(render(&sheet, 0, 1, false).contains("(empty sheet)"));
     }
 
     #[test]
@@ -170,7 +179,7 @@ Sheet: S (1/1)
                 CellValue::Number(1.0),
             ]],
         );
-        let out = render(&sheet, 0, 1);
+        let out = render(&sheet, 0, 1, false);
         assert!(out.contains("a⏎b c"));
         let widths: Vec<usize> = out.lines().skip(2).map(|l| l.width()).collect();
         assert!(

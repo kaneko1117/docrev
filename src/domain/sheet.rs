@@ -55,6 +55,8 @@ pub struct Sheet {
     font_colors: HashMap<(usize, usize), Rgb>,
     /// Frozen panes from the workbook: (rows, cols) pinned while scrolling.
     frozen: (usize, usize),
+    /// Formulas by (row, col), without their leading `=`.
+    formulas: HashMap<(usize, usize), String>,
 }
 
 impl Sheet {
@@ -69,6 +71,7 @@ impl Sheet {
             fills: HashMap::new(),
             font_colors: HashMap::new(),
             frozen: (0, 0),
+            formulas: HashMap::new(),
         }
     }
 
@@ -105,6 +108,30 @@ impl Sheet {
     pub fn with_frozen(mut self, rows: usize, cols: usize) -> Self {
         self.frozen = (rows, cols);
         self
+    }
+
+    /// A formula cell without a cached result (files written by tools that
+    /// never evaluate, e.g. openpyxl) lies outside the value grid — the grid
+    /// grows to reach it, showing `Empty` where no result is known.
+    pub fn with_formulas(mut self, formulas: HashMap<(usize, usize), String>) -> Self {
+        for &(row, col) in formulas.keys() {
+            if self.rows.len() <= row {
+                self.rows.resize_with(row + 1, Vec::new);
+            }
+            let cells = &mut self.rows[row];
+            if cells.len() <= col {
+                cells.resize(col + 1, CellValue::Empty);
+            }
+        }
+        self.formulas = formulas;
+        self
+    }
+
+    /// The cell's own formula, without its leading `=`. Callers resolve
+    /// merged regions to their anchor themselves, like `cell` vs
+    /// `display_cell`.
+    pub fn formula_at(&self, row: usize, col: usize) -> Option<&str> {
+        self.formulas.get(&(row, col)).map(String::as_str)
     }
 
     pub fn frozen_rows(&self) -> usize {
