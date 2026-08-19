@@ -34,6 +34,7 @@ impl Theme {
                 header_bg: Color::Rgb(241, 243, 244),
                 header_fg: Color::Rgb(95, 99, 104),
                 selection_bg: Color::Rgb(210, 227, 252),
+                range_bg: Color::Rgb(232, 240, 254),
                 marker_fg: Color::Rgb(242, 153, 0),
                 notice_fg: Color::Rgb(217, 48, 37),
                 gridline: Color::Rgb(218, 220, 224),
@@ -51,6 +52,7 @@ impl Theme {
                 header_bg: Color::Reset,
                 header_fg: Color::Reset,
                 selection_bg: Color::Reset,
+                range_bg: Color::Reset,
                 marker_fg: Color::Yellow,
                 notice_fg: Color::Red,
                 gridline: Color::Reset,
@@ -105,6 +107,9 @@ pub(crate) struct Palette {
     pub header_bg: Color,
     pub header_fg: Color,
     pub selection_bg: Color,
+    /// The dragged range — a step lighter than the cursor cell, so the two
+    /// stay tellable apart.
+    pub range_bg: Color,
     pub marker_fg: Color,
     pub notice_fg: Color,
     pub gridline: Color,

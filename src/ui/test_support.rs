@@ -34,7 +34,11 @@ pub(crate) fn sheet_3x3() -> Sheet {
 
 pub(crate) fn render_text(view: &GridView, scroll: &mut Scroll, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|f| draw(f, view, scroll)).unwrap();
+    terminal
+        .draw(|f| {
+            draw(f, view, scroll);
+        })
+        .unwrap();
     buffer_text(terminal.backend().buffer())
 }
 

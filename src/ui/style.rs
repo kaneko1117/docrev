@@ -29,6 +29,15 @@ pub(crate) fn selected(p: &Palette) -> Style {
     Style::new().bg(p.selection_bg).fg(p.text)
 }
 
+/// The dragged range: a step lighter than the cursor cell (dim-reversed on
+/// the terminal palette), so press point and range stay distinguishable.
+pub(crate) fn range_selected(p: &Palette) -> Style {
+    if p.reverse_selection {
+        return canvas(p).add_modifier(Modifier::REVERSED | Modifier::DIM);
+    }
+    Style::new().bg(p.range_bg).fg(p.text)
+}
+
 pub(crate) fn chrome(p: &Palette) -> Style {
     if p.dim_chrome {
         canvas(p).add_modifier(Modifier::DIM)

@@ -22,6 +22,9 @@ pub(crate) struct LayoutInput<'a> {
     pub cursor: (usize, usize),
     pub markers: &'a HashSet<(usize, usize)>,
     pub col_widths: &'a [usize],
+    /// A drag in progress, as (press cell, current cell) — highlighted like
+    /// the cursor.
+    pub selection: Option<((usize, usize), (usize, usize))>,
 }
 
 pub(crate) struct Viewport {
@@ -44,11 +47,16 @@ pub(crate) struct GridLayout {
     pub header: Vec<String>,
     /// Index into `header` whose left separator is the freeze boundary.
     pub header_boundary: Option<usize>,
+    /// Each visible column with its x-span inside the grid area (separator
+    /// included), frozen columns first — the hit map for mouse clicks.
+    pub col_spans: Vec<(usize, std::ops::Range<usize>)>,
     pub lines: Vec<BodyLine>,
 }
 
 /// One terminal line of the grid body; a sheet row wraps into several.
 pub(crate) struct BodyLine {
+    /// The sheet row this line belongs to — the hit map for mouse clicks.
+    pub row: usize,
     /// Row number on the first line of a sheet row, blanks below.
     pub label: String,
     /// Horizontal gridline under this line (a sheet row's last line);
@@ -65,8 +73,10 @@ pub(crate) struct Slot {
     pub freeze_boundary: bool,
     /// Clipped and aligned (padded) text for this line of the slot.
     pub text: String,
-    /// Selection styling (the cursor is on — or, for merges, inside — it).
+    /// Cursor styling (the cursor is on — or, for merges, inside — it).
     pub cursor: bool,
+    /// Inside the dragged rectangle — drawn a step lighter than the cursor.
+    pub selected: bool,
     /// Workbook fill; ignored under the cursor.
     pub fill: Option<Rgb>,
     /// Text color as resolved by the workbook; suppressed under the cursor
@@ -105,6 +115,7 @@ pub(crate) fn grid_layout(
             col_count: 0,
             header: Vec::new(),
             header_boundary: None,
+            col_spans: Vec::new(),
             lines: Vec::new(),
         };
     }
@@ -217,6 +228,24 @@ pub(crate) fn grid_layout(
         .collect();
     let header_boundary = (frozen_cols > 0).then_some(frozen_cols);
 
+    // every visible column's x-span (its left separator included), so a
+    // click can be mapped back to a cell without re-deriving the geometry
+    let mut col_spans = Vec::new();
+    let mut x = label_width;
+    for col in segments().flat_map(|(start, end)| start..end) {
+        let width = width_of(col) + 1;
+        col_spans.push((col, x..x + width));
+        x += width;
+    }
+
+    // the drag rectangle highlights a step lighter than the cursor cell
+    let in_selection = |row: usize, col: usize| match input.selection {
+        Some(((r0, c0), (r1, c1))) => {
+            (r0.min(r1)..=r0.max(r1)).contains(&row) && (c0.min(c1)..=c0.max(c1)).contains(&col)
+        }
+        None => false,
+    };
+
     // the first visible line of a merge carries its ● marker; with a freeze
     // the pinned rows are visible from the top, not from the scroll offset
     let first_visible_row = |merge: &crate::domain::sheet::MergedRange| {
@@ -276,8 +305,9 @@ pub(crate) fn grid_layout(
                             String::new()
                         };
                         let on_cursor = merge.contains(cursor_row, cursor_col);
+                        let in_range = (col..segment_end).any(|c| in_selection(row, c));
                         let font = if row == merge.start_row && !continuation {
-                            visible_color(sheet.text_color_at(row, col), on_cursor)
+                            visible_color(sheet.text_color_at(row, col), on_cursor || in_range)
                         } else {
                             None
                         };
@@ -286,6 +316,7 @@ pub(crate) fn grid_layout(
                             freeze_boundary,
                             text: pad_right(&clip(&text, span_width), span_width),
                             cursor: on_cursor,
+                            selected: in_range,
                             // the anchor's fill paints the whole merged region
                             fill: sheet.display_fill_at(row, col),
                             font,
@@ -306,6 +337,7 @@ pub(crate) fn grid_layout(
                     let own_width = width_of(col);
                     let is_number = cell.is_number();
                     let on_cursor = (row, col) == input.cursor;
+                    let in_range = in_selection(row, col);
 
                     // text wraps within the column (#33); numbers stay on one
                     // right-aligned line so digit groups never split
@@ -332,14 +364,16 @@ pub(crate) fn grid_layout(
                         freeze_boundary,
                         text: aligned,
                         cursor: on_cursor,
+                        selected: in_range,
                         fill,
-                        font: visible_color(sheet.text_color_at(row, col), on_cursor),
+                        font: visible_color(sheet.text_color_at(row, col), on_cursor || in_range),
                         ruled: last_line,
                     });
                     col += 1;
                 }
             }
             out.push(BodyLine {
+                row,
                 label,
                 ruled: last_line,
                 freeze_boundary: boundary_row && last_line,
@@ -369,6 +403,7 @@ pub(crate) fn grid_layout(
         col_count: sheet.col_count(),
         header,
         header_boundary,
+        col_spans,
         lines,
     }
 }
@@ -543,6 +578,7 @@ mod tests {
             cursor,
             markers,
             col_widths: &[],
+            selection: None,
         };
         let mut scroll = Scroll::default();
         grid_layout(&input, &Viewport { width, rows }, &mut scroll)
@@ -575,6 +611,7 @@ mod tests {
             cursor: (0, 6),
             markers: &markers,
             col_widths: &[],
+            selection: None,
         };
         let mut scroll = Scroll::default();
 
@@ -653,6 +690,7 @@ mod tests {
             cursor: (0, 0),
             markers: &markers,
             col_widths: &[],
+            selection: None,
         };
         let mut scroll = Scroll::default();
         let layout = grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
@@ -699,6 +737,7 @@ mod tests {
             cursor: (0, 3),
             markers: &HashSet::new(),
             col_widths: &[],
+            selection: None,
         };
         let mut scroll = Scroll::default();
         // narrow: room for the frozen column plus one body column
@@ -733,6 +772,7 @@ mod tests {
             cursor: (0, 5),
             markers: &HashSet::new(),
             col_widths: &[],
+            selection: None,
         };
         let mut scroll = Scroll::default();
         let layout = grid_layout(&input, &Viewport { width: 20, rows: 3 }, &mut scroll);
@@ -782,6 +822,7 @@ mod tests {
             cursor: (0, 0),
             markers: &markers,
             col_widths: &[],
+            selection: None,
         };
         let mut scroll = Scroll { top: 0, left: 5 };
         grid_layout(
@@ -818,9 +859,37 @@ mod tests {
             cursor: (2, 0),
             markers: &markers,
             col_widths: &[],
+            selection: None,
         };
         grid_layout(&input, &Viewport { width: 60, rows: 6 }, &mut scroll);
         assert_eq!(scroll.top, 2, "the body scrolls back to the floor, not 0");
+    }
+
+    #[test]
+    fn the_drag_rectangle_highlights_a_step_lighter_than_the_cursor() {
+        let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 3]; 3]);
+        let markers = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (2, 2),
+            markers: &markers,
+            col_widths: &[],
+            // dragged backwards on purpose: the rectangle still normalizes
+            selection: Some(((1, 1), (0, 0))),
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(&input, &Viewport { width: 60, rows: 5 }, &mut scroll);
+        assert!(layout.lines[0].slots[0].selected, "A1 inside the rectangle");
+        assert!(layout.lines[1].slots[1].selected, "B2 inside the rectangle");
+        assert!(!layout.lines[0].slots[2].selected, "C1 outside");
+        assert!(
+            layout.lines[2].slots[2].cursor && !layout.lines[2].slots[2].selected,
+            "the cursor keeps its own, stronger style"
+        );
+        assert!(
+            !layout.lines[0].slots[0].cursor,
+            "range cells do not borrow the cursor style"
+        );
     }
 
     #[test]

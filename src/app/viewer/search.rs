@@ -153,7 +153,7 @@ impl Viewer {
         self.set_cursor(target);
     }
 
-    fn set_cursor(&mut self, position: (usize, usize)) {
+    pub(super) fn set_cursor(&mut self, position: (usize, usize)) {
         if let Some(cursor) = self.cursors.get_mut(self.active) {
             *cursor = position;
         }
