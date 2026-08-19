@@ -80,9 +80,11 @@ docrev comment reply file.xlsx --thread <id> --body "..." [--author <name>]
 docrev comment resolve file.xlsx --thread <id>
 ```
 
-`list --json` emits exactly the [sidecar schema](docs/sidecar.md); `add`/`reply`/
-`resolve` print the affected thread (including its id). Comments live in a sidecar
-file (`file.xlsx.docrev.json`); the original document is never modified, and
+`list --json` emits the [sidecar schema](docs/sidecar.md), with each thread
+carrying the anchored cell's content and its row — a batch of comments is
+actionable without reading the sheets. `add`/`reply`/`resolve` print the
+affected thread (including its id). Comments live in a sidecar file
+(`file.xlsx.docrev.json`); the original document is never modified, and
 concurrent TUI/CLI writes are serialized through a `.lock` file.
 
 ## Using with Claude (or any agent)

@@ -4,6 +4,7 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::app::comments;
 use crate::app::error::StoreError;
 use crate::app::ports::CommentStore;
 use crate::domain::anchor::Anchor;
@@ -45,6 +46,12 @@ impl JsonCommentStore {
         else {
             return Ok(SidecarFile::default());
         };
+        // our atomic writes never produce an empty file, so one is a shell
+        // accident (`... > file.docrev.json` truncates before running);
+        // treating it as empty recovers instead of failing forever
+        if text.trim().is_empty() {
+            return Ok(SidecarFile::default());
+        }
         let file: SidecarFile = serde_json::from_str(&text)
             .map_err(|e| StoreError(format!("invalid sidecar {}: {e}", self.sidecar.display())))?;
         if file.version != SCHEMA_VERSION {
@@ -161,19 +168,63 @@ fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// CLI output: the sidecar schema with the given threads.
-pub fn threads_to_json(threads: &[CommentThread]) -> Result<String, StoreError> {
-    let file = SidecarFile {
-        version: SCHEMA_VERSION,
-        comments: threads.iter().map(ThreadDto::from_domain).collect(),
-    };
-    serde_json::to_string_pretty(&file).map_err(|e| StoreError(e.to_string()))
-}
-
 /// CLI output: a single thread in the sidecar's thread shape.
 pub fn thread_to_json(thread: &CommentThread) -> Result<String, StoreError> {
     serde_json::to_string_pretty(&ThreadDto::from_domain(thread))
         .map_err(|e| StoreError(e.to_string()))
+}
+
+/// CLI output for `list --json`: the sidecar shape, each thread augmented
+/// with its derived `cell` content. Output-only — the sidecar file never
+/// stores `cell`, and readers of the file ignore it.
+pub fn threads_with_context_to_json(
+    items: &[(CommentThread, Option<comments::CellContext>)],
+) -> Result<String, StoreError> {
+    #[derive(Serialize)]
+    struct File {
+        version: u32,
+        comments: Vec<Entry>,
+    }
+    #[derive(Serialize)]
+    struct Entry {
+        #[serde(flatten)]
+        thread: ThreadDto,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cell: Option<CellDto>,
+    }
+    #[derive(Serialize)]
+    struct CellDto {
+        value: String,
+        row: RowDto,
+    }
+    /// A JSON object in insertion order — `serde_json::Map` would sort keys
+    /// alphabetically, putting AA1 before Z1 and breaking the promised
+    /// column order for consumers that keep object order (Python dicts do).
+    struct RowDto(Vec<(String, String)>);
+    impl Serialize for RowDto {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(Some(self.0.len()))?;
+            for (cell_ref, text) in &self.0 {
+                map.serialize_entry(cell_ref, text)?;
+            }
+            map.end()
+        }
+    }
+    let file = File {
+        version: SCHEMA_VERSION,
+        comments: items
+            .iter()
+            .map(|(thread, context)| Entry {
+                thread: ThreadDto::from_domain(thread),
+                cell: context.as_ref().map(|c| CellDto {
+                    value: c.value.clone(),
+                    row: RowDto(c.row.clone()),
+                }),
+            })
+            .collect(),
+    };
+    serde_json::to_string_pretty(&file).map_err(|e| StoreError(e.to_string()))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -276,6 +327,68 @@ mod tests {
 
     fn temp_document() -> PathBuf {
         std::env::temp_dir().join(format!("docrev-test-{}.xlsx", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn list_output_carries_derived_cell_content_but_only_when_present() {
+        let thread = |id: &str| CommentThread {
+            id: id.into(),
+            anchor: Anchor::cell("IT-01", 1, 2),
+            author: "user".into(),
+            body: "fix this".into(),
+            created_at: "2026-08-19T00:00:00Z".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        let items = vec![
+            (
+                thread("with"),
+                Some(comments::CellContext {
+                    value: "ロック表示".into(),
+                    // Z before AA: column order, which alphabetical keys break
+                    row: vec![("Z2".into(), "先".into()), ("AA2".into(), "後".into())],
+                }),
+            ),
+            (thread("without"), None),
+            (
+                thread("empty-row"),
+                Some(comments::CellContext {
+                    value: String::new(),
+                    row: Vec::new(),
+                }),
+            ),
+        ];
+        let json = threads_with_context_to_json(&items).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["version"], 1, "still the sidecar shape");
+        let first = &parsed["comments"][0];
+        assert_eq!(first["anchor"]["cell"], "C2", "thread fields flatten");
+        assert_eq!(first["cell"]["value"], "ロック表示");
+        assert_eq!(first["cell"]["row"]["Z2"], "先");
+        assert!(
+            json.find("\"Z2\"").unwrap() < json.find("\"AA2\"").unwrap(),
+            "row keys keep column order, not alphabetical order:\n{json}"
+        );
+        let second = &parsed["comments"][1];
+        assert!(
+            second.get("cell").is_none(),
+            "degraded threads carry no cell key"
+        );
+        let third = &parsed["comments"][2];
+        assert_eq!(
+            third["cell"]["row"],
+            serde_json::json!({}),
+            "an empty row is an empty object, not a missing key"
+        );
+    }
+
+    #[test]
+    fn a_truncated_sidecar_reads_as_empty_instead_of_failing_forever() {
+        let document = temp_document();
+        let store = JsonCommentStore::for_document(&document);
+        std::fs::write(&store.sidecar, "").unwrap();
+        assert_eq!(store.load().unwrap(), Vec::new());
+        cleanup(&document);
     }
 
     fn cleanup(document: &Path) {

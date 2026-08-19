@@ -137,8 +137,17 @@ fn run_comment(action: CommentAction) -> ExitCode {
                 author: author.as_deref(),
                 sheet: sheet.as_deref(),
             };
+            if json {
+                // agents get each thread's cell content attached, so a batch
+                // of comments is actionable without reading the sheets
+                return match comments::list_with_context(&XlsxSource, &store, &document, &filter) {
+                    Ok(items) => {
+                        print_json(json_comment_store::threads_with_context_to_json(&items))
+                    }
+                    Err(e) => fail(&e),
+                };
+            }
             match comments::list(&store, &filter) {
-                Ok(threads) if json => print_json(json_comment_store::threads_to_json(&threads)),
                 Ok(threads) => print_stdout(&comment_list::render(&threads)),
                 Err(e) => fail(&e),
             }

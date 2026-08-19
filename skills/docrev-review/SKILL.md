@@ -20,10 +20,15 @@ writes atomically.
    ```
 
    The output is `{"version": 1, "comments": [...]}`. Each thread carries `id`,
-   `anchor` (`{"sheet": "売上", "cell": "B3"}`), `author`, `body`, `created_at`
-   and `replies`.
+   `anchor` (`{"sheet": "売上", "cell": "B3"}`), `author`, `body`, `created_at`,
+   `replies` — and `cell`: the anchored cell's displayed text plus its row's
+   other non-empty cells (`{"value": "...", "row": {"A3": "...", "C3": "..."}}`;
+   `row` may be `{}`, and `cell` itself is absent when the workbook cannot be
+   read). Never redirect this output onto the sidecar file itself.
 
-3. For each thread: investigate, act, reply. Read the data with:
+3. For each thread: investigate, act, reply. **Start from the `cell` content
+   that came with the thread** — for most comments the anchored row is all the
+   context needed. Reach for the full sheet only when it is not:
 
    ```bash
    docrev dump <file.xlsx> --sheet <name>
