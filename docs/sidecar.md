@@ -64,7 +64,19 @@ This format is a **public contract**: AI agents read and write it through the
 `docrev comment` is the intended way for agents to read and write this file:
 
 - `list --json` prints this document shape (`{"version": 1, "comments": [...]}`)
-  after applying filters — the schema above is the output contract.
+  after applying filters — the schema above is the output contract, plus one
+  **derived, output-only** addition: each thread carries a `cell` object with
+  the anchored cell's displayed text and its row's other non-empty cells
+  (`"cell": {"value": "...", "row": {"A2": "...", "D2": "..."}}`; `row` keys
+  come in column order and the object may be empty). It is computed from the
+  workbook at list time and is **never stored in the sidecar**; writers must
+  ignore a `cell` key on input. When the workbook cannot be read (corrupt
+  file) or the sheet was renamed, `cell` is omitted for the affected threads
+  and the command still succeeds; a document path that does not exist at all
+  is still an error, as for every `comment` command. A merged anchor's
+  `value` is its region's value, and the region's cells never repeat in
+  `row`. Never redirect this output onto the sidecar itself — the shell
+  truncates the file before the command reads it.
 - `add` / `reply` / `resolve` print the affected thread (same thread shape,
   including its `id`) and exit non-zero with a message on stderr for invalid
   cell references, unknown sheets, or unknown thread ids.

@@ -71,6 +71,8 @@ docrev comment reply file.xlsx --thread <id> --body "..." [--author <名前>]
 docrev comment resolve file.xlsx --thread <id>
 ```
 
+`list --json` の出力には、各コメントに**そのセルの中身と同じ行の内容**が同梱されます。エージェントはシートを読みに行かなくても、受け取ったコメントの束にそのまま着手できます。
+
 コメントは元のファイルの隣に作られる専用ファイル(`file.xlsx.docrev.json`)に保存され、**元のドキュメントには一切書き込みません**。ビューアとエージェントが同時に書き込んでも壊れないよう保護されています。ファイル形式の詳細は [docs/sidecar.md](docs/sidecar.md) にあります。
 
 ## Claude と使う
