@@ -265,10 +265,14 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
     let mut in_author = false;
     let mut current: Option<RawWorkbookComment> = None;
     let mut in_text = false;
+    // phonetic runs (<rPh>) carry ruby readings in their own <t> — body
+    // text they are not, or 山田 would read 山田ヤマダ
+    let mut in_phonetic = false;
     loop {
         match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
             Event::Start(e) => match e.local_name().as_ref() {
                 b"author" => in_author = true,
+                b"rPh" => in_phonetic = true,
                 b"comment" => {
                     let mut cell = None;
                     let mut author_id = None;
@@ -301,7 +305,7 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
                         });
                     }
                 }
-                b"t" if current.is_some() => in_text = true,
+                b"t" if current.is_some() && !in_phonetic => in_text = true,
                 _ => {}
             },
             Event::Text(t) => {
@@ -317,6 +321,7 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
             }
             Event::End(e) => match e.local_name().as_ref() {
                 b"t" => in_text = false,
+                b"rPh" => in_phonetic = false,
                 b"author" => in_author = false,
                 b"comment" => {
                     if let Some(comment) = current.take()

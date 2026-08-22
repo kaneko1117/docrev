@@ -138,7 +138,20 @@ impl Sheet {
         self.formulas.get(&(row, col)).map(String::as_str)
     }
 
+    /// Like formulas, a comment can sit outside the value grid (a note on
+    /// an empty cell past the used range) — the grid grows to reach it, or
+    /// its corner tint would be invisible and the cursor could never get
+    /// there.
     pub fn with_workbook_comments(mut self, comments: Vec<WorkbookComment>) -> Self {
+        for comment in &comments {
+            if self.rows.len() <= comment.row {
+                self.rows.resize_with(comment.row + 1, Vec::new);
+            }
+            let cells = &mut self.rows[comment.row];
+            if cells.len() <= comment.col {
+                cells.resize(comment.col + 1, CellValue::Empty);
+            }
+        }
         self.workbook_comments = comments;
         self
     }
