@@ -209,6 +209,8 @@ mod tests {
             active: 0,
             cursor: (1, 1),
             markers: HashSet::from([(1, 1)]),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: Some(&thread),
             editor: Some(EditorView {
@@ -238,6 +240,8 @@ mod tests {
                 active: 0,
                 cursor: (1, 1),
                 markers: HashSet::from([(1, 1)]),
+                notes: HashSet::new(),
+                notes_view: None,
                 notice: None,
                 thread: Some(&thread),
                 editor: Some(EditorView {
@@ -270,6 +274,8 @@ mod tests {
             active: 0,
             cursor: (1, 1),
             markers: HashSet::from([(1, 1)]),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: Some(&thread),
             editor: None,
@@ -306,6 +312,8 @@ mod tests {
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: Some(EditorView {
@@ -410,6 +418,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: Some(EditorView {

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::cell::CellValue;
 use super::number_format::FormatColor;
+use super::workbook_comment::WorkbookComment;
 
 /// A color inherited from the workbook (cell background or font), sRGB.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,6 +58,8 @@ pub struct Sheet {
     frozen: (usize, usize),
     /// Formulas by (row, col), without their leading `=`.
     formulas: HashMap<(usize, usize), String>,
+    /// The workbook's own comments (notes and threaded), read-only.
+    workbook_comments: Vec<WorkbookComment>,
 }
 
 impl Sheet {
@@ -72,6 +75,7 @@ impl Sheet {
             font_colors: HashMap::new(),
             frozen: (0, 0),
             formulas: HashMap::new(),
+            workbook_comments: Vec::new(),
         }
     }
 
@@ -132,6 +136,42 @@ impl Sheet {
     /// `display_cell`.
     pub fn formula_at(&self, row: usize, col: usize) -> Option<&str> {
         self.formulas.get(&(row, col)).map(String::as_str)
+    }
+
+    /// Like formulas, a comment can sit outside the value grid (a note on
+    /// an empty cell past the used range) — the grid grows to reach it, or
+    /// its corner tint would be invisible and the cursor could never get
+    /// there.
+    pub fn with_workbook_comments(mut self, comments: Vec<WorkbookComment>) -> Self {
+        for comment in &comments {
+            if self.rows.len() <= comment.row {
+                self.rows.resize_with(comment.row + 1, Vec::new);
+            }
+            let cells = &mut self.rows[comment.row];
+            if cells.len() <= comment.col {
+                cells.resize(comment.col + 1, CellValue::Empty);
+            }
+        }
+        self.workbook_comments = comments;
+        self
+    }
+
+    pub fn workbook_comments(&self) -> &[WorkbookComment] {
+        &self.workbook_comments
+    }
+
+    /// The workbook comments a cursor on (row, col) should surface — inside
+    /// a merged region the whole region counts as one cell, like threads.
+    pub fn workbook_comments_at(&self, row: usize, col: usize) -> Vec<&WorkbookComment> {
+        let merge = self.merge_at(row, col);
+        let in_region = |r: usize, c: usize| match merge {
+            Some(m) => m.contains(r, c),
+            None => (r, c) == (row, col),
+        };
+        self.workbook_comments
+            .iter()
+            .filter(|comment| in_region(comment.row, comment.col))
+            .collect()
     }
 
     pub fn frozen_rows(&self) -> usize {

@@ -12,7 +12,8 @@ use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Viewer};
 use crate::domain::anchor::Anchor;
 use crate::infra::clipboard;
 use crate::ui::grid::{
-    self, EditorView, GridView, Hit, HitMap, PickerItem, PickerView, Scroll, SearchView,
+    self, EditorView, GridView, Hit, HitMap, NoteView, NotesView, PickerItem, PickerView, Scroll,
+    SearchView,
 };
 use crate::ui::theme::Theme;
 
@@ -26,6 +27,7 @@ enum InputMode {
     Editing,
     Picker,
     Search,
+    Notes,
 }
 
 pub struct TerminalFrontend {
@@ -170,11 +172,32 @@ impl Frontend for TerminalFrontend {
             current: state.current,
             total: state.total,
         });
+        let notes_view = viewer.notes_state().map(|(comments, scroll)| {
+            let (row, col) = viewer.cursor();
+            NotesView {
+                cell_ref: Anchor::cell("", row as u32, col as u32).cell_ref(),
+                comments: comments
+                    .iter()
+                    .map(|c| NoteView {
+                        author: c.author.clone(),
+                        body: c.body.clone(),
+                        resolved: c.resolved,
+                        replies: c
+                            .replies
+                            .iter()
+                            .map(|r| (r.author.clone(), r.body.clone()))
+                            .collect(),
+                    })
+                    .collect(),
+                scroll,
+            }
+        });
         *input_mode = match viewer.mode() {
             Mode::Grid => InputMode::Grid,
             Mode::Editing { .. } => InputMode::Editing,
             Mode::SheetPicker { .. } => InputMode::Picker,
             Mode::Search { .. } => InputMode::Search,
+            Mode::Notes { .. } => InputMode::Notes,
         };
         let view = GridView {
             sheet: viewer.sheet(),
@@ -182,6 +205,8 @@ impl Frontend for TerminalFrontend {
             active: viewer.active(),
             cursor: viewer.cursor(),
             markers: viewer.unresolved_on_active_sheet().into_iter().collect(),
+            notes: viewer.workbook_comment_cells().into_iter().collect(),
+            notes_view,
             notice: viewer.notice(),
             thread: viewer.thread_at_cursor(),
             editor,
@@ -257,6 +282,16 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
     }
     // the picker and the search prompt share one grammar: type to filter,
     // arrows to move, Enter to commit, Esc to cancel
+    if mode == InputMode::Notes {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n') => Event::CancelEdit,
+            KeyCode::Up => Event::Move { rows: -1, cols: 0 },
+            KeyCode::Down => Event::Move { rows: 1, cols: 0 },
+            KeyCode::Char('q') => Event::Quit,
+            KeyCode::Char('c') if ctrl => Event::Quit,
+            _ => Event::Noop,
+        };
+    }
     if mode == InputMode::Picker || mode == InputMode::Search {
         return match key.code {
             KeyCode::Esc => Event::CancelEdit,
@@ -281,6 +316,8 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
         KeyCode::F(5) => Event::OpenSheetPicker,
         // Excel's Find key
         KeyCode::Char('f') if ctrl => Event::OpenSearch,
+        // the workbook's own comments, read-only
+        KeyCode::Char('n') => Event::OpenNotes,
         KeyCode::Home if ctrl => Event::Top,
         KeyCode::End if ctrl => Event::Bottom,
         KeyCode::Up => Event::Move { rows: -1, cols: 0 },

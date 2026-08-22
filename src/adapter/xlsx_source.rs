@@ -9,6 +9,7 @@ use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
 use crate::domain::number_format::NumberFormat;
 use crate::domain::sheet::{MergedRange, Rgb, Sheet};
+use crate::domain::workbook_comment::{WorkbookComment, WorkbookReply};
 use crate::infra::{xlsx, xlsx_meta};
 
 pub struct XlsxSource;
@@ -21,6 +22,7 @@ impl DocumentSource for XlsxSource {
         let widths = xlsx_meta::column_widths(path).unwrap_or_default();
         let styles = xlsx_meta::cell_styles(path).unwrap_or_default();
         let frozen = xlsx_meta::frozen_panes(path).unwrap_or_default();
+        let mut workbook_comments = xlsx_meta::workbook_comments(path).unwrap_or_default();
         // parse each distinct format once per workbook, not per cell
         let formats: Vec<Option<NumberFormat>> = styles
             .styles
@@ -32,6 +34,9 @@ impl DocumentSource for XlsxSource {
             .map(|raw_sheet| {
                 let cols = widths.get(&raw_sheet.name);
                 let cells = styles.sheets.get(&raw_sheet.name);
+                let native = workbook_comments
+                    .remove(&raw_sheet.name)
+                    .unwrap_or_default();
                 let merges: Vec<MergedRange> = raw_sheet
                     .merges
                     .iter()
@@ -58,7 +63,8 @@ impl DocumentSource for XlsxSource {
                 )
                 .with_merges(merges)
                 .with_frozen(frozen_rows, frozen_cols)
-                .with_formulas(formulas);
+                .with_formulas(formulas)
+                .with_workbook_comments(native.into_iter().map(to_workbook_comment).collect());
                 match cols {
                     Some(cols) => {
                         let expanded = expand_widths(cols, sheet.col_count());
@@ -69,6 +75,21 @@ impl DocumentSource for XlsxSource {
             })
             .collect();
         Ok(Document::new(sheets))
+    }
+}
+
+fn to_workbook_comment(raw: xlsx_meta::RawWorkbookComment) -> WorkbookComment {
+    WorkbookComment {
+        row: raw.row as usize,
+        col: raw.col as usize,
+        author: raw.author,
+        body: raw.body,
+        resolved: raw.resolved,
+        replies: raw
+            .replies
+            .into_iter()
+            .map(|(author, body)| WorkbookReply { author, body })
+            .collect(),
     }
 }
 

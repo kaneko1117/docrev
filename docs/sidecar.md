@@ -77,6 +77,14 @@ This format is a **public contract**: AI agents read and write it through the
   `value` is its region's value, and the region's cells never repeat in
   `row`. Never redirect this output onto the sidecar itself — the shell
   truncates the file before the command reads it.
+- `list --json` also carries a second, **read-only** top-level array,
+  `workbook_comments`: the workbook's own Excel comments (legacy notes and
+  threaded comments), each as `{"anchor": {"sheet", "cell"}, "author",
+  "body", "resolved", "replies": [{"author", "body"}]}`. They have no `id`
+  and can never be replied to or resolved through docrev — which is exactly
+  why they are kept out of `comments`. The `--sheet`, `--author` and
+  `--unresolved` filters apply to them the same way. Derived from the
+  workbook at list time; never stored in the sidecar.
 - `add` / `reply` / `resolve` print the affected thread (same thread shape,
   including its `id`) and exit non-zero with a message on stderr for invalid
   cell references, unknown sheets, or unknown thread ids.

@@ -123,6 +123,14 @@ pub(crate) fn draw_status(
     } else {
         "c:comment  q:quit  ^G:sheet  ^F:find"
     };
+    // the workbook's own comments are invisible until pointed at — the
+    // hint appears exactly where pressing `n` would do something
+    let (row, col) = view.cursor;
+    let hint = if view.sheet.workbook_comments_at(row, col).is_empty() {
+        hint.to_string()
+    } else {
+        format!("n:notes  {hint}")
+    };
     let hint = match visible_range(grid) {
         // only when something is off screen; otherwise it is noise
         Some(range) => format!("{range}  {hint}"),
@@ -197,6 +205,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -239,6 +249,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -279,6 +291,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -298,6 +312,42 @@ mod tests {
     }
 
     #[test]
+    fn the_hint_offers_n_only_on_cells_with_workbook_comments() {
+        use crate::domain::workbook_comment::WorkbookComment;
+        let sheet = sheet_3x3().with_workbook_comments(vec![WorkbookComment {
+            row: 1,
+            col: 1,
+            author: "田中".into(),
+            body: "メモ".into(),
+            resolved: false,
+            replies: Vec::new(),
+        }]);
+        let mut view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (1, 1),
+            markers: HashSet::new(),
+            notes: HashSet::from([(1, 1)]),
+            notes_view: None,
+            notice: None,
+            thread: None,
+            editor: None,
+            selection: None,
+            search: None,
+            picker: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let on_note = render_text(&view, &mut Scroll::default(), 60, 7);
+        assert!(on_note.contains("n:notes"), "{on_note}");
+
+        view.cursor = (0, 0);
+        let off_note = render_text(&view, &mut Scroll::default(), 60, 7);
+        assert!(!off_note.contains("n:notes"), "{off_note}");
+    }
+
+    #[test]
     fn the_search_prompt_takes_over_the_status_bar() {
         let sheet = sheet_3x3();
         let mut view = GridView {
@@ -306,6 +356,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: Some("this notice must yield to the prompt"),
             thread: None,
             editor: None,
@@ -349,6 +401,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,

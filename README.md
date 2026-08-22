@@ -49,6 +49,7 @@ docrev dump file.xlsx --formulas   # formulas instead of results, like Excel's C
 | Ctrl+F | Find on the active sheet (type to jump, ↓/↑ next/previous, Enter to stay, Esc to go back) |
 | c | Comment on the cell (replies when the cell already has an open thread) |
 | r | Reply to the thread on the cell |
+| n | View the workbook's own Excel comments on the cell (read-only; Esc closes) |
 | q / Ctrl+C | Quit |
 
 ### Mouse
@@ -67,7 +68,9 @@ like Excel. Cells with an open
 thread are marked with `●`; press `c` on one to open its thread in a side
 panel — read and `Esc` out, or type and `Ctrl+S` to reply. (On terminals too
 narrow for the panel, `c` still opens the reply editor.) Moving the cursor
-alone never opens the panel, so the grid keeps its width. Frozen
+alone never opens the panel, so the grid keeps its width. Cells carrying the
+workbook's own Excel comments show a tinted top-right corner; press `n` to
+read them. Frozen
 panes saved in the workbook are honored: pinned rows and columns stay on
 screen while the rest scrolls.
 

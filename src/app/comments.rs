@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::domain::anchor::Anchor;
 use crate::domain::comment::CommentThread;
 use crate::domain::document::Document;
+use crate::domain::workbook_comment::WorkbookComment;
 
 use super::error::{CommentError, DocumentError, StoreError};
 use super::ports::{CommentStore, DocumentSource};
@@ -41,18 +42,27 @@ pub fn list(
         .collect())
 }
 
-/// `list`, with each thread's cell content attached. The workbook is
-/// context, not the point: any failure to read it (missing file, corrupt
-/// zip, renamed sheet) degrades to threads without a context, never an error.
+/// `list` plus everything an agent needs from the workbook: each thread's
+/// cell content, and the workbook's own comments (read-only, no id — kept
+/// apart so a mis-targeted reply is structurally impossible).
+pub struct ContextualList {
+    pub threads: Vec<(CommentThread, Option<CellContext>)>,
+    /// (sheet name, comment), filtered like the threads.
+    pub workbook: Vec<(String, WorkbookComment)>,
+}
+
+/// The workbook is context, not the point: any failure to read it (corrupt
+/// zip, renamed sheet) degrades to threads without a context and no
+/// workbook comments, never an error.
 pub fn list_with_context(
     source: &impl DocumentSource,
     store: &impl CommentStore,
     document_path: &Path,
     filter: &Filter,
-) -> Result<Vec<(CommentThread, Option<CellContext>)>, CommentError> {
+) -> Result<ContextualList, CommentError> {
     let threads = list(store, filter)?;
     let document: Option<Document> = source.load(document_path).ok();
-    Ok(threads
+    let threads = threads
         .into_iter()
         .map(|thread| {
             let context = document
@@ -60,7 +70,21 @@ pub fn list_with_context(
                 .and_then(|d| cell_context(d, &thread.anchor));
             (thread, context)
         })
-        .collect())
+        .collect();
+    let workbook = document
+        .iter()
+        .flat_map(Document::sheets)
+        .filter(|sheet| filter.sheet.is_none_or(|s| sheet.name() == s))
+        .flat_map(|sheet| {
+            sheet
+                .workbook_comments()
+                .iter()
+                .map(|c| (sheet.name().to_string(), c.clone()))
+        })
+        .filter(|(_, c)| !(filter.unresolved_only && c.resolved))
+        .filter(|(_, c)| filter.author.is_none_or(|a| c.author == a))
+        .collect();
+    Ok(ContextualList { threads, workbook })
 }
 
 fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
@@ -324,7 +348,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!C2");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let (_, context) = &items[0];
+        let (_, context) = &items.threads[0];
         let context = context.as_ref().unwrap();
         assert_eq!(context.value, "ロックの旨が表示される");
         assert_eq!(
@@ -343,7 +367,7 @@ mod tests {
         // B3 is the covered cell of the A3:B3 merge
         thread_at(&mut store, "IT-01!B3");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items[0].1.as_ref().unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
         assert_eq!(
             context.value, "結合の値",
             "the region's value, like the viewer"
@@ -360,7 +384,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!H99");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items[0].1.as_ref().unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
         assert_eq!(context.value, "");
         assert!(context.row.is_empty());
     }
@@ -374,12 +398,15 @@ mod tests {
         store.threads[0] = thread;
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
         assert!(
-            items[0].1.is_none(),
+            items.threads[0].1.is_none(),
             "unknown sheet: thread kept, no context"
         );
 
         let items = list_with_context(&BrokenSource, &store, &path(), &Filter::default()).unwrap();
-        assert!(items[0].1.is_none(), "unreadable workbook never errors");
+        assert!(
+            items.threads[0].1.is_none(),
+            "unreadable workbook never errors"
+        );
     }
 
     #[test]

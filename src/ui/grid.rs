@@ -15,12 +15,13 @@ use crate::domain::sheet::{Sheet, TextColor};
 use super::layout::{self, GridLayout, LayoutInput, Separator, Viewport};
 use super::style::{
     canvas, chrome, filled_canvas, freeze_gridline, freeze_ruled, gridline_style, header,
-    range_selected, ruled, selected,
+    note_corner, range_selected, ruled, selected,
 };
 use super::theme::{Palette, Theme};
 use super::{bars, dialog, panel};
 
 pub use super::bars::SearchView;
+pub use super::dialog::{NoteView, NotesView};
 pub use super::layout::{DEFAULT_CELL_WIDTH, Scroll};
 pub use super::picker::{PickerItem, PickerView};
 
@@ -34,6 +35,10 @@ pub struct GridView<'a> {
     pub cursor: (usize, usize),
     /// Cells with an unresolved comment thread, marked with `●`.
     pub markers: HashSet<(usize, usize)>,
+    /// Cells with the workbook's own comments — corner-tinted.
+    pub notes: HashSet<(usize, usize)>,
+    /// The read-only notes dialog, when open.
+    pub notes_view: Option<NotesView>,
     pub notice: Option<&'a str>,
     /// Thread under the cursor — drives the status hint, and fills the side
     /// panel while composing.
@@ -135,6 +140,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
             sheet: view.sheet,
             cursor: view.cursor,
             markers: &view.markers,
+            notes: &view.notes,
             col_widths: &view.col_widths,
             selection: view.selection,
         },
@@ -163,6 +169,9 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
     // counter riding on it) to the tab bar
     if let Some(picker) = &view.picker {
         dialog::draw_picker(p, frame, picker);
+    }
+    if let Some(notes) = &view.notes_view {
+        dialog::draw_notes(p, frame, notes);
     }
     HitMap {
         grid: grid_area,
@@ -245,7 +254,15 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
             } else {
                 base
             };
-            spans.push(Span::styled(slot.text.clone(), style));
+            if slot.note {
+                // the workbook-comment corner: tint the cell's last character
+                let split = slot.text.char_indices().last().map(|(i, _)| i).unwrap_or(0);
+                let (head, corner) = slot.text.split_at(split);
+                spans.push(Span::styled(head.to_string(), style));
+                spans.push(Span::styled(corner.to_string(), note_corner(p)));
+            } else {
+                spans.push(Span::styled(slot.text.clone(), style));
+            }
         }
         lines.push(Line::from(spans));
     }
@@ -274,6 +291,8 @@ mod tests {
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -306,6 +325,8 @@ mod tests {
             active: 0,
             cursor: (0, 1),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -382,6 +403,8 @@ mod tests {
             active: 0,
             cursor: (0, 2),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -447,6 +470,8 @@ mod tests {
             active: 0,
             cursor: (0, 2),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -499,6 +524,8 @@ mod tests {
             active: 0,
             cursor: (50, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -523,6 +550,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -558,6 +587,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -592,6 +623,8 @@ mod tests {
             active: 0,
             cursor: (2, 1),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -614,6 +647,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -647,6 +682,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -683,6 +720,8 @@ mod tests {
             active: 0,
             cursor: (0, 2),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -735,6 +774,8 @@ mod tests {
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -757,6 +798,8 @@ mod tests {
             active: 0,
             cursor: (0, 2), // C1, inside A1:C1
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -796,6 +839,8 @@ mod tests {
             active: 0,
             cursor: (1, 2),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -828,6 +873,8 @@ mod tests {
             active: 0,
             cursor: (2, 2),
             markers: HashSet::from([(0, 1)]), // B1, interior of A1:C1
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -870,6 +917,8 @@ mod tests {
             active: 0,
             cursor: (0, 1),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -903,6 +952,8 @@ mod tests {
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -958,6 +1009,8 @@ mod tests {
             active: 0,
             cursor: (50, 2),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -991,6 +1044,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -1021,6 +1076,8 @@ mod tests {
             active: 0,
             cursor: (50, 2),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -1049,6 +1106,8 @@ mod tests {
             active: 0,
             cursor: (50, 2),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -1079,6 +1138,50 @@ mod tests {
     }
 
     #[test]
+    fn a_workbook_comment_tints_the_cells_corner() {
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (2, 2),
+            markers: HashSet::new(),
+            notes: HashSet::from([(0, 1)]),
+            notes_view: None,
+            notice: None,
+            thread: None,
+            editor: None,
+            selection: None,
+            search: None,
+            picker: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(46, 7)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &view, &mut Scroll::default());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let p = &Theme::default().palette();
+        // B column spans x=15..28; its last cell (the corner) is x=27, and
+        // the first data row is y=2
+        let corner = buffer.cell((27, 2)).unwrap();
+        assert_eq!(
+            corner.style().bg,
+            Some(p.notice_fg),
+            "the corner carries the tint"
+        );
+        let neighbour = buffer.cell((26, 2)).unwrap();
+        assert_ne!(
+            neighbour.style().bg,
+            Some(p.notice_fg),
+            "one character only — a corner, not a stripe"
+        );
+    }
+
+    #[test]
     fn markers_and_notice_are_rendered() {
         let sheet = sheet_3x3();
         let view = GridView {
@@ -1087,6 +1190,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::from([(1, 1)]),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: Some("comments unavailable: invalid sidecar"),
             thread: None,
             editor: None,

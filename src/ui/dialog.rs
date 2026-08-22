@@ -8,10 +8,100 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::picker::{self, PickerView};
 use super::style::{canvas, dialog, selected};
-use super::text::{query_line, sanitize};
+use super::text::{query_line, sanitize, wrap};
 use super::theme::Palette;
 
 const PICKER_HINT: &str = " Enter:switch  Esc:cancel ";
+const NOTES_HINT: &str = " ↓↑:scroll  Esc:close ";
+
+/// The read-only notes dialog: the cursor cell's workbook comments.
+pub struct NotesView {
+    /// `C10` — where the comments live.
+    pub cell_ref: String,
+    pub comments: Vec<NoteView>,
+    pub scroll: usize,
+}
+
+pub struct NoteView {
+    pub author: String,
+    pub body: String,
+    pub resolved: bool,
+    pub replies: Vec<(String, String)>,
+}
+
+/// A centered, read-only dialog for the workbook's own comments — same
+/// chrome as the sheet picker, ↓/↑ to scroll, Esc to close.
+pub(crate) fn draw_notes(p: &Palette, frame: &mut Frame, view: &NotesView) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::new().style(Style::new().add_modifier(Modifier::DIM)),
+        area,
+    );
+    let width = area
+        .width
+        .saturating_sub(4)
+        .clamp(24, 60)
+        .min(area.width.max(1));
+    let inner_width = width.saturating_sub(2) as usize;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, note) in view.comments.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
+        }
+        let title = if note.resolved {
+            format!(" {} (resolved)", note.author)
+        } else {
+            format!(" {}", note.author)
+        };
+        lines.push(Line::styled(title, dialog(p).add_modifier(Modifier::BOLD)));
+        for part in note.body.split('\n') {
+            for wrapped in wrap(&sanitize(part), inner_width.saturating_sub(2).max(1)) {
+                lines.push(Line::styled(format!("  {wrapped}"), dialog(p)));
+            }
+        }
+        for (author, body) in &note.replies {
+            lines.push(Line::styled(
+                format!("   ↳ {author}"),
+                dialog(p).add_modifier(Modifier::BOLD),
+            ));
+            for part in body.split('\n') {
+                for wrapped in wrap(&sanitize(part), inner_width.saturating_sub(4).max(1)) {
+                    lines.push(Line::styled(format!("    {wrapped}"), dialog(p)));
+                }
+            }
+        }
+    }
+
+    let visible = lines
+        .len()
+        .clamp(1, area.height.saturating_sub(4).max(1) as usize);
+    let height = (visible as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    // the viewer only counts key presses; the far end is clamped here,
+    // where the wrapped line count is known
+    let scroll = view.scroll.min(lines.len().saturating_sub(visible)) as u16;
+
+    frame.render_widget(Clear, popup);
+    let widget = Paragraph::new(lines)
+        .style(dialog(p))
+        .scroll((scroll, 0))
+        .block(
+            Block::bordered()
+                .title(Line::styled(
+                    format!(" Notes on {} ", view.cell_ref),
+                    dialog(p).add_modifier(Modifier::BOLD),
+                ))
+                .title_bottom(NOTES_HINT)
+                .border_style(dialog(p)),
+        );
+    frame.render_widget(widget, popup);
+}
 
 /// Centered popup: the query line, a rule, then the candidates windowed
 /// around the selection. The grid behind never moves until Enter.
@@ -116,6 +206,48 @@ mod tests {
     }
 
     #[test]
+    fn the_notes_dialog_shows_authors_replies_and_resolution() {
+        use crate::ui::grid::{NoteView, NotesView};
+        let sheet = sheet_3x3();
+        let view = GridView {
+            sheet: &sheet,
+            sheet_names: vec!["売上"],
+            active: 0,
+            cursor: (1, 1),
+            markers: HashSet::new(),
+            notes: HashSet::from([(1, 1)]),
+            notes_view: Some(NotesView {
+                cell_ref: "B2".into(),
+                comments: vec![
+                    NoteView {
+                        author: "佐藤".into(),
+                        body: "これ確認して".into(),
+                        resolved: true,
+                        replies: vec![("鈴木".into(), "対応済みです".into())],
+                    },
+                    NoteView {
+                        author: "田中".into(),
+                        body: "昔のメモ".into(),
+                        resolved: false,
+                        replies: Vec::new(),
+                    },
+                ],
+                scroll: 0,
+            }),
+            notice: None,
+            thread: None,
+            editor: None,
+            selection: None,
+            search: None,
+            picker: None,
+            col_widths: vec![],
+            theme: Theme::default(),
+        };
+        let mut scroll = Scroll::default();
+        insta::assert_snapshot!(render_text(&view, &mut scroll, 50, 14));
+    }
+
+    #[test]
     fn the_sheet_picker_overlays_the_grid() {
         let sheet = sheet_3x3();
         let view = GridView {
@@ -124,6 +256,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -151,6 +285,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -176,6 +312,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -203,6 +341,8 @@ mod tests {
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
             notice: None,
             thread: None,
             editor: None,
@@ -232,6 +372,8 @@ mod tests {
                 active: 0,
                 cursor: (0, 0),
                 markers: HashSet::new(),
+                notes: HashSet::new(),
+                notes_view: None,
                 notice: None,
                 thread: None,
                 editor: None,

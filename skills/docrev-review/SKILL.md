@@ -26,6 +26,11 @@ writes atomically.
    `row` may be `{}`, and `cell` itself is absent when the workbook cannot be
    read). Never redirect this output onto the sidecar file itself.
 
+   A second array, `workbook_comments`, carries the workbook's own Excel
+   comments (notes and threaded comments). They are **read-only context**:
+   they have no `id`, and `reply`/`resolve` can never target them. To answer
+   one, add a docrev thread on the same cell instead.
+
 3. For each thread: investigate, act, reply. **Start from the `cell` content
    that came with the thread** — for most comments the anchored row is all the
    context needed. Reach for the full sheet only when it is not:

@@ -93,3 +93,13 @@ pub(crate) fn freeze_gridline(p: &Palette) -> Style {
     }
     canvas(p).fg(p.header_fg)
 }
+
+/// The workbook-comment corner: one tinted character in the cell's top
+/// right, like the Sheets/Excel corner triangle. On the terminal palette
+/// a reversed named color stands in for a background.
+pub(crate) fn note_corner(p: &Palette) -> Style {
+    if p.dim_chrome {
+        return canvas(p).fg(p.notice_fg).add_modifier(Modifier::REVERSED);
+    }
+    Style::new().bg(p.notice_fg).fg(p.canvas_bg)
+}

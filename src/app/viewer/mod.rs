@@ -19,6 +19,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::comment::CommentThread;
 use crate::domain::document::Document;
 use crate::domain::sheet::Sheet;
+use crate::domain::workbook_comment::WorkbookComment;
 
 use super::error::{DocumentError, FrontendError};
 use super::ports::{CommentStore, DocumentSource};
@@ -37,6 +38,8 @@ pub enum Event {
     PrevSheet,
     OpenSheetPicker,
     OpenSearch,
+    /// `n`: view the workbook's own comments on the cell, read-only.
+    OpenNotes,
     /// A click on a grid cell (also the press that may begin a drag).
     SelectCell {
         row: usize,
@@ -123,6 +126,11 @@ pub enum Mode {
         origin: (usize, usize),
         matches: Vec<(usize, usize)>,
         index: usize,
+    },
+    /// The workbook's own comments on the cursor cell, read-only: ↓/↑
+    /// scroll, Esc closes.
+    Notes {
+        scroll: usize,
     },
 }
 
@@ -301,6 +309,33 @@ impl Viewer {
         self.selection
     }
 
+    /// The notes dialog: the cursor cell's workbook comments plus the
+    /// scroll offset, while the dialog is open.
+    pub fn notes_state(&self) -> Option<(Vec<&WorkbookComment>, usize)> {
+        let Mode::Notes { scroll } = &self.mode else {
+            return None;
+        };
+        let (row, col) = self.cursor();
+        Some((self.sheet().workbook_comments_at(row, col), *scroll))
+    }
+
+    /// Whether the cursor cell has workbook comments — drives the `n:notes`
+    /// status hint.
+    pub fn has_notes_at_cursor(&self) -> bool {
+        let (row, col) = self.cursor();
+        !self.sheet().workbook_comments_at(row, col).is_empty()
+    }
+
+    /// Cells on the active sheet carrying workbook comments, for the
+    /// corner tint.
+    pub fn workbook_comment_cells(&self) -> Vec<(usize, usize)> {
+        self.sheet()
+            .workbook_comments()
+            .iter()
+            .map(|c| (c.row, c.col))
+            .collect()
+    }
+
     /// TSV produced by a finished drag; the run loop hands it to the frontend.
     pub fn take_copy_request(&mut self) -> Option<String> {
         self.copy_request.take()
@@ -337,6 +372,23 @@ impl Viewer {
             Mode::Editing { .. } => self.apply_editing(event),
             Mode::SheetPicker { .. } => self.apply_picker(event),
             Mode::Search { .. } => self.apply_search(event),
+            Mode::Notes { .. } => self.apply_notes(event),
+        }
+    }
+
+    fn apply_notes(&mut self, event: Event) {
+        let Mode::Notes { scroll } = &mut self.mode else {
+            return;
+        };
+        match event {
+            Event::Move { rows, .. } => {
+                // the dialog clamps the far end itself, since only the
+                // renderer knows how many lines the comments wrap into
+                *scroll = scroll.saturating_add_signed(rows);
+            }
+            Event::CancelEdit | Event::Submit | Event::OpenNotes => self.mode = Mode::Grid,
+            Event::Quit => self.quit = true,
+            _ => {}
         }
     }
 
@@ -405,6 +457,13 @@ impl Viewer {
                     matches: Vec::new(),
                     index: 0,
                 };
+                return;
+            }
+            // read-only: opens only when the cell actually has any
+            Event::OpenNotes => {
+                if !self.sheet().workbook_comments_at(row, col).is_empty() {
+                    self.mode = Mode::Notes { scroll: 0 };
+                }
                 return;
             }
             // Sheets model: one open thread per cell — `c` replies to it if
@@ -602,6 +661,54 @@ mod tests {
         assert_eq!(v.cursor(), (2, 2), "cursor remembered per sheet");
         v.apply(Event::PrevSheet);
         assert_eq!(v.sheet().name(), "two");
+    }
+
+    #[test]
+    fn notes_open_only_where_the_workbook_has_comments() {
+        use crate::domain::cell::CellValue;
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![CellValue::Number(1.0), CellValue::Number(2.0)]],
+        )
+        .with_workbook_comments(vec![WorkbookComment {
+            row: 0,
+            col: 1,
+            author: "田中".into(),
+            body: "メモ".into(),
+            resolved: false,
+            replies: Vec::new(),
+        }]);
+        let mut v = Viewer::from_document(
+            Document::new(vec![sheet]),
+            Vec::new(),
+            None,
+            None,
+            Box::new(NullStore),
+        )
+        .unwrap();
+
+        v.apply(Event::OpenNotes);
+        assert_eq!(*v.mode(), Mode::Grid, "no notes on A1: nothing opens");
+
+        v.apply(Event::Move { rows: 0, cols: 1 });
+        v.apply(Event::OpenNotes);
+        let (comments, scroll) = v.notes_state().expect("the dialog is open");
+        assert_eq!(comments.len(), 1);
+        assert_eq!(scroll, 0);
+
+        v.apply(Event::Move { rows: 3, cols: 0 });
+        assert_eq!(v.notes_state().unwrap().1, 3, "arrows scroll");
+        v.apply(Event::Move { rows: -5, cols: 0 });
+        assert_eq!(v.notes_state().unwrap().1, 0, "floored at the top");
+
+        v.apply(Event::CancelEdit);
+        assert_eq!(*v.mode(), Mode::Grid, "Esc closes");
+
+        // clicks win here like over every prompt
+        v.apply(Event::OpenNotes);
+        v.apply(Event::SelectCell { row: 0, col: 0 });
+        assert_eq!(*v.mode(), Mode::Grid);
+        assert_eq!(v.cursor(), (0, 0));
     }
 
     struct FakeFrontend {
