@@ -175,15 +175,29 @@ pub fn thread_to_json(thread: &CommentThread) -> Result<String, StoreError> {
 }
 
 /// CLI output for `list --json`: the sidecar shape, each thread augmented
-/// with its derived `cell` content. Output-only — the sidecar file never
-/// stores `cell`, and readers of the file ignore it.
-pub fn threads_with_context_to_json(
-    items: &[(CommentThread, Option<comments::CellContext>)],
-) -> Result<String, StoreError> {
+/// with its derived `cell` content, plus the workbook's own comments in a
+/// separate read-only array. Output-only — the sidecar file stores neither.
+pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<String, StoreError> {
+    let items = &list.threads;
     #[derive(Serialize)]
     struct File {
         version: u32,
         comments: Vec<Entry>,
+        /// The workbook's own, read-only — no id, never actionable.
+        workbook_comments: Vec<WorkbookEntry>,
+    }
+    #[derive(Serialize)]
+    struct WorkbookEntry {
+        anchor: AnchorDto,
+        author: String,
+        body: String,
+        resolved: bool,
+        replies: Vec<WorkbookReplyDto>,
+    }
+    #[derive(Serialize)]
+    struct WorkbookReplyDto {
+        author: String,
+        body: String,
     }
     #[derive(Serialize)]
     struct Entry {
@@ -221,6 +235,27 @@ pub fn threads_with_context_to_json(
                     value: c.value.clone(),
                     row: RowDto(c.row.clone()),
                 }),
+            })
+            .collect(),
+        workbook_comments: list
+            .workbook
+            .iter()
+            .map(|(sheet, comment)| WorkbookEntry {
+                anchor: AnchorDto {
+                    sheet: sheet.clone(),
+                    cell: Anchor::cell("", comment.row as u32, comment.col as u32).cell_ref(),
+                },
+                author: comment.author.clone(),
+                body: comment.body.clone(),
+                resolved: comment.resolved,
+                replies: comment
+                    .replies
+                    .iter()
+                    .map(|r| WorkbookReplyDto {
+                        author: r.author.clone(),
+                        body: r.body.clone(),
+                    })
+                    .collect(),
             })
             .collect(),
     };
@@ -358,7 +393,24 @@ mod tests {
                 }),
             ),
         ];
-        let json = threads_with_context_to_json(&items).unwrap();
+        let list = comments::ContextualList {
+            threads: items,
+            workbook: vec![(
+                "IT-01".to_string(),
+                crate::domain::workbook_comment::WorkbookComment {
+                    row: 0,
+                    col: 0,
+                    author: "\u{7530}\u{4e2d}".to_string(),
+                    body: "\u{8981}\u{78ba}\u{8a8d}".to_string(),
+                    resolved: true,
+                    replies: vec![crate::domain::workbook_comment::WorkbookReply {
+                        author: "\u{4f50}\u{85e4}".to_string(),
+                        body: "\u{5bfe}\u{5fdc}\u{6e08}".to_string(),
+                    }],
+                },
+            )],
+        };
+        let json = threads_with_context_to_json(&list).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["version"], 1, "still the sidecar shape");
         let first = &parsed["comments"][0];

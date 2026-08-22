@@ -6,3 +6,4 @@ pub mod comment;
 pub mod document;
 pub mod number_format;
 pub mod sheet;
+pub mod workbook_comment;

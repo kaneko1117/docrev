@@ -1,0 +1,18 @@
+---
+source: src/ui/dialog.rs
+expression: "render_text(&view, &mut scroll, 50, 14)"
+---
+ B2     │ 120
+  │     A      │     B      │     C
+ 1┌ Notes on B2 ───────────────────────────────┐
+ 2│ 佐藤 (resolved)                            │
+ 3│  これ確認して                              │
+  │   ↳ 鈴木                                   │
+  │    対応済みです                            │
+  │                                            │
+  │ 田中                                       │
+  │  昔のメモ                                  │
+  └ ↓↑:scroll  Esc:close ──────────────────────┘
+
+[売上]
+              c:comment  q:quit  ^G:sheet  ^F:find

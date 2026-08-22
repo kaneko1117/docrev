@@ -21,6 +21,8 @@ pub(crate) struct LayoutInput<'a> {
     pub sheet: &'a Sheet,
     pub cursor: (usize, usize),
     pub markers: &'a HashSet<(usize, usize)>,
+    /// Cells carrying the workbook's own comments — tinted in the corner.
+    pub notes: &'a HashSet<(usize, usize)>,
     pub col_widths: &'a [usize],
     /// A drag in progress, as (press cell, current cell) — highlighted like
     /// the cursor.
@@ -77,6 +79,9 @@ pub(crate) struct Slot {
     pub cursor: bool,
     /// Inside the dragged rectangle — drawn a step lighter than the cursor.
     pub selected: bool,
+    /// The cell carries a workbook comment: its top-right corner is tinted,
+    /// like Sheets. Only on the first line of the sheet row.
+    pub note: bool,
     /// Workbook fill; ignored under the cursor.
     pub fill: Option<Rgb>,
     /// Text color as resolved by the workbook; suppressed under the cursor
@@ -311,12 +316,15 @@ pub(crate) fn grid_layout(
                         } else {
                             None
                         };
+                        let note =
+                            sub == 0 && input.notes.iter().any(|(r, c)| merge.contains(*r, *c));
                         slots.push(Slot {
                             separator,
                             freeze_boundary,
                             text: pad_right(&clip(&text, span_width), span_width),
                             cursor: on_cursor,
                             selected: in_range,
+                            note,
                             // the anchor's fill paints the whole merged region
                             fill: sheet.display_fill_at(row, col),
                             font,
@@ -365,6 +373,7 @@ pub(crate) fn grid_layout(
                         text: aligned,
                         cursor: on_cursor,
                         selected: in_range,
+                        note: sub == 0 && input.notes.contains(&(row, col)),
                         fill,
                         font: visible_color(sheet.text_color_at(row, col), on_cursor || in_range),
                         ruled: last_line,
@@ -573,10 +582,12 @@ mod tests {
         width: usize,
         rows: usize,
     ) -> GridLayout {
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet,
             cursor,
             markers,
+            notes: &notes,
             col_widths: &[],
             selection: None,
         };
@@ -606,10 +617,12 @@ mod tests {
         // 8 columns of the default width; the cursor sits on the 7th
         let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 8]]);
         let markers = HashSet::new();
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &sheet,
             cursor: (0, 6),
             markers: &markers,
+            notes: &notes,
             col_widths: &[],
             selection: None,
         };
@@ -685,10 +698,12 @@ mod tests {
     fn the_layout_reports_the_visible_column_range() {
         let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 30]]);
         let markers = HashSet::new();
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &sheet,
             cursor: (0, 0),
             markers: &markers,
+            notes: &notes,
             col_widths: &[],
             selection: None,
         };
@@ -732,10 +747,12 @@ mod tests {
     #[test]
     fn frozen_cols_stay_pinned_while_the_body_scrolls_right() {
         let sheet = tall_sheet_frozen(3, 0, 1);
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &sheet,
             cursor: (0, 3),
             markers: &HashSet::new(),
+            notes: &notes,
             col_widths: &[],
             selection: None,
         };
@@ -767,10 +784,12 @@ mod tests {
 
         // frozen columns wider than the viewport
         let wide = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 6]]).with_frozen(0, 5);
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &wide,
             cursor: (0, 5),
             markers: &HashSet::new(),
+            notes: &notes,
             col_widths: &[],
             selection: None,
         };
@@ -817,10 +836,12 @@ mod tests {
         let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 8]]).with_frozen(0, 1);
         let markers = HashSet::new();
         // cursor in the pinned column, but the view was scrolled right
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &sheet,
             cursor: (0, 0),
             markers: &markers,
+            notes: &notes,
             col_widths: &[],
             selection: None,
         };
@@ -854,10 +875,12 @@ mod tests {
         let sheet = tall_sheet_frozen(100, 2, 0);
         let markers = HashSet::new();
         let mut scroll = Scroll { top: 50, left: 0 };
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &sheet,
             cursor: (2, 0),
             markers: &markers,
+            notes: &notes,
             col_widths: &[],
             selection: None,
         };
@@ -869,10 +892,12 @@ mod tests {
     fn the_drag_rectangle_highlights_a_step_lighter_than_the_cursor() {
         let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 3]; 3]);
         let markers = HashSet::new();
+        let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &sheet,
             cursor: (2, 2),
             markers: &markers,
+            notes: &notes,
             col_widths: &[],
             // dragged backwards on purpose: the rectangle still normalizes
             selection: Some(((1, 1), (0, 0))),
