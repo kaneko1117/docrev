@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/kaneko1117/docrev/compare/v0.2.0...v0.3.0) - 2026-08-22
+
+### Added
+
+- read the workbook's own Excel comments ([#53](https://github.com/kaneko1117/docrev/pull/53))
+- show formulas in the formula bar and dump --formulas ([#50](https://github.com/kaneko1117/docrev/pull/50))
+- mouse support — click, wheel, drag-to-copy TSV ([#49](https://github.com/kaneko1117/docrev/pull/49))
+- open the comment panel on demand, not on every cursor move ([#48](https://github.com/kaneko1117/docrev/pull/48))
+- carry the anchored cell's content in comment list --json ([#55](https://github.com/kaneko1117/docrev/pull/55))
+- honor frozen panes from the workbook ([#52](https://github.com/kaneko1117/docrev/pull/52))
+- find on the active sheet with Ctrl+F ([#54](https://github.com/kaneko1117/docrev/pull/54))
+- jump to a sheet by name with Ctrl+G ([#51](https://github.com/kaneko1117/docrev/pull/51))
+
+### Changed
+
+- split app/viewer.rs into a directory module per mode ([#61](https://github.com/kaneko1117/docrev/pull/61))
+- split ui/grid.rs into per-widget modules ([#60](https://github.com/kaneko1117/docrev/pull/60))
+
+### Documentation
+
+- drop version and progress snapshots, record release lessons ([#68](https://github.com/kaneko1117/docrev/pull/68))
+
+### Fixed
+
+- phonetic runs and out-of-range anchors in workbook comments
+
 ## [0.2.0](https://github.com/kaneko1117/docrev/compare/v0.1.0...v0.2.0) - 2026-08-15
 
 ### Added
