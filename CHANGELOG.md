@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/kaneko1117/docrev/compare/v0.3.0...v0.3.1) - 2026-08-23
+
+### Documentation
+
+- add a demo recording of the comment loop ([#75](https://github.com/kaneko1117/docrev/pull/75))
+
 ## [0.3.0](https://github.com/kaneko1117/docrev/compare/v0.2.0...v0.3.0) - 2026-08-22
 
 ### Added
