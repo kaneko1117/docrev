@@ -9,6 +9,8 @@ AI agent read them through a CLI, act on them, and reply — think code review, 
 documents. The viewer paints a spreadsheet-style grid (white canvas, gridlines,
 formula bar) right in your terminal.
 
+![Comment on a cell in the viewer, Claude picks it up over the CLI, and the reply lands back in the viewer on its own](demo/demo.gif)
+
 > Excel (`.xlsx`), read-only. Word (`.docx`) support is planned.
 
 ## Installation
