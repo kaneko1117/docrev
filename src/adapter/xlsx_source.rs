@@ -76,6 +76,24 @@ impl DocumentSource for XlsxSource {
             .collect();
         Ok(Document::new(sheets))
     }
+
+    /// Modification time mixed with the size, mirroring the comment store's
+    /// token. A missing file reports `Some(0)`: deletion is a change worth
+    /// noticing, not a reason to stop watching.
+    fn revision(&self, path: &Path) -> Option<u64> {
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(0),
+            Err(_) => return None,
+        };
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as u64;
+        Some(modified.wrapping_mul(31).wrapping_add(metadata.len()))
+    }
 }
 
 fn to_workbook_comment(raw: xlsx_meta::RawWorkbookComment) -> WorkbookComment {

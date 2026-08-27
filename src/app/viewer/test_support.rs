@@ -1,10 +1,11 @@
 //! Store fakes and builders shared by the viewer's test modules.
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 
-use crate::app::error::StoreError;
-use crate::app::ports::CommentStore;
+use crate::app::error::{LoadError, StoreError};
+use crate::app::ports::{CommentStore, DocumentSource};
 use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::comment::{CommentThread, Reply};
@@ -125,6 +126,57 @@ impl CommentStore for SharedStore {
     fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
         Err(StoreError("read only".into()))
     }
+}
+
+/// A document an "agent" can rewrite behind the viewer's back.
+#[derive(Clone)]
+pub(crate) struct SharedSource {
+    pub(crate) sheets: Rc<RefCell<Vec<Sheet>>>,
+    pub(crate) revision: Rc<RefCell<Option<u64>>>,
+    pub(crate) loads: Rc<RefCell<usize>>,
+    pub(crate) broken: Rc<RefCell<bool>>,
+}
+
+impl SharedSource {
+    pub(crate) fn new(sheets: Vec<Sheet>) -> Self {
+        Self {
+            sheets: Rc::new(RefCell::new(sheets)),
+            revision: Rc::new(RefCell::new(Some(1))),
+            loads: Rc::new(RefCell::new(0)),
+            broken: Rc::new(RefCell::new(false)),
+        }
+    }
+
+    /// Simulates an outside write: new content plus a new revision.
+    pub(crate) fn write_from_outside(&self, sheets: Vec<Sheet>) {
+        *self.sheets.borrow_mut() = sheets;
+        if let Some(revision) = self.revision.borrow_mut().as_mut() {
+            *revision += 1;
+        }
+    }
+}
+
+impl DocumentSource for SharedSource {
+    fn load(&self, _: &Path) -> Result<Document, LoadError> {
+        *self.loads.borrow_mut() += 1;
+        if *self.broken.borrow() {
+            return Err(LoadError("mid-write".into()));
+        }
+        Ok(Document::new(self.sheets.borrow().clone()))
+    }
+
+    fn revision(&self, _: &Path) -> Option<u64> {
+        *self.revision.borrow()
+    }
+}
+
+/// Opens a viewer on a `SharedSource`, auto-reload wired like production.
+pub(crate) fn viewer_on(source: &SharedSource) -> Viewer {
+    viewer_on_with(source, Box::new(NullStore))
+}
+
+pub(crate) fn viewer_on_with(source: &SharedSource, store: Box<dyn CommentStore>) -> Viewer {
+    Viewer::open(Box::new(source.clone()), store, Path::new("test.xlsx")).unwrap()
 }
 
 pub(crate) fn viewer(rows: usize, cols: usize) -> Viewer {
