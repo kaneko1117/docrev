@@ -215,7 +215,7 @@ fn print_stdout(text: &str) -> ExitCode {
 
 fn run_viewer(file: &Path, theme: Theme) -> ExitCode {
     let store = JsonCommentStore::for_document(file);
-    let viewer = match Viewer::open(&XlsxSource, Box::new(store), file) {
+    let viewer = match Viewer::open(Box::new(XlsxSource), Box::new(store), file) {
         Ok(viewer) => viewer,
         Err(e) => return fail(&e),
     };

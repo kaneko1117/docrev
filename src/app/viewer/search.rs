@@ -158,6 +158,36 @@ impl Viewer {
             *cursor = position;
         }
     }
+
+    /// After a document reload the cached matches point into sheets that no
+    /// longer exist. Recompute them against the new active sheet so a search
+    /// in progress keeps working; the origin is pulled into the new bounds.
+    /// The cursor stays put — the next keystroke re-syncs it, and jumping it
+    /// because an agent saved would yank the grid out from under the user.
+    pub(super) fn refresh_search(&mut self) {
+        let sheet = self.sheets.get(self.active);
+        let (max_row, max_col) = (
+            sheet.row_count().saturating_sub(1),
+            sheet.col_count().saturating_sub(1),
+        );
+        let new_matches = match &self.mode {
+            Mode::Search { query, .. } => matches_in(sheet, query),
+            _ => return,
+        };
+        let Mode::Search {
+            origin,
+            matches,
+            index,
+            ..
+        } = &mut self.mode
+        else {
+            return;
+        };
+        origin.0 = origin.0.min(max_row);
+        origin.1 = origin.1.min(max_col);
+        *index = first_at_or_after(&new_matches, *origin);
+        *matches = new_matches;
+    }
 }
 
 #[cfg(test)]
@@ -166,7 +196,7 @@ mod tests {
     use crate::domain::document::Document;
     use crate::domain::sheet::{MergedRange, Sheet};
 
-    use super::super::test_support::{NullStore, type_text, viewer_with};
+    use super::super::test_support::{NullStore, SharedSource, type_text, viewer_on, viewer_with};
     use super::*;
 
     fn text(s: &str) -> CellValue {
@@ -358,6 +388,26 @@ mod tests {
         assert_eq!(v.cursor(), (0, 2), "'合計' finds the earlier match again");
         let state = v.search_state().unwrap();
         assert_eq!((state.current, state.total), (1, 2));
+    }
+
+    #[test]
+    fn a_document_reload_recomputes_the_matches_mid_search() {
+        let source = SharedSource::new(vec![search_sheet()]);
+        let mut v = viewer_on(&source);
+        v.apply(Event::OpenSearch);
+        type_text(&mut v, "合計");
+        let state = v.search_state().unwrap();
+        assert_eq!((state.current, state.total), (1, 2));
+        // an agent rewrites the sheet: one match left, in a new place
+        source.write_from_outside(vec![Sheet::new(
+            "s",
+            vec![vec![text("x"), text("合計だけ")]],
+        )]);
+        v.apply(Event::Tick);
+        let state = v.search_state().unwrap();
+        assert_eq!((state.current, state.total), (1, 1));
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(v.cursor(), (0, 1), "cycling lands on the new match");
     }
 
     #[test]

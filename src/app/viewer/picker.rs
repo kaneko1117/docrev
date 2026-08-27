@@ -53,6 +53,18 @@ impl Viewer {
         counts
     }
 
+    /// After a document reload the sheet list may have shrunk under the
+    /// picker; the selection is pulled back onto the last candidate.
+    pub(super) fn clamp_picker_selection(&mut self) {
+        let count = match self.picker_state() {
+            Some(state) => state.candidates.len(),
+            None => return,
+        };
+        if let Mode::SheetPicker { selected, .. } = &mut self.mode {
+            *selected = (*selected).min(count.saturating_sub(1));
+        }
+    }
+
     pub(super) fn apply_picker(&mut self, event: Event) {
         let candidates = match self.picker_state() {
             Some(state) => state.candidates,
