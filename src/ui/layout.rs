@@ -1,4 +1,4 @@
-//! Pure grid layout (#36): decides what goes where — merges, wrapping,
+//! Pure grid layout: decides what goes where — merges, wrapping,
 //! variable row heights, scroll following, alignment, semantic styling.
 //! No ratatui, no colors, no `Span`s; `grid.rs` translates the result.
 
@@ -233,7 +233,7 @@ struct RowViewport {
 impl RowBuilder<'_> {
     /// Wrapped text makes row heights variable: a sheet row is as tall as
     /// its tallest visible cell — frozen columns included. Numbers stay
-    /// single-line (#33), and a merged region wraps at the merged width,
+    /// single-line, and a merged region wraps at the merged width,
     /// counted on its anchor row.
     fn height_of(&self, row: usize) -> usize {
         let sheet = self.input.sheet;
@@ -374,7 +374,7 @@ impl RowBuilder<'_> {
                     let on_cursor = (row, col) == input.cursor;
                     let in_range = in_selection(row, col);
 
-                    // text wraps within the column (#33); numbers stay on one
+                    // text wraps within the column; numbers stay on one
                     // right-aligned line so digit groups never split
                     let line_text = if is_number {
                         if sub == 0 {

@@ -1,7 +1,7 @@
 //! Comments stored in the workbook itself — Excel's legacy notes and
 //! threaded comments. Deliberately not `CommentThread`: they are read-only,
 //! live in the document rather than the sidecar, carry no id, and can never
-//! be replied to or resolved through docrev (writing back is #7).
+//! be replied to or resolved through docrev, which never writes them back.
 
 /// One workbook comment on a cell: a legacy note, or a threaded comment
 /// with its replies.

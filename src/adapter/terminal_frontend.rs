@@ -160,10 +160,12 @@ impl Frontend for TerminalFrontend {
                 items: state
                     .candidates
                     .iter()
-                    .map(|&i| PickerItem {
-                        name: names[i].to_string(),
-                        count: counts[i],
-                        active: i == viewer.active(),
+                    .filter_map(|&i| {
+                        Some(PickerItem {
+                            name: names.get(i)?.to_string(),
+                            count: counts.get(i).copied()?,
+                            active: i == viewer.active(),
+                        })
                     })
                     .collect(),
             }

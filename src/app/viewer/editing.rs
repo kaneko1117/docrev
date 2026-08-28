@@ -325,7 +325,7 @@ mod tests {
         );
     }
 
-    /// #41: the user answers a thread the agent resolved mid-composition.
+    /// The user answers a thread the agent resolved mid-composition.
     /// The reply must come back into view rather than vanish.
     #[test]
     fn replying_to_a_thread_resolved_mid_composition_reopens_it() {

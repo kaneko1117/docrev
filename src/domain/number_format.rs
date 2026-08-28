@@ -1,4 +1,4 @@
-//! Excel number-format engine — the practical subset (#24). Anything the
+//! Excel number-format engine — the practical subset. Anything the
 //! parser does not understand degrades to `General` (the raw value).
 
 #[derive(Debug, Clone, Copy, PartialEq)]

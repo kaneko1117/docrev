@@ -384,7 +384,7 @@ impl Viewer {
         ) {
             self.selection = None;
         }
-        // clicks win over any open prompt (#49): the modal closes and the
+        // clicks win over any open prompt: the modal closes and the
         // click acts, in one motion — a draft being composed is discarded
         if Self::is_mouse(event) && !matches!(self.mode, Mode::Grid) {
             self.mode = Mode::Grid;
