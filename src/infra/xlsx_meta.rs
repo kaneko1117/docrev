@@ -22,42 +22,54 @@ pub struct ColumnWidth {
     pub width: f64,
 }
 
-/// Custom column widths per sheet name. calamine does not expose them, so
-/// this reads `<cols>` from the sheet XML inside the xlsx zip directly.
-pub fn column_widths(document: &Path) -> Result<HashMap<String, Vec<ColumnWidth>>, MetaError> {
-    let mut archive = open_archive(document)?;
-
-    let workbook = read_entry(&mut archive, "xl/workbook.xml")?;
-    let rels = read_entry(&mut archive, "xl/_rels/workbook.xml.rels")?;
-    let sheets = parse_sheet_ids(&workbook)?;
-    let targets = parse_rel_targets(&rels)?;
-
-    let mut result = HashMap::new();
-    for (name, rid) in sheets {
-        let Some(target) = targets.get(&rid) else {
-            continue;
-        };
-        let xml = read_entry(&mut archive, &entry_path(target))?;
-        let cols = parse_cols(&xml)?;
-        if !cols.is_empty() {
-            result.insert(name, cols);
-        }
-    }
-    Ok(result)
+/// Everything cosmetic read from the archive in one pass: widths, styles
+/// and frozen panes. Each attribute falls back to its default when its
+/// part fails to parse — a cosmetic failure must never block opening.
+#[derive(Debug, Default)]
+pub struct WorkbookMeta {
+    pub widths: HashMap<String, Vec<ColumnWidth>>,
+    pub styles: WorkbookStyles,
+    pub frozen: HashMap<String, (usize, usize)>,
 }
 
-/// Frozen panes per sheet name: `(rows, cols)` pinned while scrolling.
-/// calamine does not expose `<pane>` either, so this reads each sheet's
-/// `<sheetView><pane xSplit ySplit state="frozen"/>` from the zip.
-pub fn frozen_panes(document: &Path) -> Result<HashMap<String, (usize, usize)>, MetaError> {
-    let mut archive = open_archive(document)?;
+/// Opens the archive once, resolves sheet name → part path once, and walks
+/// each sheet XML once for every attribute. calamine exposes none of these.
+pub fn read_meta(document: &Path) -> WorkbookMeta {
+    let Ok(mut archive) = open_archive(document) else {
+        return WorkbookMeta::default();
+    };
 
-    let workbook = read_entry(&mut archive, "xl/workbook.xml")?;
-    let rels = read_entry(&mut archive, "xl/_rels/workbook.xml.rels")?;
-    let sheets = parse_sheet_ids(&workbook)?;
-    let targets = parse_rel_targets(&rels)?;
+    // a workbook without a theme part legitimately resolves against the
+    // default Office palette; a theme that exists but cannot be parsed must
+    // not silently recolor cells, so its theme-indexed fills are dropped
+    // (empty palette) while rgb fills stay untouched
+    let palette = match read_entry(&mut archive, "xl/theme/theme1.xml") {
+        Ok(xml) => parse_theme_palette(&xml).unwrap_or_default(),
+        Err(_) => default_palette(),
+    };
+    let styles = read_entry(&mut archive, "xl/styles.xml")
+        .ok()
+        .and_then(|xml| parse_styles(&xml, &palette).ok())
+        .unwrap_or_default();
+    // when no style resolves to anything visible, per-cell collection is
+    // skipped entirely and the styles result stays default
+    let styles_active = !styles.iter().all(CellStyle::is_plain);
 
-    let mut result = HashMap::new();
+    let Ok(workbook) = read_entry(&mut archive, "xl/workbook.xml") else {
+        return WorkbookMeta::default();
+    };
+    let Ok(rels) = read_entry(&mut archive, "xl/_rels/workbook.xml.rels") else {
+        return WorkbookMeta::default();
+    };
+    let Ok(sheets) = parse_sheet_ids(&workbook) else {
+        return WorkbookMeta::default();
+    };
+    let Ok(targets) = parse_rel_targets(&rels) else {
+        return WorkbookMeta::default();
+    };
+
+    let mut meta = WorkbookMeta::default();
+    let mut style_cells = HashMap::new();
     for (name, rid) in sheets {
         let Some(target) = targets.get(&rid) else {
             continue;
@@ -65,11 +77,30 @@ pub fn frozen_panes(document: &Path) -> Result<HashMap<String, (usize, usize)>, 
         let Ok(xml) = read_entry(&mut archive, &entry_path(target)) else {
             continue;
         };
-        if let Some(frozen) = parse_pane(&xml)? {
-            result.insert(name, frozen);
+        // attributes default independently: one sheet's broken <cols> must
+        // strip neither its own pane nor the other sheets' widths
+        if let Ok(cols) = parse_cols(&xml)
+            && !cols.is_empty()
+        {
+            meta.widths.insert(name.clone(), cols);
+        }
+        if let Ok(Some(frozen)) = parse_pane(&xml) {
+            meta.frozen.insert(name.clone(), frozen);
+        }
+        if styles_active
+            && let Ok(cells) = parse_cell_styles(&xml, &styles)
+            && !cells.is_empty()
+        {
+            style_cells.insert(name, cells);
         }
     }
-    Ok(result)
+    if styles_active {
+        meta.styles = WorkbookStyles {
+            styles,
+            sheets: style_cells,
+        };
+    }
+    meta
 }
 
 /// The first frozen `<pane>`. Non-frozen splits measure their offsets in
@@ -451,54 +482,6 @@ impl CellStyle {
 pub struct WorkbookStyles {
     pub styles: Vec<CellStyle>,
     pub sheets: HashMap<String, HashMap<(u32, u32), usize>>,
-}
-
-/// Per-cell number formats and fill colors, resolved through styles.xml
-/// (`numFmts` + `fills` + `cellXfs`) and each sheet's `s=` style indices.
-/// calamine does not expose styles either. Theme-indexed fills resolve via
-/// the workbook's theme1.xml, falling back to the default Office palette.
-pub fn cell_styles(document: &Path) -> Result<WorkbookStyles, MetaError> {
-    let mut archive = open_archive(document)?;
-
-    // a workbook without a theme part legitimately resolves against the
-    // default Office palette; a theme that exists but cannot be parsed must
-    // not silently recolor cells, so its theme-indexed fills are dropped
-    // (empty palette) while rgb fills stay untouched
-    let palette = match read_entry(&mut archive, "xl/theme/theme1.xml") {
-        Ok(xml) => parse_theme_palette(&xml).unwrap_or_default(),
-        Err(_) => default_palette(),
-    };
-    let styles_xml = read_entry(&mut archive, "xl/styles.xml")?;
-    let styles = parse_styles(&styles_xml, &palette)?;
-    if styles.iter().all(CellStyle::is_plain) {
-        return Ok(WorkbookStyles::default());
-    }
-
-    let workbook = read_entry(&mut archive, "xl/workbook.xml")?;
-    let rels = read_entry(&mut archive, "xl/_rels/workbook.xml.rels")?;
-    let sheets = parse_sheet_ids(&workbook)?;
-    let targets = parse_rel_targets(&rels)?;
-
-    let mut result = HashMap::new();
-    for (name, rid) in sheets {
-        let Some(target) = targets.get(&rid) else {
-            continue;
-        };
-        // one unreadable sheet must not strip styles from the others
-        let Ok(xml) = read_entry(&mut archive, &entry_path(target)) else {
-            continue;
-        };
-        let Ok(cells) = parse_cell_styles(&xml, &styles) else {
-            continue;
-        };
-        if !cells.is_empty() {
-            result.insert(name, cells);
-        }
-    }
-    Ok(WorkbookStyles {
-        styles,
-        sheets: result,
-    })
 }
 
 fn open_archive(document: &Path) -> Result<zip::ZipArchive<File>, MetaError> {

@@ -22,9 +22,8 @@ impl DocumentSource for XlsxSource {
         })?;
         // widths, formats and fills are cosmetic — a parse failure must not
         // block opening; cells then simply show their raw, unpainted values
-        let widths = xlsx_meta::column_widths(path).unwrap_or_default();
-        let styles = xlsx_meta::cell_styles(path).unwrap_or_default();
-        let frozen = xlsx_meta::frozen_panes(path).unwrap_or_default();
+        let meta = xlsx_meta::read_meta(path);
+        let (widths, styles, frozen) = (meta.widths, meta.styles, meta.frozen);
         let mut workbook_comments = xlsx_meta::workbook_comments(path).unwrap_or_default();
         // parse each distinct format once per workbook, not per cell
         let formats: Vec<Option<NumberFormat>> = styles

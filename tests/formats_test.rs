@@ -14,7 +14,7 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn reads_format_codes_from_the_workbook() {
-    let styles = xlsx_meta::cell_styles(&fixture("formats.xlsx")).unwrap();
+    let styles = xlsx_meta::read_meta(&fixture("formats.xlsx")).styles;
     let sheet = styles.sheets.get("書式").expect("sheet with styles");
     let code_of = |pos: (u32, u32)| {
         sheet
@@ -68,8 +68,9 @@ fn format_parsing_failure_does_not_block_opening() {
     // corrupt_styles.xlsx is formats.xlsx with xl/styles.xml removed:
     // resolving formats fails, opening must degrade to raw values
     let path = fixture("corrupt_styles.xlsx");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
     assert!(
-        xlsx_meta::cell_styles(&path).is_err(),
+        archive.by_name("xl/styles.xml").is_err(),
         "the fixture must actually exercise the failure path"
     );
 

@@ -12,7 +12,7 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn reads_custom_column_widths_from_the_workbook() {
-    let widths = xlsx_meta::column_widths(&fixture("widths.xlsx")).unwrap();
+    let widths = xlsx_meta::read_meta(&fixture("widths.xlsx")).widths;
     let cols = widths.get("広い").expect("sheet with custom widths");
     assert!(
         cols.iter()
