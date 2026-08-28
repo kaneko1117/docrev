@@ -68,8 +68,9 @@ fn format_parsing_failure_does_not_block_opening() {
     // corrupt_styles.xlsx is formats.xlsx with xl/styles.xml removed:
     // resolving formats fails, opening must degrade to raw values
     let path = fixture("corrupt_styles.xlsx");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
     assert!(
-        xlsx_meta::read_meta(&path).styles.styles.is_empty(),
+        archive.by_name("xl/styles.xml").is_err(),
         "the fixture must actually exercise the failure path"
     );
 
