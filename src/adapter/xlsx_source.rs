@@ -113,20 +113,22 @@ fn to_workbook_comment(raw: xlsx_meta::RawWorkbookComment) -> WorkbookComment {
     }
 }
 
-/// Excel widths are float character counts on 1-based inclusive ranges;
-/// terminal cells are integer columns, clamped to a sane range.
-fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<u16>> {
+/// Excel widths come on 1-based inclusive column ranges; expanding them to
+/// one entry per column is translation. The values pass through as the file
+/// states them — rounding into terminal cells is the ui's decision.
+fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<f64>> {
     let mut widths = vec![None; col_count];
     for col in cols {
-        // NaN slips through clamp (NaN.clamp() == NaN, as u16 == 0)
+        // a width numbers cannot state (NaN, inf — reachable via parse())
+        // is treated as absent, so it cannot overwrite an earlier valid
+        // definition of the same column; that is translation, not display
         if !col.width.is_finite() {
             continue;
         }
-        let cells = (col.width.round().clamp(4.0, 60.0)) as u16;
         let from = col.min.saturating_sub(1) as usize;
         let to = (col.max as usize).min(col_count);
         for slot in widths.iter_mut().take(to).skip(from) {
-            *slot = Some(cells);
+            *slot = Some(col.width);
         }
     }
     widths
@@ -230,17 +232,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_finite_widths_are_ignored() {
+    fn widths_pass_through_raw_and_non_finite_ones_are_absent() {
         let cols = vec![
             xlsx_meta::ColumnWidth {
                 min: 1,
                 max: 1,
-                width: f64::NAN,
+                width: 10.0,
             },
+            // a duplicate definition with an unusable width must not
+            // overwrite the valid one before it
             xlsx_meta::ColumnWidth {
-                min: 2,
-                max: 2,
-                width: f64::INFINITY,
+                min: 1,
+                max: 1,
+                width: f64::NAN,
             },
             xlsx_meta::ColumnWidth {
                 min: 3,
@@ -248,7 +252,7 @@ mod tests {
                 width: 18.5,
             },
         ];
-        assert_eq!(expand_widths(&cols, 3), vec![None, None, Some(19)]);
+        assert_eq!(expand_widths(&cols, 3), vec![Some(10.0), None, Some(18.5)]);
     }
 
     #[test]

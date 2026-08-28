@@ -7,7 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::grid::{EditorView, GridView};
+use super::grid::{EditorKind, EditorView, GridView};
 use super::style::{canvas, chrome};
 use super::text::{sanitize, wrap};
 use super::theme::Palette;
@@ -145,7 +145,10 @@ fn draw_editor(p: &Palette, frame: &mut Frame, area: Rect, editor: &EditorView) 
         .scroll((scroll, 0))
         .block(
             Block::bordered()
-                .title(editor.title.clone())
+                .title(match editor.kind {
+                    EditorKind::Comment => format!(" Comment on {} ", editor.address),
+                    EditorKind::Reply => format!(" Reply on {} ", editor.address),
+                })
                 // the hint rides on the border so it can never be scrolled
                 // out of a short box
                 .title_bottom(EDITOR_HINT)
@@ -214,7 +217,8 @@ mod tests {
             notice: None,
             thread: Some(&thread),
             editor: Some(EditorView {
-                title: " Reply on B2 ".into(),
+                kind: EditorKind::Reply,
+                address: "B2".into(),
                 buffer: "",
             }),
             selection: None,
@@ -245,7 +249,8 @@ mod tests {
                 notice: None,
                 thread: Some(&thread),
                 editor: Some(EditorView {
-                    title: " Reply on B2 ".into(),
+                    kind: EditorKind::Reply,
+                    address: "B2".into(),
                     buffer: "one\ntwo\nthree",
                 }),
                 selection: None,
@@ -317,7 +322,8 @@ mod tests {
             notice: None,
             thread: None,
             editor: Some(EditorView {
-                title: " Comment on B2 ".into(),
+                kind: EditorKind::Comment,
+                address: "B2".into(),
                 buffer,
             }),
             selection: None,
@@ -423,7 +429,8 @@ mod tests {
             notice: None,
             thread: None,
             editor: Some(EditorView {
-                title: " Comment on A1 ".into(),
+                kind: EditorKind::Comment,
+                address: "A1".into(),
                 buffer: &long,
             }),
             selection: None,

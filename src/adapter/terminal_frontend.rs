@@ -141,10 +141,11 @@ impl Frontend for TerminalFrontend {
         let address = Anchor::cell(viewer.sheet().name(), row as u32, col as u32).cell_ref();
         let editor = match viewer.mode() {
             Mode::Editing { target, buffer } => Some(EditorView {
-                title: match target {
-                    EditTarget::NewThread => format!(" Comment on {address} "),
-                    EditTarget::Reply { .. } => format!(" Reply on {address} "),
+                kind: match target {
+                    EditTarget::NewThread => grid::EditorKind::Comment,
+                    EditTarget::Reply { .. } => grid::EditorKind::Reply,
                 },
+                address,
                 buffer,
             }),
             _ => None,
@@ -215,13 +216,7 @@ impl Frontend for TerminalFrontend {
             selection: viewer.selection(),
             theme: *theme,
             col_widths: (0..viewer.sheet().col_count())
-                .map(|c| {
-                    viewer
-                        .sheet()
-                        .col_width(c)
-                        .map(usize::from)
-                        .unwrap_or(grid::DEFAULT_CELL_WIDTH)
-                })
+                .map(|c| viewer.sheet().col_width(c))
                 .collect(),
         };
         terminal

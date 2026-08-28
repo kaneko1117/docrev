@@ -31,8 +31,8 @@ fn loaded_sheets_carry_their_column_widths() {
     let document = XlsxSource.load(&fixture("widths.xlsx")).unwrap();
     let wide = &document.sheets()[0];
     assert_eq!(wide.name(), "広い");
-    assert_eq!(wide.col_width(0), Some(20));
-    assert_eq!(wide.col_width(1), Some(6));
+    assert_eq!(wide.col_width(0).map(f64::round), Some(20.0));
+    assert_eq!(wide.col_width(1).map(f64::round), Some(6.0));
 
     let plain = &document.sheets()[1];
     assert_eq!(plain.name(), "標準");

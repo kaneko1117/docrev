@@ -11,6 +11,16 @@ use super::text::{cell_text, center, clip, pad_left, pad_right, wrap};
 
 pub const DEFAULT_CELL_WIDTH: usize = 12;
 
+/// Excel widths are fractional character counts; a terminal cell wants an
+/// integer column count, clamped to a sane range. Absent or non-finite
+/// widths (NaN in the file) fall back to the default.
+fn display_width(excel: Option<f64>) -> usize {
+    match excel {
+        Some(w) if w.is_finite() => w.round().clamp(4.0, 60.0) as usize,
+        _ => DEFAULT_CELL_WIDTH,
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Scroll {
     pub top: usize,
@@ -23,7 +33,9 @@ pub(crate) struct LayoutInput<'a> {
     pub markers: &'a HashSet<(usize, usize)>,
     /// Cells carrying the workbook's own comments — tinted in the corner.
     pub notes: &'a HashSet<(usize, usize)>,
-    pub col_widths: &'a [usize],
+    /// Widths as the file states them; `display_width` turns each into
+    /// terminal cells.
+    pub col_widths: &'a [Option<f64>],
     /// A drag in progress, as (press cell, current cell) — highlighted like
     /// the cursor.
     pub selection: Option<((usize, usize), (usize, usize))>,
@@ -128,13 +140,7 @@ pub(crate) fn grid_layout(
     let label_width = sheet.row_count().to_string().len().max(2);
     let rows_visible = viewport.rows;
     let avail = viewport.width.saturating_sub(label_width);
-    let width_of = |c: usize| {
-        input
-            .col_widths
-            .get(c)
-            .copied()
-            .unwrap_or(DEFAULT_CELL_WIDTH)
-    };
+    let width_of = |c: usize| display_width(input.col_widths.get(c).copied().flatten());
 
     // Frozen columns pin to the left of the body. Dropped for the frame
     // when they would leave the body no room at all (separator + one cell).
@@ -570,6 +576,16 @@ fn last_visible_col(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_width_rounds_clamps_and_defaults() {
+        assert_eq!(display_width(Some(18.5)), 19, "rounds to a whole cell");
+        assert_eq!(display_width(Some(3.0)), 4, "clamped up");
+        assert_eq!(display_width(Some(100.0)), 60, "clamped down");
+        assert_eq!(display_width(Some(f64::NAN)), DEFAULT_CELL_WIDTH);
+        assert_eq!(display_width(Some(f64::INFINITY)), DEFAULT_CELL_WIDTH);
+        assert_eq!(display_width(None), DEFAULT_CELL_WIDTH);
+    }
     use crate::domain::cell::CellValue;
     use crate::domain::number_format::FormatColor;
     use crate::domain::sheet::MergedRange;
