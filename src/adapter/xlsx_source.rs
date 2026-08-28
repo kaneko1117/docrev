@@ -119,6 +119,12 @@ fn to_workbook_comment(raw: xlsx_meta::RawWorkbookComment) -> WorkbookComment {
 fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<f64>> {
     let mut widths = vec![None; col_count];
     for col in cols {
+        // a width numbers cannot state (NaN, inf — reachable via parse())
+        // is treated as absent, so it cannot overwrite an earlier valid
+        // definition of the same column; that is translation, not display
+        if !col.width.is_finite() {
+            continue;
+        }
         let from = col.min.saturating_sub(1) as usize;
         let to = (col.max as usize).min(col_count);
         for slot in widths.iter_mut().take(to).skip(from) {
@@ -226,8 +232,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn widths_pass_through_raw_even_when_non_finite() {
+    fn widths_pass_through_raw_and_non_finite_ones_are_absent() {
         let cols = vec![
+            xlsx_meta::ColumnWidth {
+                min: 1,
+                max: 1,
+                width: 10.0,
+            },
+            // a duplicate definition with an unusable width must not
+            // overwrite the valid one before it
             xlsx_meta::ColumnWidth {
                 min: 1,
                 max: 1,
@@ -239,13 +252,7 @@ mod tests {
                 width: 18.5,
             },
         ];
-        let widths = expand_widths(&cols, 3);
-        assert!(
-            widths[0].is_some_and(f64::is_nan),
-            "NaN is the ui's problem"
-        );
-        assert_eq!(widths[1], None);
-        assert_eq!(widths[2], Some(18.5));
+        assert_eq!(expand_widths(&cols, 3), vec![Some(10.0), None, Some(18.5)]);
     }
 
     #[test]

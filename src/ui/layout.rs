@@ -576,6 +576,16 @@ fn last_visible_col(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_width_rounds_clamps_and_defaults() {
+        assert_eq!(display_width(Some(18.5)), 19, "rounds to a whole cell");
+        assert_eq!(display_width(Some(3.0)), 4, "clamped up");
+        assert_eq!(display_width(Some(100.0)), 60, "clamped down");
+        assert_eq!(display_width(Some(f64::NAN)), DEFAULT_CELL_WIDTH);
+        assert_eq!(display_width(Some(f64::INFINITY)), DEFAULT_CELL_WIDTH);
+        assert_eq!(display_width(None), DEFAULT_CELL_WIDTH);
+    }
     use crate::domain::cell::CellValue;
     use crate::domain::number_format::FormatColor;
     use crate::domain::sheet::MergedRange;
