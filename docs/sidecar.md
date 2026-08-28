@@ -38,7 +38,7 @@ This format is a **public contract**: AI agents read and write it through the
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `version` | int | Schema version. Currently `1`; readers must reject other values |
+| `version` | int | Schema version. Currently `1`; readers must reject unsupported values |
 | `comments` | array | Comment threads, order not significant |
 | `comments[].id` | string | UUIDv4, assigned by the writer |
 | `comments[].anchor.sheet` | string | Sheet name |
@@ -58,6 +58,49 @@ This format is a **public contract**: AI agents read and write it through the
   open threads, and to agents, which list unresolved ones. Multiple threads per cell are valid in the schema, but the TUI follows
   the spreadsheet convention of one open thread per cell (`c` replies to an open
   thread instead of forking a second one).
+
+## Anchor kinds and extension
+
+Today `anchor` has exactly one shape — the cell anchor
+`{"sheet": ..., "cell": ...}` — and that shape is frozen: agents parse it,
+and it never gains or loses keys. Word support will need at least a
+paragraph anchor, so the extension rule is fixed now, before any docx code
+exists:
+
+- **Every future anchor kind is a distinct object shape carrying a required
+  `"kind"` discriminator** (for example `{"kind": "paragraph", ...}` — its
+  fields are decided with the docx design). Cell anchors are grandfathered:
+  the absence of `"kind"` means cell, and writers never emit a `"kind"` key
+  on them. `"kind": "cell"` is reserved and must not be written — a reader
+  treats it as an unknown kind, so a well-meaning writer that emits it
+  makes its own comments invisible.
+- **The first non-cell kind ships with a `version` bump to `2`**, and any
+  file containing a non-cell anchor must declare version 2 or higher — the
+  writer that first adds one raises the field. Version-2 readers keep
+  accepting version 1 unchanged. One caveat keeps this honest: today's
+  version-1 readers parse `comments` *before* checking `version`, so on a
+  real v2 file they fail with an "invalid sidecar" corruption-shaped
+  message and never reach the version check. Before any v2 writer ships, a
+  v1.x release must move the version check ahead of comment parsing, so
+  that old readers refuse with "unsupported sidecar version" — a message
+  that says "upgrade", not "your file is broken". (Version `2` was once
+  earmarked for an embedded `changes` array; that plan was retired with
+  the issue that proposed it, so the number is free.)
+- **From version 2 on, unknown anchor kinds are skipped and preserved.**
+  A reader that meets a kind it does not know leaves the thread out of the
+  TUI and out of `list`, does not let `reply`/`resolve` address it (same
+  error as an unknown id), and — the binding part — **preserves it
+  byte-faithfully when rewriting the file**. Read-modify-write must round-trip
+  threads it cannot interpret (keep the raw JSON, don't re-serialize through
+  typed structs). That makes `2` the last bump anchors ever force — provided
+  shipped kinds are frozen: an incompatible change to an existing kind ships
+  as a new kind name, never as a new shape under the old one, and a reader
+  that knows a kind but cannot parse its fields treats the thread as
+  unknown. Kind number three then never requires version `3`.
+
+Checked against today's consumers: the agent skill drives everything through
+the `docrev comment` CLI and only ever writes `Sheet!B3` cell references, so
+nothing changes for it until a new kind actually ships.
 
 ## CLI
 
