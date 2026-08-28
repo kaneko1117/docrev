@@ -22,7 +22,7 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
         return out;
     }
 
-    // wrapped lines per cell: text wraps at the cell-width cap (#33),
+    // wrapped lines per cell: text wraps at the cell-width cap,
     // numbers stay on one clipped line so digit groups never split
     let texts: Vec<Vec<Vec<String>>> = (0..sheet.row_count())
         .map(|r| {

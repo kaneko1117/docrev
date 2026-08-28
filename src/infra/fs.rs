@@ -40,7 +40,8 @@ impl SidecarLock {
 
 /// Sibling temp file + rename, so readers never observe a half-written file.
 /// The temp name is unique per write so concurrent writers cannot clobber
-/// each other's temp file (the last rename still wins; locking is #4's scope).
+/// each other's temp file (the last rename still wins; writers needing
+/// exclusion hold the sidecar lock).
 pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(

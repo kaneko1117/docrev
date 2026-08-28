@@ -49,7 +49,7 @@ pub(crate) fn draw_panel(
     };
 
     // wrapped by us, not ratatui: the height must be known so the panel can
-    // follow its tail — with the editor docked below (#48), the newest reply
+    // follow its tail — with the editor docked below, the newest reply
     // is what the user came to read, and it must never hide behind the box
     let inner_width = thread_area.width.saturating_sub(1).max(1) as usize;
     let mut lines = Vec::new();
@@ -231,7 +231,7 @@ mod tests {
         insta::assert_snapshot!(render_text(&view, &mut scroll, 76, 12));
     }
 
-    /// #48: with the editor docked below, the panel follows its tail — the
+    /// With the editor docked below, the panel follows its tail — the
     /// newest reply is what the user came to read.
     #[test]
     fn the_newest_reply_stays_visible_above_the_editor() {
@@ -267,7 +267,7 @@ mod tests {
         }
     }
 
-    /// #48: the marker alone says a thread is there — moving onto the cell
+    /// The marker alone says a thread is there — moving onto the cell
     /// must not reshape the grid.
     #[test]
     fn a_thread_under_the_cursor_alone_never_moves_the_layout() {

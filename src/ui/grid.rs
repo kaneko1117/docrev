@@ -129,7 +129,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    // the sidebar opens only while composing (#48): the ● marker already
+    // the sidebar opens only while composing: the ● marker already
     // says a thread is there, and opening it is the user's decision (`c`) —
     // the grid must not lose a third of its width to a cursor move
     let wants_panel = view.editor.is_some();
@@ -194,7 +194,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
     }
 }
 
-/// Thin translator (#36): all layout decisions live in `layout::grid_layout`;
+/// Thin translator: all layout decisions live in `layout::grid_layout`;
 /// this maps the resulting description to `Span`s and nothing else.
 fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
     if grid.empty {
