@@ -48,7 +48,7 @@ pub struct Sheet {
     name: String,
     rows: Vec<Vec<CellValue>>,
     /// Author-set column widths from the workbook, index = column.
-    col_widths: Vec<Option<u16>>,
+    col_widths: Vec<Option<f64>>,
     merges: Vec<MergedRange>,
     /// Solid cell backgrounds from the workbook, keyed by (row, col).
     fills: HashMap<(usize, usize), Rgb>,
@@ -97,7 +97,9 @@ impl Sheet {
         self.font_colors.get(&(row, col)).copied()
     }
 
-    pub fn with_col_widths(mut self, widths: Vec<Option<u16>>) -> Self {
+    /// Widths as the file states them: fractional character counts.
+    /// Rounding and clamping into terminal cells is the ui's decision.
+    pub fn with_col_widths(mut self, widths: Vec<Option<f64>>) -> Self {
         self.col_widths = widths;
         self
     }
@@ -182,7 +184,7 @@ impl Sheet {
         self.frozen.1
     }
 
-    pub fn col_width(&self, col: usize) -> Option<u16> {
+    pub fn col_width(&self, col: usize) -> Option<f64> {
         self.col_widths.get(col).copied().flatten()
     }
 

@@ -51,13 +51,23 @@ pub struct GridView<'a> {
     pub search: Option<SearchView>,
     /// A drag in progress, highlighted like the cursor.
     pub selection: Option<((usize, usize), (usize, usize))>,
-    /// Per-column display widths; missing entries use `DEFAULT_CELL_WIDTH`.
-    pub col_widths: Vec<usize>,
+    /// Per-column widths as the file states them; the layout rounds,
+    /// clamps and fills gaps with `DEFAULT_CELL_WIDTH`.
+    pub col_widths: Vec<Option<f64>>,
     pub theme: Theme,
 }
 
+/// What the editor is composing — the dialog derives its title from it.
+#[derive(Clone, Copy, PartialEq)]
+pub enum EditorKind {
+    Comment,
+    Reply,
+}
+
 pub struct EditorView<'a> {
-    pub title: String,
+    pub kind: EditorKind,
+    /// A1 address of the anchored cell, e.g. "B3".
+    pub address: String,
     pub buffer: &'a str,
 }
 
@@ -728,7 +738,7 @@ mod tests {
             selection: None,
             search: None,
             picker: None,
-            col_widths: vec![20, 6, 8],
+            col_widths: vec![Some(20.0), Some(6.0), Some(8.0)],
             theme: Theme::default(),
         };
         let mut scroll = Scroll::default();
@@ -1017,7 +1027,7 @@ mod tests {
             selection: None,
             search: None,
             picker: None,
-            col_widths: vec![6, 8, 6],
+            col_widths: vec![Some(6.0), Some(8.0), Some(6.0)],
             theme: Theme::default(),
         };
         let mut scroll = Scroll::default();
@@ -1084,7 +1094,7 @@ mod tests {
             picker: None,
             selection: None,
             search: None,
-            col_widths: vec![6, 8, 6],
+            col_widths: vec![Some(6.0), Some(8.0), Some(6.0)],
             theme: Theme::default(),
         };
         let hits = hit_map_of(&view, 40, 9);
@@ -1114,7 +1124,7 @@ mod tests {
             selection: None,
             search: None,
             picker: None,
-            col_widths: vec![6, 8, 6],
+            col_widths: vec![Some(6.0), Some(8.0), Some(6.0)],
             theme: Theme::default(),
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 9)).unwrap();

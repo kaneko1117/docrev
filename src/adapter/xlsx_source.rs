@@ -113,20 +113,16 @@ fn to_workbook_comment(raw: xlsx_meta::RawWorkbookComment) -> WorkbookComment {
     }
 }
 
-/// Excel widths are float character counts on 1-based inclusive ranges;
-/// terminal cells are integer columns, clamped to a sane range.
-fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<u16>> {
+/// Excel widths come on 1-based inclusive column ranges; expanding them to
+/// one entry per column is translation. The values pass through as the file
+/// states them — rounding into terminal cells is the ui's decision.
+fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<f64>> {
     let mut widths = vec![None; col_count];
     for col in cols {
-        // NaN slips through clamp (NaN.clamp() == NaN, as u16 == 0)
-        if !col.width.is_finite() {
-            continue;
-        }
-        let cells = (col.width.round().clamp(4.0, 60.0)) as u16;
         let from = col.min.saturating_sub(1) as usize;
         let to = (col.max as usize).min(col_count);
         for slot in widths.iter_mut().take(to).skip(from) {
-            *slot = Some(cells);
+            *slot = Some(col.width);
         }
     }
     widths
@@ -230,7 +226,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_finite_widths_are_ignored() {
+    fn widths_pass_through_raw_even_when_non_finite() {
         let cols = vec![
             xlsx_meta::ColumnWidth {
                 min: 1,
@@ -238,17 +234,18 @@ mod tests {
                 width: f64::NAN,
             },
             xlsx_meta::ColumnWidth {
-                min: 2,
-                max: 2,
-                width: f64::INFINITY,
-            },
-            xlsx_meta::ColumnWidth {
                 min: 3,
                 max: 3,
                 width: 18.5,
             },
         ];
-        assert_eq!(expand_widths(&cols, 3), vec![None, None, Some(19)]);
+        let widths = expand_widths(&cols, 3);
+        assert!(
+            widths[0].is_some_and(f64::is_nan),
+            "NaN is the ui's problem"
+        );
+        assert_eq!(widths[1], None);
+        assert_eq!(widths[2], Some(18.5));
     }
 
     #[test]
