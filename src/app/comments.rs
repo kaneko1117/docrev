@@ -157,7 +157,7 @@ pub fn resolve(
         .load()?
         .into_iter()
         .find(|t| t.id == thread_id)
-        .ok_or_else(|| CommentError::Store(StoreError(format!("no thread with id {thread_id}"))))
+        .ok_or_else(|| CommentError::Store(StoreError::ThreadNotFound(thread_id.to_string())))
 }
 
 #[cfg(test)]
@@ -215,7 +215,7 @@ mod tests {
             author: &str,
         ) -> Result<CommentThread, StoreError> {
             let Some(thread) = self.threads.iter_mut().find(|t| t.id == thread_id) else {
-                return Err(StoreError(format!("no thread with id {thread_id}")));
+                return Err(StoreError::ThreadNotFound(thread_id.to_string()));
             };
             thread.replies.push(crate::domain::comment::Reply {
                 id: "r".into(),
@@ -227,7 +227,7 @@ mod tests {
         }
         fn resolve(&mut self, thread_id: &str) -> Result<(), StoreError> {
             let Some(thread) = self.threads.iter_mut().find(|t| t.id == thread_id) else {
-                return Err(StoreError(format!("no thread with id {thread_id}")));
+                return Err(StoreError::ThreadNotFound(thread_id.to_string()));
             };
             thread.resolved = true;
             Ok(())
@@ -335,7 +335,7 @@ mod tests {
 
     impl DocumentSource for BrokenSource {
         fn load(&self, _: &Path) -> Result<Document, LoadError> {
-            Err(LoadError("corrupt zip".into()))
+            Err(LoadError::Open("corrupt zip".into()))
         }
     }
 

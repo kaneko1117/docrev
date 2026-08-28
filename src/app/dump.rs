@@ -55,7 +55,7 @@ mod tests {
 
     impl DocumentSource for FakeSource {
         fn load(&self, _: &Path) -> Result<Document, LoadError> {
-            self.0.clone().map_err(LoadError)
+            self.0.clone().map_err(LoadError::Open)
         }
     }
 
