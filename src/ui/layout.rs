@@ -117,30 +117,39 @@ fn visible_color(color: Option<TextColor>, on_cursor: bool) -> Option<TextColor>
     }
 }
 
-pub(crate) fn grid_layout(
-    input: &LayoutInput,
-    viewport: &Viewport,
-    scroll: &mut Scroll,
-) -> GridLayout {
-    let sheet = input.sheet;
-    if sheet.row_count() == 0 || sheet.col_count() == 0 {
-        return GridLayout {
-            empty: true,
-            label_width: 0,
-            visible_cols: 0..0,
-            frozen_cols: 0,
-            col_count: 0,
-            header: Vec::new(),
-            header_boundary: None,
-            col_spans: Vec::new(),
-            lines: Vec::new(),
-        };
+/// The column stage: which columns are visible after horizontal scroll
+/// following, how wide each one draws, and where each spans on screen.
+struct ColumnPlan {
+    label_width: usize,
+    frozen_cols: usize,
+    body_left: usize,
+    last_col: usize,
+    /// Every column's display width, `DEFAULT_CELL_WIDTH` where unset.
+    widths: Vec<usize>,
+    header: Vec<String>,
+    header_boundary: Option<usize>,
+    col_spans: Vec<(usize, std::ops::Range<usize>)>,
+}
+
+impl ColumnPlan {
+    fn width_of(&self, col: usize) -> usize {
+        self.widths.get(col).copied().unwrap_or(DEFAULT_CELL_WIDTH)
     }
 
+    /// The frozen segment, then the scrolled body segment.
+    fn segments(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        [(0, self.frozen_cols), (self.body_left, self.last_col)].into_iter()
+    }
+}
+
+fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -> ColumnPlan {
+    let sheet = input.sheet;
     let label_width = sheet.row_count().to_string().len().max(2);
-    let rows_visible = viewport.rows;
     let avail = viewport.width.saturating_sub(label_width);
-    let width_of = |c: usize| display_width(input.col_widths.get(c).copied().flatten());
+    let widths: Vec<usize> = (0..sheet.col_count())
+        .map(|c| display_width(input.col_widths.get(c).copied().flatten()))
+        .collect();
+    let width_of = |c: usize| widths.get(c).copied().unwrap_or(DEFAULT_CELL_WIDTH);
 
     // Frozen columns pin to the left of the body. Dropped for the frame
     // when they would leave the body no room at all (separator + one cell).
@@ -151,7 +160,7 @@ pub(crate) fn grid_layout(
     }
     let body_avail = avail - span_of(0..frozen_cols);
 
-    let (cursor_row, cursor_col) = input.cursor;
+    let (_, cursor_col) = input.cursor;
     scroll.left = scroll.left.max(frozen_cols);
     // a cursor inside the frozen columns is always visible — only a body
     // cursor drives horizontal scrolling
@@ -177,61 +186,7 @@ pub(crate) fn grid_layout(
     }
     let last_col = last_visible_col(scroll.left, sheet.col_count(), body_avail, &width_of);
     let body_left = scroll.left;
-    let segments = move || [(0, frozen_cols), (body_left, last_col)].into_iter();
-
-    // Wrapped text makes row heights variable: a sheet row is as tall as
-    // its tallest visible cell — frozen columns included. Numbers stay
-    // single-line (#33), and a merged region wraps at the merged width,
-    // counted on its anchor row.
-    let height_of = |row: usize| -> usize {
-        let mut height = 1;
-        for (start, end) in segments() {
-            let mut col = start;
-            while col < end {
-                if let Some(merge) = sheet.merge_at(row, col) {
-                    let segment_end = (merge.end_col + 1).min(end);
-                    if row == merge.start_row {
-                        let span_cols = segment_end - col;
-                        let span_width: usize =
-                            (col..segment_end).map(&width_of).sum::<usize>() + (span_cols - 1);
-                        let text = cell_text(sheet.display_cell(row, col));
-                        height = height.max(wrap(&text, span_width).len());
-                    }
-                    col = segment_end;
-                    continue;
-                }
-                let cell = sheet.cell(row, col);
-                if !cell.is_number() && !cell.is_empty() {
-                    height = height.max(wrap(&cell_text(cell), width_of(col)).len());
-                }
-                col += 1;
-            }
-        }
-        height
-    };
-
-    // Frozen rows pin above the body. Dropped when they would leave no
-    // line for the body to scroll in. Heights are at least 1, so more
-    // frozen rows than viewport lines can never fit — checked first, or a
-    // hostile ySplit would make this sum walk the whole sheet every frame.
-    let mut frozen_rows = sheet.frozen_rows().min(sheet.row_count().saturating_sub(1));
-    if frozen_rows >= rows_visible
-        || (0..frozen_rows).map(&height_of).sum::<usize>() >= rows_visible
-    {
-        frozen_rows = 0;
-    }
-    let frozen_height: usize = (0..frozen_rows).map(&height_of).sum();
-    scroll.top = scroll.top.max(frozen_rows);
-    if cursor_row >= frozen_rows {
-        follow_row_wrapped(
-            &mut scroll.top,
-            cursor_row,
-            rows_visible - frozen_height,
-            &height_of,
-            frozen_rows,
-        );
-    }
-    let body_top = scroll.top;
+    let segments = || [(0, frozen_cols), (body_left, last_col)].into_iter();
 
     let header: Vec<String> = segments()
         .flat_map(|(start, end)| start..end)
@@ -249,40 +204,106 @@ pub(crate) fn grid_layout(
         x += width;
     }
 
-    // the drag rectangle highlights a step lighter than the cursor cell
-    let in_selection = |row: usize, col: usize| match input.selection {
-        Some(((r0, c0), (r1, c1))) => {
-            (r0.min(r1)..=r0.max(r1)).contains(&row) && (c0.min(c1)..=c0.max(c1)).contains(&col)
-        }
-        None => false,
-    };
+    ColumnPlan {
+        label_width,
+        frozen_cols,
+        body_left,
+        last_col,
+        widths,
+        header,
+        header_boundary,
+        col_spans,
+    }
+}
 
-    // the first visible line of a merge carries its ● marker; with a freeze
-    // the pinned rows are visible from the top, not from the scroll offset
-    let first_visible_row = |merge: &crate::domain::sheet::MergedRange| {
-        if merge.start_row < frozen_rows {
-            merge.start_row
-        } else {
-            merge.start_row.max(body_top)
-        }
-    };
+/// The row stage: wraps text, lays out merged regions and builds each
+/// line's styled slots.
+struct RowBuilder<'a> {
+    input: &'a LayoutInput<'a>,
+    plan: &'a ColumnPlan,
+}
 
-    let build_row = |row: usize, boundary_row: bool| -> Vec<BodyLine> {
-        let height = height_of(row);
+/// What the vertical stage decided; `RowBuilder::build` needs it to place
+/// a merge's marker on its first *visible* line.
+struct RowViewport {
+    frozen_rows: usize,
+    body_top: usize,
+}
+
+impl RowBuilder<'_> {
+    /// Wrapped text makes row heights variable: a sheet row is as tall as
+    /// its tallest visible cell — frozen columns included. Numbers stay
+    /// single-line (#33), and a merged region wraps at the merged width,
+    /// counted on its anchor row.
+    fn height_of(&self, row: usize) -> usize {
+        let sheet = self.input.sheet;
+        let width_of = |c: usize| self.plan.width_of(c);
+        let mut height = 1;
+        for (start, end) in self.plan.segments() {
+            let mut col = start;
+            while col < end {
+                if let Some(merge) = sheet.merge_at(row, col) {
+                    let segment_end = (merge.end_col + 1).min(end);
+                    if row == merge.start_row {
+                        let span_cols = segment_end - col;
+                        let span_width: usize =
+                            (col..segment_end).map(width_of).sum::<usize>() + (span_cols - 1);
+                        let text = cell_text(sheet.display_cell(row, col));
+                        height = height.max(wrap(&text, span_width).len());
+                    }
+                    col = segment_end;
+                    continue;
+                }
+                let cell = sheet.cell(row, col);
+                if !cell.is_number() && !cell.is_empty() {
+                    height = height.max(wrap(&cell_text(cell), width_of(col)).len());
+                }
+                col += 1;
+            }
+        }
+        height
+    }
+
+    fn build(&self, row: usize, boundary_row: bool, vp: &RowViewport) -> Vec<BodyLine> {
+        let sheet = self.input.sheet;
+        let plan = self.plan;
+        let input = self.input;
+        let (cursor_row, cursor_col) = input.cursor;
+        let width_of = |c: usize| plan.width_of(c);
+
+        // the drag rectangle highlights a step lighter than the cursor cell
+        let in_selection = |row: usize, col: usize| match input.selection {
+            Some(((r0, c0), (r1, c1))) => {
+                (r0.min(r1)..=r0.max(r1)).contains(&row) && (c0.min(c1)..=c0.max(c1)).contains(&col)
+            }
+            None => false,
+        };
+
+        // the first visible line of a merge carries its ● marker; with a freeze
+        // the pinned rows are visible from the top, not from the scroll offset
+        let first_visible_row = |merge: &crate::domain::sheet::MergedRange| {
+            if merge.start_row < vp.frozen_rows {
+                merge.start_row
+            } else {
+                merge.start_row.max(vp.body_top)
+            }
+        };
+
+        let height = self.height_of(row);
         let mut out = Vec::with_capacity(height);
         for sub in 0..height {
             // the horizontal gridline sits under a sheet row's LAST line
             let last_line = sub + 1 == height;
             let label = if sub == 0 {
-                pad_left(&(row + 1).to_string(), label_width)
+                pad_left(&(row + 1).to_string(), plan.label_width)
             } else {
-                " ".repeat(label_width)
+                " ".repeat(plan.label_width)
             };
             let mut slots = Vec::new();
-            for (seg_index, (start, end)) in segments().enumerate() {
+            for (seg_index, (start, end)) in plan.segments().enumerate() {
                 let mut col = start;
                 while col < end {
-                    let freeze_boundary = frozen_cols > 0 && seg_index == 1 && col == start;
+                    let freeze_boundary = plan.frozen_cols > 0 && seg_index == 1 && col == start;
                     // A merged region lays out as one cell: the value on its
                     // anchor row wrapped to the merged width, no gridlines
                     // inside, and the whole region highlights when the cursor
@@ -293,7 +314,7 @@ pub(crate) fn grid_layout(
                         // already drawn its text and marker in the pinned
                         // segment — the body segment shows only its blank
                         // continuation, never a second copy
-                        let continuation = seg_index == 1 && merge.start_col < frozen_cols;
+                        let continuation = seg_index == 1 && merge.start_col < plan.frozen_cols;
                         let region_marked = !continuation
                             && row == first_visible_row(merge)
                             && sub == 0
@@ -306,7 +327,7 @@ pub(crate) fn grid_layout(
                         let segment_end = (merge.end_col + 1).min(end);
                         let span_cols = segment_end - col;
                         let span_width: usize =
-                            (col..segment_end).map(&width_of).sum::<usize>() + (span_cols - 1);
+                            (col..segment_end).map(width_of).sum::<usize>() + (span_cols - 1);
                         let text = if row == merge.start_row && !continuation {
                             wrap(&cell_text(sheet.display_cell(row, col)), span_width)
                                 .get(sub)
@@ -396,15 +417,70 @@ pub(crate) fn grid_layout(
             });
         }
         out
+    }
+}
+
+/// The viewport glue: runs the column stage, decides the vertical window
+/// (frozen rows plus scroll following), and assembles the visible lines
+/// through the row stage.
+pub(crate) fn grid_layout(
+    input: &LayoutInput,
+    viewport: &Viewport,
+    scroll: &mut Scroll,
+) -> GridLayout {
+    let sheet = input.sheet;
+    if sheet.row_count() == 0 || sheet.col_count() == 0 {
+        return GridLayout {
+            empty: true,
+            label_width: 0,
+            visible_cols: 0..0,
+            frozen_cols: 0,
+            col_count: 0,
+            header: Vec::new(),
+            header_boundary: None,
+            col_spans: Vec::new(),
+            lines: Vec::new(),
+        };
+    }
+
+    let plan = plan_columns(input, viewport, scroll);
+    let rows = RowBuilder { input, plan: &plan };
+    let rows_visible = viewport.rows;
+    let height_of = |row: usize| rows.height_of(row);
+
+    // Frozen rows pin above the body. Dropped when they would leave no
+    // line for the body to scroll in. Heights are at least 1, so more
+    // frozen rows than viewport lines can never fit — checked first, or a
+    // hostile ySplit would make this sum walk the whole sheet every frame.
+    let mut frozen_rows = sheet.frozen_rows().min(sheet.row_count().saturating_sub(1));
+    if frozen_rows >= rows_visible || (0..frozen_rows).map(height_of).sum::<usize>() >= rows_visible
+    {
+        frozen_rows = 0;
+    }
+    let frozen_height: usize = (0..frozen_rows).map(height_of).sum();
+    scroll.top = scroll.top.max(frozen_rows);
+    let (cursor_row, _) = input.cursor;
+    if cursor_row >= frozen_rows {
+        follow_row_wrapped(
+            &mut scroll.top,
+            cursor_row,
+            rows_visible - frozen_height,
+            &height_of,
+            frozen_rows,
+        );
+    }
+    let vp = RowViewport {
+        frozen_rows,
+        body_top: scroll.top,
     };
 
     let mut lines = Vec::with_capacity(rows_visible);
     for row in 0..frozen_rows {
-        lines.extend(build_row(row, row + 1 == frozen_rows));
+        lines.extend(rows.build(row, row + 1 == frozen_rows, &vp));
     }
-    let mut row = body_top;
+    let mut row = vp.body_top;
     while lines.len() < rows_visible && row < sheet.row_count() {
-        let mut body = build_row(row, false);
+        let mut body = rows.build(row, false, &vp);
         body.truncate(rows_visible - lines.len());
         lines.extend(body);
         row += 1;
@@ -412,13 +488,13 @@ pub(crate) fn grid_layout(
 
     GridLayout {
         empty: false,
-        label_width,
-        visible_cols: body_left..last_col,
-        frozen_cols,
+        label_width: plan.label_width,
+        visible_cols: plan.body_left..plan.last_col,
+        frozen_cols: plan.frozen_cols,
         col_count: sheet.col_count(),
-        header,
-        header_boundary,
-        col_spans,
+        header: plan.header,
+        header_boundary: plan.header_boundary,
+        col_spans: plan.col_spans,
         lines,
     }
 }
