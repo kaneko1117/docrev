@@ -38,11 +38,12 @@ impl JsonCommentStore {
     /// agent CLI write concurrently.
     fn lock(&self) -> Result<fs::SidecarLock, StoreError> {
         fs::SidecarLock::acquire(&self.lock_path())
-            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))
+            .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))
     }
 
     fn read(&self) -> Result<SidecarFile, StoreError> {
-        let Some(text) = fs::read_optional(&self.sidecar).map_err(|e| StoreError(e.to_string()))?
+        let Some(text) =
+            fs::read_optional(&self.sidecar).map_err(|e| StoreError::Io(e.to_string()))?
         else {
             return Ok(SidecarFile::default());
         };
@@ -52,20 +53,21 @@ impl JsonCommentStore {
         if text.trim().is_empty() {
             return Ok(SidecarFile::default());
         }
-        let file: SidecarFile = serde_json::from_str(&text)
-            .map_err(|e| StoreError(format!("invalid sidecar {}: {e}", self.sidecar.display())))?;
+        let file: SidecarFile = serde_json::from_str(&text).map_err(|e| {
+            StoreError::Corrupt(format!("invalid sidecar {}: {e}", self.sidecar.display()))
+        })?;
         if file.version != SCHEMA_VERSION {
-            return Err(StoreError(format!(
-                "unsupported sidecar version {} (supported: {SCHEMA_VERSION})",
-                file.version
-            )));
+            return Err(StoreError::UnsupportedVersion {
+                found: file.version,
+                supported: SCHEMA_VERSION,
+            });
         }
         Ok(file)
     }
 
     fn write(&self, file: &SidecarFile) -> Result<(), StoreError> {
-        let json = serde_json::to_string_pretty(file).map_err(|e| StoreError(e.to_string()))?;
-        fs::write_atomic(&self.sidecar, &json).map_err(|e| StoreError(e.to_string()))
+        let json = serde_json::to_string_pretty(file).map_err(|e| StoreError::Io(e.to_string()))?;
+        fs::write_atomic(&self.sidecar, &json).map_err(|e| StoreError::Io(e.to_string()))
     }
 }
 
@@ -106,7 +108,7 @@ impl CommentStore for JsonCommentStore {
         let mut lock = self.lock()?;
         let _guard = lock
             .exclusive()
-            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))?;
+            .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
         let thread = CommentThread {
             id: Uuid::new_v4().to_string(),
@@ -131,10 +133,10 @@ impl CommentStore for JsonCommentStore {
         let mut lock = self.lock()?;
         let _guard = lock
             .exclusive()
-            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))?;
+            .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
         let Some(dto) = file.comments.iter_mut().find(|t| t.id == thread_id) else {
-            return Err(StoreError(format!("no thread with id {thread_id}")));
+            return Err(StoreError::ThreadNotFound(thread_id.to_string()));
         };
         dto.replies.push(ReplyDto {
             id: Uuid::new_v4().to_string(),
@@ -154,10 +156,10 @@ impl CommentStore for JsonCommentStore {
         let mut lock = self.lock()?;
         let _guard = lock
             .exclusive()
-            .map_err(|e| StoreError(format!("cannot lock sidecar: {e}")))?;
+            .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
         let Some(dto) = file.comments.iter_mut().find(|t| t.id == thread_id) else {
-            return Err(StoreError(format!("no thread with id {thread_id}")));
+            return Err(StoreError::ThreadNotFound(thread_id.to_string()));
         };
         dto.resolved = true;
         self.write(&file)
@@ -171,7 +173,7 @@ fn now() -> String {
 /// CLI output: a single thread in the sidecar's thread shape.
 pub fn thread_to_json(thread: &CommentThread) -> Result<String, StoreError> {
     serde_json::to_string_pretty(&ThreadDto::from_domain(thread))
-        .map_err(|e| StoreError(e.to_string()))
+        .map_err(|e| StoreError::Io(e.to_string()))
 }
 
 /// CLI output for `list --json`: the sidecar shape, each thread augmented
@@ -259,7 +261,7 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
             })
             .collect(),
     };
-    serde_json::to_string_pretty(&file).map_err(|e| StoreError(e.to_string()))
+    serde_json::to_string_pretty(&file).map_err(|e| StoreError::Io(e.to_string()))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -309,7 +311,7 @@ struct ReplyDto {
 impl ThreadDto {
     fn into_domain(self) -> Result<CommentThread, StoreError> {
         let (row, col) = Anchor::parse_cell_ref(&self.anchor.cell).ok_or_else(|| {
-            StoreError(format!("invalid cell reference \"{}\"", self.anchor.cell))
+            StoreError::Corrupt(format!("invalid cell reference \"{}\"", self.anchor.cell))
         })?;
         Ok(CommentThread {
             id: self.id,
@@ -559,6 +561,7 @@ mod tests {
         let store = JsonCommentStore::for_document(&document);
         std::fs::write(&store.sidecar, "{not json").unwrap();
         let err = store.load().unwrap_err();
+        assert!(matches!(err, StoreError::Corrupt(_)), "{err:?}");
         assert!(err.to_string().contains("invalid sidecar"), "{err}");
         cleanup(&document);
     }
@@ -569,7 +572,27 @@ mod tests {
         let store = JsonCommentStore::for_document(&document);
         std::fs::write(&store.sidecar, r#"{"version": 2, "comments": []}"#).unwrap();
         let err = store.load().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StoreError::UnsupportedVersion {
+                    found: 2,
+                    supported: 1
+                }
+            ),
+            "{err:?}"
+        );
         assert!(err.to_string().contains("unsupported"), "{err}");
+        cleanup(&document);
+    }
+
+    #[test]
+    fn replying_to_a_missing_thread_is_thread_not_found() {
+        let document = temp_document();
+        let mut store = JsonCommentStore::for_document(&document);
+        let err = store.add_reply("ghost", "x", "user").unwrap_err();
+        assert!(matches!(err, StoreError::ThreadNotFound(_)), "{err:?}");
+        assert!(err.to_string().contains("no thread with id ghost"), "{err}");
         cleanup(&document);
     }
 

@@ -21,13 +21,13 @@ impl CommentStore for NullStore {
         Ok(Vec::new())
     }
     fn add_thread(&mut self, _: Anchor, _: &str, _: &str) -> Result<CommentThread, StoreError> {
-        Err(StoreError("store is unavailable".into()))
+        Err(StoreError::Io("store is unavailable".into()))
     }
     fn add_reply(&mut self, _: &str, _: &str, _: &str) -> Result<CommentThread, StoreError> {
-        Err(StoreError("store is unavailable".into()))
+        Err(StoreError::Io("store is unavailable".into()))
     }
     fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
-        Err(StoreError("store is unavailable".into()))
+        Err(StoreError::Io("store is unavailable".into()))
     }
 }
 
@@ -113,18 +113,18 @@ impl CommentStore for SharedStore {
     fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
         *self.loads.borrow_mut() += 1;
         if *self.broken.borrow() {
-            return Err(StoreError("invalid sidecar".into()));
+            return Err(StoreError::Corrupt("invalid sidecar".into()));
         }
         Ok(self.threads.borrow().clone())
     }
     fn add_thread(&mut self, _: Anchor, _: &str, _: &str) -> Result<CommentThread, StoreError> {
-        Err(StoreError("read only".into()))
+        Err(StoreError::Io("read only".into()))
     }
     fn add_reply(&mut self, _: &str, _: &str, _: &str) -> Result<CommentThread, StoreError> {
-        Err(StoreError("read only".into()))
+        Err(StoreError::Io("read only".into()))
     }
     fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
-        Err(StoreError("read only".into()))
+        Err(StoreError::Io("read only".into()))
     }
 }
 
@@ -160,7 +160,7 @@ impl DocumentSource for SharedSource {
     fn load(&self, _: &Path) -> Result<Document, LoadError> {
         *self.loads.borrow_mut() += 1;
         if *self.broken.borrow() {
-            return Err(LoadError("mid-write".into()));
+            return Err(LoadError::Open("mid-write".into()));
         }
         Ok(Document::new(self.sheets.borrow().clone()))
     }

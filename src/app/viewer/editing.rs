@@ -294,10 +294,10 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<CommentThread, StoreError> {
-                Err(StoreError("unused".into()))
+                Err(StoreError::Io("unused".into()))
             }
             fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
-                Err(StoreError("unused".into()))
+                Err(StoreError::Io("unused".into()))
             }
         }
 
@@ -347,7 +347,7 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<CommentThread, StoreError> {
-                Err(StoreError("unused".into()))
+                Err(StoreError::Io("unused".into()))
             }
             fn add_reply(
                 &mut self,
@@ -357,7 +357,7 @@ mod tests {
             ) -> Result<CommentThread, StoreError> {
                 let mut threads = self.threads.borrow_mut();
                 let Some(t) = threads.iter_mut().find(|t| t.id == thread_id) else {
-                    return Err(StoreError(format!("no thread with id {thread_id}")));
+                    return Err(StoreError::ThreadNotFound(thread_id.to_string()));
                 };
                 t.replies.push(Reply {
                     id: "r".into(),
@@ -421,7 +421,7 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<CommentThread, StoreError> {
-                Err(StoreError("disk full".into()))
+                Err(StoreError::Io("disk full".into()))
             }
             fn add_reply(
                 &mut self,
@@ -429,10 +429,10 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<CommentThread, StoreError> {
-                Err(StoreError("disk full".into()))
+                Err(StoreError::Io("disk full".into()))
             }
             fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
-                Err(StoreError("disk full".into()))
+                Err(StoreError::Io("disk full".into()))
             }
         }
 
@@ -474,7 +474,7 @@ mod tests {
             ) -> Result<CommentThread, StoreError> {
                 if !self.failed_once {
                     self.failed_once = true;
-                    return Err(StoreError("disk full".into()));
+                    return Err(StoreError::Io("disk full".into()));
                 }
                 Ok(CommentThread {
                     id: "t".into(),
@@ -492,10 +492,10 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<CommentThread, StoreError> {
-                Err(StoreError("unused".into()))
+                Err(StoreError::Io("unused".into()))
             }
             fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
-                Err(StoreError("unused".into()))
+                Err(StoreError::Io("unused".into()))
             }
         }
 

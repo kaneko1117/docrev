@@ -16,7 +16,10 @@ pub struct XlsxSource;
 
 impl DocumentSource for XlsxSource {
     fn load(&self, path: &Path) -> Result<Document, LoadError> {
-        let raw = xlsx::read_workbook(path).map_err(|e| LoadError(e.to_string()))?;
+        let raw = xlsx::read_workbook(path).map_err(|e| match e {
+            xlsx::ReadError::Open { .. } => LoadError::Open(e.to_string()),
+            xlsx::ReadError::Sheet { .. } => LoadError::Sheet(e.to_string()),
+        })?;
         // widths, formats and fills are cosmetic — a parse failure must not
         // block opening; cells then simply show their raw, unpainted values
         let widths = xlsx_meta::column_widths(path).unwrap_or_default();
