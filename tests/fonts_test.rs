@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use docrev::adapter::xlsx_source::XlsxSource;
 use docrev::app::ports::DocumentSource;
-use docrev::domain::sheet::Rgb;
+use docrev::domain::sheet::{Rgb, TextColor};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16,17 +16,20 @@ fn loaded_sheets_carry_their_font_colors() {
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.name(), "フォント");
     assert_eq!(
-        sheet.font_color_at(0, 0),
-        Some(Rgb {
+        sheet.text_color_at(0, 0),
+        Some(TextColor::Literal(Rgb {
             r: 255,
             g: 255,
             b: 255
-        }),
+        })),
         "white font on the dark fill"
     );
-    assert_eq!(sheet.font_color_at(0, 1), Some(Rgb { r: 255, g: 0, b: 0 }));
     assert_eq!(
-        sheet.font_color_at(0, 3),
+        sheet.text_color_at(0, 1),
+        Some(TextColor::Literal(Rgb { r: 255, g: 0, b: 0 }))
+    );
+    assert_eq!(
+        sheet.text_color_at(0, 3),
         None,
         "the default black font is not inherited"
     );
@@ -47,11 +50,11 @@ fn font_colors_and_dark_fills_arrive_together() {
         })
     );
     assert_eq!(
-        sheet.font_color_at(0, 0),
-        Some(Rgb {
+        sheet.text_color_at(0, 0),
+        Some(TextColor::Literal(Rgb {
             r: 255,
             g: 255,
             b: 255
-        })
+        }))
     );
 }

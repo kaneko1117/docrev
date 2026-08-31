@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use ratatui::style::Color;
 
-use crate::domain::number_format::FormatColor;
+use crate::domain::sheet::NamedColor;
 
 /// Which palette the viewer paints with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -126,31 +126,31 @@ pub(crate) struct Palette {
 }
 
 impl Palette {
-    /// Number-format colors (`[Red]` sections). The Sheets palette darkens
-    /// yellow and white, which would be unreadable on white paper; the
-    /// terminal palette hands them to the user's own 16 colors.
-    pub fn format_fg(&self, color: FormatColor) -> Color {
+    /// Colors the workbook names rather than numbers. The Sheets palette
+    /// darkens yellow and white, which would be unreadable on white paper;
+    /// the terminal palette hands them to the user's own 16 colors.
+    pub fn named_fg(&self, color: NamedColor) -> Color {
         if self.canvas_bg == Color::Reset {
             return match color {
-                FormatColor::Red => Color::Red,
-                FormatColor::Blue => Color::Blue,
-                FormatColor::Green => Color::Green,
-                FormatColor::Yellow => Color::Yellow,
-                FormatColor::Magenta => Color::Magenta,
-                FormatColor::Cyan => Color::Cyan,
+                NamedColor::Red => Color::Red,
+                NamedColor::Blue => Color::Blue,
+                NamedColor::Green => Color::Green,
+                NamedColor::Yellow => Color::Yellow,
+                NamedColor::Magenta => Color::Magenta,
+                NamedColor::Cyan => Color::Cyan,
                 // slots 0 and 15 are the background itself too often
-                FormatColor::Black | FormatColor::White => Color::Reset,
+                NamedColor::Black | NamedColor::White => Color::Reset,
             };
         }
         match color {
-            FormatColor::Red => Color::Rgb(217, 48, 37),
-            FormatColor::Blue => Color::Rgb(11, 87, 208),
-            FormatColor::Green => Color::Rgb(19, 115, 51),
-            FormatColor::Yellow => Color::Rgb(178, 138, 0),
-            FormatColor::Magenta => Color::Rgb(168, 37, 168),
-            FormatColor::Cyan => Color::Rgb(0, 131, 143),
-            FormatColor::Black => self.text,
-            FormatColor::White => Color::Rgb(128, 134, 139),
+            NamedColor::Red => Color::Rgb(217, 48, 37),
+            NamedColor::Blue => Color::Rgb(11, 87, 208),
+            NamedColor::Green => Color::Rgb(19, 115, 51),
+            NamedColor::Yellow => Color::Rgb(178, 138, 0),
+            NamedColor::Magenta => Color::Rgb(168, 37, 168),
+            NamedColor::Cyan => Color::Rgb(0, 131, 143),
+            NamedColor::Black => self.text,
+            NamedColor::White => Color::Rgb(128, 134, 139),
         }
     }
 }
@@ -200,10 +200,7 @@ mod tests {
         }
         assert!(p.reverse_selection, "the cursor cell must stay readable");
         assert!(p.dim_chrome);
-        for color in [
-            p.format_fg(FormatColor::Black),
-            p.format_fg(FormatColor::White),
-        ] {
+        for color in [p.named_fg(NamedColor::Black), p.named_fg(NamedColor::White)] {
             assert_eq!(color, Color::Reset, "0 and 15 are backgrounds too often");
         }
     }
@@ -211,11 +208,11 @@ mod tests {
     #[test]
     fn format_colors_follow_the_palette() {
         assert!(matches!(
-            Theme::Sheets.palette().format_fg(FormatColor::Red),
+            Theme::Sheets.palette().named_fg(NamedColor::Red),
             Color::Rgb(..)
         ));
         assert_eq!(
-            Theme::Terminal.palette().format_fg(FormatColor::Red),
+            Theme::Terminal.palette().named_fg(NamedColor::Red),
             Color::Red,
             "named colors follow the terminal's own palette"
         );

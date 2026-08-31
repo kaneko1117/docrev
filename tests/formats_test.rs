@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use docrev::adapter::xlsx_source::XlsxSource;
 use docrev::app::ports::DocumentSource;
 use docrev::domain::cell::CellValue;
-use docrev::domain::number_format::FormatColor;
+use docrev::domain::sheet::{NamedColor, TextColor};
 use docrev::infra::xlsx_meta;
 
 fn fixture(name: &str) -> PathBuf {
@@ -35,20 +35,22 @@ fn loaded_cells_display_as_excel_shows_them() {
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.name(), "書式");
 
-    let formatted =
-        |text: &str, value: f64, color: Option<FormatColor>| CellValue::FormattedNumber {
-            value,
-            text: text.to_string(),
-            color,
-        };
-    assert_eq!(sheet.cell(0, 0), &formatted("15%", 0.15, None));
-    assert_eq!(sheet.cell(0, 1), &formatted("1,234", 1234.0, None));
+    let formatted = |text: &str, value: f64| CellValue::FormattedNumber {
+        value,
+        text: text.to_string(),
+    };
+    assert_eq!(sheet.cell(0, 0), &formatted("15%", 0.15));
+    assert_eq!(sheet.cell(0, 1), &formatted("1,234", 1234.0));
+    assert_eq!(sheet.cell(0, 2), &formatted("▲1,234", -1234.0));
+    assert_eq!(sheet.cell(0, 3), &formatted("1,235千円", 1234567.0));
+    assert_eq!(sheet.cell(0, 4), &formatted("¥1,980", 1980.0));
+
     assert_eq!(
-        sheet.cell(0, 2),
-        &formatted("▲1,234", -1234.0, Some(FormatColor::Red))
+        sheet.text_color_at(0, 2),
+        Some(TextColor::Named(NamedColor::Red)),
+        "the [Red] section colors the cell"
     );
-    assert_eq!(sheet.cell(0, 3), &formatted("1,235千円", 1234567.0, None));
-    assert_eq!(sheet.cell(0, 4), &formatted("¥1,980", 1980.0, None));
+    assert_eq!(sheet.text_color_at(0, 0), None, "colorless formats do not");
 }
 
 #[test]

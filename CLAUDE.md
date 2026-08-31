@@ -14,9 +14,10 @@ Clean architecture. Layers and dependency rules:
 src/
   main.rs      Composition root. The ONLY place that knows every layer:
                builds domain objects, wires adapters to ports, runs the app.
-  domain/      Pure model: Document, Sheet, Cell, Comment, Anchor, ...
-               No IO, no dependencies on any other layer, no external crates
-               beyond std (serde derive is the one allowed exception).
+  domain/      docrev's own model of a reviewable document: Document, Sheet,
+               Cell, Comment, Anchor, ... No IO, no dependencies on any other
+               layer, no external crates beyond std (serde derive is the one
+               allowed exception).
   app/         Use cases (open a review, add a comment, list comments, ...).
                Depends on domain only. Everything it needs from the outside
                world is declared HERE as a trait (a "port"), e.g.
@@ -44,6 +45,16 @@ src/
   exists only at the edges: CLI arguments, JSON sidecar, and UI display.
   Conversion lives in one place: the methods on `domain::anchor::Anchor`
   (`cell_ref`, `parse_cell_ref`, `column_label`).
+- What belongs in `domain` is decided by subject matter, never by purity, and
+  the line is **whose contract a thing is**. A1 notation is docrev's own — the
+  sidecar and the CLI speak it — so `Anchor` owns it (see the bullet above).
+  A workbook's number-format grammar is not: `#,##0;[Red]` is a rule docrev only
+  ever reads out of someone else's file and never emits, so the engine that
+  interprets it lives in `infra` however pure it is. `Sheet` and `CellValue`
+  stay, because `domain` holds the model each `Anchor` points into. The test:
+  swap xlsx for docx, the terminal for a web UI, the sidecar for a database —
+  whatever must change was never `domain`. Purity is a consequence of belonging
+  there, not a reason to be there.
 - No constructor-less utility modules in `domain` — free functions belong next to
   their single consumer until a real domain type can own them.
 - The sidecar file is `<document>.docrev.json`, versioned (`"version": 1`).

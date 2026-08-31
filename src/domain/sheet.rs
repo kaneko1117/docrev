@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use super::cell::CellValue;
-use super::number_format::FormatColor;
 use super::workbook_comment::WorkbookComment;
 
 /// A color inherited from the workbook (cell background or font), sRGB.
@@ -12,13 +11,29 @@ pub struct Rgb {
     pub b: u8,
 }
 
-/// The color a cell's text takes, after Excel's precedence rules.
+/// A color the workbook names rather than numbers. The presentation layer
+/// is free to reinterpret it — the terminal theme hands these to the user's
+/// own 16 colors, where a literal `Rgb` has nothing left to interpret.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NamedColor {
+    Red,
+    Blue,
+    Green,
+    Yellow,
+    Magenta,
+    Cyan,
+    Black,
+    White,
+}
+
+/// The color a cell's text takes. Which of the two a cell carries is
+/// resolved outside the model; what the model keeps is the distinction the
+/// ui branches on — a named color it may reinterpret, or a literal one it
+/// may only paint or drop.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TextColor {
-    /// From the number format (`[Red]` sections) — a named Excel color.
-    Format(FormatColor),
-    /// The cell's font color.
-    Font(Rgb),
+    Named(NamedColor),
+    Literal(Rgb),
 }
 
 /// An inclusive rectangle of merged cells; the value lives at the anchor
@@ -52,8 +67,8 @@ pub struct Sheet {
     merges: Vec<MergedRange>,
     /// Solid cell backgrounds from the workbook, keyed by (row, col).
     fills: HashMap<(usize, usize), Rgb>,
-    /// Author-set font colors from the workbook, keyed by (row, col).
-    font_colors: HashMap<(usize, usize), Rgb>,
+    /// The color each cell's text takes, already resolved to one per cell.
+    text_colors: HashMap<(usize, usize), TextColor>,
     /// Frozen panes from the workbook: (rows, cols) pinned while scrolling.
     frozen: (usize, usize),
     /// Formulas by (row, col), without their leading `=`.
@@ -72,7 +87,7 @@ impl Sheet {
             col_widths: Vec::new(),
             merges: Vec::new(),
             fills: HashMap::new(),
-            font_colors: HashMap::new(),
+            text_colors: HashMap::new(),
             frozen: (0, 0),
             formulas: HashMap::new(),
             workbook_comments: Vec::new(),
@@ -88,13 +103,11 @@ impl Sheet {
         self.fills.get(&(row, col)).copied()
     }
 
-    pub fn with_font_colors(mut self, colors: HashMap<(usize, usize), Rgb>) -> Self {
-        self.font_colors = colors;
+    /// Text colors already resolved to one per cell: which source wins is
+    /// the workbook format's rule, settled before the model sees it.
+    pub fn with_text_colors(mut self, colors: HashMap<(usize, usize), TextColor>) -> Self {
+        self.text_colors = colors;
         self
-    }
-
-    pub fn font_color_at(&self, row: usize, col: usize) -> Option<Rgb> {
-        self.font_colors.get(&(row, col)).copied()
     }
 
     /// Widths as the file states them: fractional character counts.
@@ -210,20 +223,14 @@ impl Sheet {
         self.fill_at(row, col)
     }
 
-    /// Excel's text-color precedence: a color carried by the number format
-    /// (`[Red]` sections) wins over the cell's font color. Inside a merged
-    /// region the anchor's styling applies to the whole region.
+    /// The color a cell's text takes: inside a merged region the anchor's
+    /// styling applies to the whole region.
     pub fn text_color_at(&self, row: usize, col: usize) -> Option<TextColor> {
         let (row, col) = match self.merge_at(row, col) {
             Some(merge) => merge.anchor(),
             None => (row, col),
         };
-        match self.cell(row, col) {
-            CellValue::FormattedNumber {
-                color: Some(color), ..
-            } => Some(TextColor::Format(*color)),
-            _ => self.font_color_at(row, col).map(TextColor::Font),
-        }
+        self.text_colors.get(&(row, col)).copied()
     }
 
     pub fn merge_at(&self, row: usize, col: usize) -> Option<&MergedRange> {
@@ -320,35 +327,29 @@ mod tests {
     }
 
     #[test]
-    fn format_color_wins_over_font_color() {
-        let red_number = CellValue::FormattedNumber {
-            value: -1.0,
-            text: "▲1".into(),
-            color: Some(FormatColor::Red),
-        };
+    fn both_kinds_of_text_color_are_kept_apart() {
         let blue = Rgb { r: 0, g: 0, b: 255 };
-        let sheet = Sheet::new("s", vec![vec![red_number, CellValue::Text("x".into())]])
-            .with_font_colors(HashMap::from([((0, 0), blue), ((0, 1), blue)]));
+        let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 2]]).with_text_colors(
+            HashMap::from([
+                ((0, 0), TextColor::Named(NamedColor::Red)),
+                ((0, 1), TextColor::Literal(blue)),
+            ]),
+        );
 
         assert_eq!(
             sheet.text_color_at(0, 0),
-            Some(TextColor::Format(FormatColor::Red)),
-            "the number format's color wins"
+            Some(TextColor::Named(NamedColor::Red))
         );
-        assert_eq!(
-            sheet.text_color_at(0, 1),
-            Some(TextColor::Font(blue)),
-            "without a format color the font color applies"
-        );
+        assert_eq!(sheet.text_color_at(0, 1), Some(TextColor::Literal(blue)));
     }
 
     #[test]
     fn a_merged_region_takes_its_anchor_styling() {
         let red = Rgb { r: 255, g: 0, b: 0 };
         let sheet = merged_sheet()
-            .with_font_colors(HashMap::from([((0, 0), red)]))
+            .with_text_colors(HashMap::from([((0, 0), TextColor::Literal(red))]))
             .with_fills(HashMap::from([((0, 0), red)]));
-        assert_eq!(sheet.text_color_at(0, 2), Some(TextColor::Font(red)));
+        assert_eq!(sheet.text_color_at(0, 2), Some(TextColor::Literal(red)));
         assert_eq!(sheet.display_fill_at(0, 2), Some(red));
         assert_eq!(sheet.fill_at(0, 2), None, "the raw lookup stays raw");
     }

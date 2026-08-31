@@ -7,9 +7,9 @@ use crate::app::error::LoadError;
 use crate::app::ports::DocumentSource;
 use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
-use crate::domain::number_format::NumberFormat;
-use crate::domain::sheet::{MergedRange, Rgb, Sheet};
+use crate::domain::sheet::{MergedRange, Rgb, Sheet, TextColor};
 use crate::domain::workbook_comment::{WorkbookComment, WorkbookReply};
+use crate::infra::number_format::NumberFormat;
 use crate::infra::{xlsx, xlsx_meta};
 
 pub struct XlsxSource;
@@ -152,29 +152,30 @@ fn to_sheet(
         row.extend(raw.iter().map(to_cell));
         rows.push(row);
     }
-    let (fills, font_colors) = match cells {
+    let (fills, text_colors) = match cells {
         Some(cells) => apply_styles(&mut rows, cells, styles, formats),
         None => (HashMap::new(), HashMap::new()),
     };
     Sheet::new(name, rows)
         .with_fills(fills)
-        .with_font_colors(font_colors)
+        .with_text_colors(text_colors)
 }
 
-type ColorMap = HashMap<(usize, usize), Rgb>;
+type Fills = HashMap<(usize, usize), Rgb>;
+type TextColors = HashMap<(usize, usize), TextColor>;
 
 /// Applies workbook styles to the freshly built grid. Numbers with a format
 /// gain their display text (date cells were already converted by calamine
 /// and text/bool cells have no numeric value, so only `Number` is touched);
-/// fills and font colors are collected for the viewer, empty cells included.
+/// fills and text colors are collected for the viewer, empty cells included.
 fn apply_styles(
     rows: &mut [Vec<CellValue>],
     cells: &HashMap<(u32, u32), usize>,
     styles: &[xlsx_meta::CellStyle],
     formats: &[Option<NumberFormat>],
-) -> (ColorMap, ColorMap) {
+) -> (Fills, TextColors) {
     let mut fills = HashMap::new();
-    let mut font_colors = HashMap::new();
+    let mut text_colors = HashMap::new();
     for (&(row, col), &idx) in cells {
         let (row, col) = (row as usize, col as usize);
         let Some(style) = styles.get(idx) else {
@@ -183,31 +184,34 @@ fn apply_styles(
         if let Some((r, g, b)) = style.fill {
             fills.insert((row, col), Rgb { r, g, b });
         }
-        // the workbook-default font was already filtered out in infra
-        // (by font id, not by color — a theme may paint the default any
-        // near-black), so everything left is an author's choice
-        if let Some((r, g, b)) = style.font {
-            font_colors.insert((row, col), Rgb { r, g, b });
-        }
-        let Some(Some(format)) = formats.get(idx) else {
-            continue;
-        };
-        if format.is_general() {
-            continue;
-        }
-        let Some(cell) = rows.get_mut(row).and_then(|r| r.get_mut(col)) else {
-            continue;
-        };
-        if let CellValue::Number(value) = *cell {
+        // a named color only exists once the format actually rendered a
+        // number: a `[Red]` code on a text cell colors nothing, as in Excel
+        let mut named = None;
+        if let Some(Some(format)) = formats.get(idx)
+            && !format.is_general()
+            && let Some(cell) = rows.get_mut(row).and_then(|r| r.get_mut(col))
+            && let CellValue::Number(value) = *cell
+        {
             let formatted = format.format(value);
+            named = formatted.color;
             *cell = CellValue::FormattedNumber {
                 value,
                 text: formatted.text,
-                color: formatted.color,
             };
         }
+        // Excel's precedence: a color the number format names beats the
+        // cell's font color. The workbook-default font was already filtered
+        // out in infra (by font id, not by color — a theme may paint the
+        // default any near-black), so what is left is an author's choice.
+        let literal = style.font.map(|(r, g, b)| Rgb { r, g, b });
+        if let Some(color) = named
+            .map(TextColor::Named)
+            .or(literal.map(TextColor::Literal))
+        {
+            text_colors.insert((row, col), color);
+        }
     }
-    (fills, font_colors)
+    (fills, text_colors)
 }
 
 fn to_cell(data: &Data) -> CellValue {
@@ -256,8 +260,8 @@ mod tests {
     }
 
     #[test]
-    fn styles_format_numbers_collect_fills_and_keep_raw_values() {
-        use crate::domain::number_format::FormatColor;
+    fn styles_format_numbers_collect_fills_and_resolve_text_colors() {
+        use crate::domain::sheet::NamedColor;
 
         let mut rows = vec![vec![
             CellValue::Number(0.15),
@@ -265,6 +269,7 @@ mod tests {
             CellValue::Number(3.0),
             CellValue::Text("x".into()),
             CellValue::Empty,
+            CellValue::Text("y".into()),
         ]];
         let styles = vec![
             xlsx_meta::CellStyle {
@@ -275,7 +280,7 @@ mod tests {
             xlsx_meta::CellStyle {
                 format: Some("#,##0;[Red]▲#,##0".into()),
                 fill: None,
-                font: None,
+                font: Some((0, 0, 255)),
             },
             xlsx_meta::CellStyle {
                 format: Some("General".into()),
@@ -298,16 +303,16 @@ mod tests {
             ((0, 2), 2),
             ((0, 3), 0),
             ((0, 4), 3),  // fill on an empty cell
+            ((0, 5), 1),  // the [Red] format on a text cell
             ((8, 25), 0), // outside the grid: must not panic
         ]
         .into();
-        let (fills, font_colors) = apply_styles(&mut rows, &cells, &styles, &formats);
+        let (fills, text_colors) = apply_styles(&mut rows, &cells, &styles, &formats);
         assert_eq!(
             rows[0][0],
             CellValue::FormattedNumber {
                 value: 0.15,
                 text: "15%".into(),
-                color: None,
             }
         );
         assert_eq!(
@@ -315,7 +320,6 @@ mod tests {
             CellValue::FormattedNumber {
                 value: -1234.0,
                 text: "▲1,234".into(),
-                color: Some(FormatColor::Red),
             }
         );
         assert_eq!(rows[0][2], CellValue::Number(3.0), "General stays raw");
@@ -335,19 +339,35 @@ mod tests {
         );
         assert_eq!(fills.get(&(0, 1)), None);
         assert_eq!(
-            font_colors.get(&(0, 2)),
-            Some(&Rgb {
+            text_colors.get(&(0, 1)),
+            Some(&TextColor::Named(NamedColor::Red)),
+            "the number format's named color beats the cell's font color"
+        );
+        assert_eq!(
+            text_colors.get(&(0, 5)),
+            Some(&TextColor::Literal(Rgb { r: 0, g: 0, b: 255 })),
+            "the same [Red] format renders no number on a text cell, so the \
+             font color applies"
+        );
+        assert_eq!(
+            text_colors.get(&(0, 2)),
+            Some(&TextColor::Literal(Rgb {
                 r: 255,
                 g: 255,
                 b: 255
-            }),
+            })),
             "a real font color is inherited"
         );
         assert_eq!(
-            font_colors.get(&(0, 4)),
-            Some(&Rgb { r: 0, g: 0, b: 0 }),
+            text_colors.get(&(0, 4)),
+            Some(&TextColor::Literal(Rgb { r: 0, g: 0, b: 0 })),
             "an explicit black on a non-default font is an author's choice \
              (the workbook default is filtered by font id in infra)"
+        );
+        assert_eq!(
+            text_colors.get(&(0, 0)),
+            None,
+            "a format with no color and no font leaves the cell uncolored"
         );
     }
 }
