@@ -248,7 +248,6 @@ mod tests {
             vec![vec![CellValue::FormattedNumber {
                 value: -1234.0,
                 text: "▲1,234".into(),
-                color: None,
             }]],
         );
         assert_eq!(matches_in(&sheet, "1,234"), vec![(0, 0)]);

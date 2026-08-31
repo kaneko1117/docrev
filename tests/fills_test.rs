@@ -38,7 +38,6 @@ fn fills_and_number_formats_coexist_on_one_cell() {
         &CellValue::FormattedNumber {
             value: 0.15,
             text: "15%".to_string(),
-            color: None,
         }
     );
     assert_eq!(

@@ -1,22 +1,14 @@
-//! Excel number-format engine — the practical subset. Anything the
-//! parser does not understand degrades to `General` (the raw value).
+//! Excel number-format engine (ECMA-376 §18.8.30) — the practical subset.
+//! Anything the parser does not understand degrades to `General` (the raw
+//! value). Format-code grammar is xlsx's, not docrev's, which is why this
+//! lives beside the other xlsx parsing rather than in `domain`.
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FormatColor {
-    Red,
-    Blue,
-    Green,
-    Yellow,
-    Magenta,
-    Cyan,
-    Black,
-    White,
-}
+use crate::domain::sheet::NamedColor;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Formatted {
     pub text: String,
-    pub color: Option<FormatColor>,
+    pub color: Option<NamedColor>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +24,7 @@ enum Kind {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 struct Section {
-    color: Option<FormatColor>,
+    color: Option<NamedColor>,
     tokens: Vec<Token>,
     grouping: bool,
     min_int: usize,
@@ -127,7 +119,7 @@ impl NumberFormat {
 
 /// Excel's General rendering of a bare number — the fallback for cells with
 /// no (or an unsupported) format.
-pub(crate) fn general(value: f64) -> String {
+fn general(value: f64) -> String {
     value.to_string()
 }
 
@@ -151,7 +143,7 @@ fn split_sections(code: &str) -> Vec<String> {
 }
 
 enum Tag {
-    Color(FormatColor),
+    Color(NamedColor),
     /// Recognized but not rendered — stripped from the output.
     StripOnly,
     /// `[$¥-411]` locale currency: the symbol becomes a literal.
@@ -172,14 +164,14 @@ fn classify_tag(tag: &str) -> Tag {
         }
     }
     match lowered.as_str() {
-        "red" | "赤" => Tag::Color(FormatColor::Red),
-        "blue" | "青" => Tag::Color(FormatColor::Blue),
-        "green" | "緑" => Tag::Color(FormatColor::Green),
-        "yellow" | "黄" => Tag::Color(FormatColor::Yellow),
-        "magenta" | "紫" => Tag::Color(FormatColor::Magenta),
-        "cyan" | "水" => Tag::Color(FormatColor::Cyan),
-        "black" | "黒" => Tag::Color(FormatColor::Black),
-        "white" | "白" => Tag::Color(FormatColor::White),
+        "red" | "赤" => Tag::Color(NamedColor::Red),
+        "blue" | "青" => Tag::Color(NamedColor::Blue),
+        "green" | "緑" => Tag::Color(NamedColor::Green),
+        "yellow" | "黄" => Tag::Color(NamedColor::Yellow),
+        "magenta" | "紫" => Tag::Color(NamedColor::Magenta),
+        "cyan" | "水" => Tag::Color(NamedColor::Cyan),
+        "black" | "黒" => Tag::Color(NamedColor::Black),
+        "white" | "白" => Tag::Color(NamedColor::White),
         _ => Tag::Unsupported, // conditions like [>=1000], ...
     }
 }
@@ -474,24 +466,24 @@ mod tests {
     #[test]
     fn red_negative_carries_the_color() {
         let format = NumberFormat::parse("#,##0;[赤]▲#,##0");
-        assert_eq!(format.format(-1234.0).color, Some(FormatColor::Red));
+        assert_eq!(format.format(-1234.0).color, Some(NamedColor::Red));
         assert_eq!(format.format(-1234.0).text, "▲1,234");
         assert_eq!(format.format(1234.0).color, None);
 
         let english = NumberFormat::parse("#,##0;[Red]-#,##0");
-        assert_eq!(english.format(-1.0).color, Some(FormatColor::Red));
+        assert_eq!(english.format(-1.0).color, Some(NamedColor::Red));
     }
 
     #[test]
     fn all_eight_standard_colors_are_recognized() {
         for (tag, expected) in [
-            ("Blue", FormatColor::Blue),
-            ("緑", FormatColor::Green),
-            ("Yellow", FormatColor::Yellow),
-            ("紫", FormatColor::Magenta),
-            ("Cyan", FormatColor::Cyan),
-            ("黒", FormatColor::Black),
-            ("White", FormatColor::White),
+            ("Blue", NamedColor::Blue),
+            ("緑", NamedColor::Green),
+            ("Yellow", NamedColor::Yellow),
+            ("紫", NamedColor::Magenta),
+            ("Cyan", NamedColor::Cyan),
+            ("黒", NamedColor::Black),
+            ("White", NamedColor::White),
         ] {
             let format = NumberFormat::parse(&format!("[{tag}]0"));
             assert_eq!(format.format(5.0).color, Some(expected), "{tag}");

@@ -108,11 +108,11 @@ pub(crate) enum Separator {
     Marker { fill: Option<Rgb> },
 }
 
-/// Font colors are dropped under the selection so light fonts stay readable
-/// on the selection blue; format colors carry meaning and are kept.
+/// Literal font colors are dropped under the selection so light fonts stay
+/// readable on the selection blue; named colors carry meaning and are kept.
 fn visible_color(color: Option<TextColor>, on_cursor: bool) -> Option<TextColor> {
     match color {
-        Some(TextColor::Font(_)) if on_cursor => None,
+        Some(TextColor::Literal(_)) if on_cursor => None,
         other => other,
     }
 }
@@ -663,8 +663,8 @@ mod tests {
         assert_eq!(display_width(None), DEFAULT_CELL_WIDTH);
     }
     use crate::domain::cell::CellValue;
-    use crate::domain::number_format::FormatColor;
     use crate::domain::sheet::MergedRange;
+    use crate::domain::sheet::NamedColor;
     use std::collections::HashMap;
 
     fn run_layout(
@@ -1127,36 +1127,36 @@ mod tests {
     }
 
     #[test]
-    fn format_color_beats_font_color_and_survives_the_cursor() {
+    fn a_named_color_survives_the_cursor() {
         let cell = || CellValue::FormattedNumber {
             value: -1.0,
             text: "▲1".into(),
-            color: Some(FormatColor::Red),
         };
-        let fonts = HashMap::from([((0usize, 0usize), Rgb { r: 1, g: 2, b: 3 })]);
-        let sheet = Sheet::new("s", vec![vec![cell(), CellValue::Text("x".into())]])
-            .with_font_colors(fonts);
+        let sheet =
+            Sheet::new("s", vec![vec![cell(), CellValue::Text("x".into())]]).with_text_colors(
+                HashMap::from([((0usize, 0usize), TextColor::Named(NamedColor::Red))]),
+            );
 
-        // off-cursor: format color wins over the font color
         let layout = run_layout(&sheet, (0, 1), &HashSet::new(), 40, 3);
         assert_eq!(
             layout.lines[0].slots[0].font,
-            Some(TextColor::Format(FormatColor::Red))
+            Some(TextColor::Named(NamedColor::Red))
         );
 
-        // on the cursor the format color survives (font colors would not)
+        // on the cursor it survives, where a literal color would not
         let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 40, 3);
         assert_eq!(
             layout.lines[0].slots[0].font,
-            Some(TextColor::Format(FormatColor::Red))
+            Some(TextColor::Named(NamedColor::Red))
         );
     }
 
     #[test]
-    fn font_color_is_suppressed_under_the_cursor() {
-        let fonts = HashMap::from([((0usize, 0usize), Rgb { r: 1, g: 2, b: 3 })]);
+    fn a_literal_color_is_suppressed_under_the_cursor() {
+        let literal = Rgb { r: 1, g: 2, b: 3 };
+        let colors = HashMap::from([((0usize, 0usize), TextColor::Literal(literal))]);
         let sheet =
-            Sheet::new("s", vec![vec![CellValue::Text("x".into())]]).with_font_colors(fonts);
+            Sheet::new("s", vec![vec![CellValue::Text("x".into())]]).with_text_colors(colors);
 
         let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 40, 3);
         assert_eq!(layout.lines[0].slots[0].font, None, "cursor suppresses it");
@@ -1168,14 +1168,14 @@ mod tests {
                 CellValue::Text("y".into()),
             ]],
         )
-        .with_font_colors(HashMap::from([(
+        .with_text_colors(HashMap::from([(
             (0usize, 0usize),
-            Rgb { r: 1, g: 2, b: 3 },
+            TextColor::Literal(literal),
         )]));
         let layout = run_layout(&sheet2, (0, 1), &HashSet::new(), 40, 3);
         assert_eq!(
             layout.lines[0].slots[0].font,
-            Some(TextColor::Font(Rgb { r: 1, g: 2, b: 3 }))
+            Some(TextColor::Literal(literal))
         );
     }
 }

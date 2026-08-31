@@ -248,11 +248,11 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
                 filled_canvas(p, slot.fill)
             };
             let base = match slot.font {
-                Some(TextColor::Format(color)) => base.fg(p.format_fg(color)),
-                Some(TextColor::Font(rgb)) if p.paint_workbook_colors => {
+                Some(TextColor::Named(color)) => base.fg(p.named_fg(color)),
+                Some(TextColor::Literal(rgb)) if p.paint_workbook_colors => {
                     base.fg(Color::Rgb(rgb.r, rgb.g, rgb.b))
                 }
-                Some(TextColor::Font(_)) => base,
+                Some(TextColor::Literal(_)) => base,
                 None => base,
             };
             let style = if slot.ruled {
@@ -286,7 +286,7 @@ mod tests {
     use ratatui::style::Modifier;
 
     use crate::domain::cell::CellValue;
-    use crate::domain::number_format::FormatColor;
+    use crate::domain::sheet::NamedColor;
     use crate::domain::sheet::Rgb;
     use crate::ui::test_support::{buffer_text, render_text, sheet_3x3};
 
@@ -318,17 +318,19 @@ mod tests {
 
     #[test]
     fn formatted_numbers_render_right_aligned_and_colored() {
+        use std::collections::HashMap;
+
         let sheet = Sheet::new(
             "書式",
             vec![vec![
                 CellValue::FormattedNumber {
                     value: -1234.0,
                     text: "▲1,234".into(),
-                    color: Some(FormatColor::Red),
                 },
                 CellValue::Number(5.0),
             ]],
-        );
+        )
+        .with_text_colors(HashMap::from([((0, 0), TextColor::Named(NamedColor::Red))]));
         let view = GridView {
             sheet: &sheet,
             sheet_names: vec!["書式"],
@@ -373,7 +375,7 @@ mod tests {
         }
         assert_eq!(
             fg,
-            Some(Theme::default().palette().format_fg(FormatColor::Red)),
+            Some(Theme::default().palette().named_fg(NamedColor::Red)),
             "the [Red] tag must color the cell"
         );
     }
@@ -392,7 +394,6 @@ mod tests {
             g: 0x38,
             b: 0x64,
         };
-        let blue = Rgb { r: 0, g: 0, b: 255 };
         let sheet = Sheet::new(
             "フォント",
             vec![vec![
@@ -400,13 +401,15 @@ mod tests {
                 CellValue::FormattedNumber {
                     value: -5.0,
                     text: "▲5".into(),
-                    color: Some(FormatColor::Red),
                 },
                 CellValue::Empty,
             ]],
         )
         .with_fills(HashMap::from([((0, 0), navy)]))
-        .with_font_colors(HashMap::from([((0, 0), white), ((0, 1), blue)]));
+        .with_text_colors(HashMap::from([
+            ((0, 0), TextColor::Literal(white)),
+            ((0, 1), TextColor::Named(NamedColor::Red)),
+        ]));
         let view = GridView {
             sheet: &sheet,
             sheet_names: vec!["フォント"],
@@ -446,12 +449,12 @@ mod tests {
         assert_eq!(
             fg_of("白"),
             Some(Color::Rgb(255, 255, 255)),
-            "the font color must reach the glyph"
+            "a literal font color must reach the glyph verbatim"
         );
         assert_eq!(
             fg_of("▲"),
-            Some(Theme::default().palette().format_fg(FormatColor::Red)),
-            "the [Red] format color beats the blue font"
+            Some(Theme::default().palette().named_fg(NamedColor::Red)),
+            "a named color goes through the theme"
         );
     }
 

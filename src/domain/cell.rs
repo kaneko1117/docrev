@@ -1,5 +1,3 @@
-use super::number_format::FormatColor;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellValue {
     Empty,
@@ -10,7 +8,6 @@ pub enum CellValue {
     FormattedNumber {
         value: f64,
         text: String,
-        color: Option<FormatColor>,
     },
     Bool(bool),
     /// `YYYY-MM-DD HH:MM:SS`, converted in the adapter.
@@ -32,12 +29,12 @@ impl CellValue {
     }
 
     /// How the workbook displays this value: a formatted number shows its
-    /// format's output, everything else follows Excel's General rules.
+    /// format's output, a bare number its shortest round-tripping form.
     pub fn display_text(&self) -> String {
         match self {
             CellValue::Empty => String::new(),
             CellValue::Text(s) | CellValue::DateTime(s) | CellValue::Error(s) => s.clone(),
-            CellValue::Number(n) => super::number_format::general(*n),
+            CellValue::Number(n) => n.to_string(),
             CellValue::FormattedNumber { text, .. } => text.clone(),
             CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
         }
@@ -55,7 +52,6 @@ mod tests {
             CellValue::FormattedNumber {
                 value: 0.15,
                 text: "15%".into(),
-                color: None,
             }
             .is_number()
         );
@@ -75,7 +71,6 @@ mod tests {
             CellValue::FormattedNumber {
                 value: 0.15,
                 text: "15%".into(),
-                color: None,
             }
             .display_text(),
             "15%",
