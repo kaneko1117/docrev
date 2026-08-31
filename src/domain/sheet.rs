@@ -67,7 +67,7 @@ pub struct Sheet {
     merges: Vec<MergedRange>,
     /// Solid cell backgrounds from the workbook, keyed by (row, col).
     fills: HashMap<(usize, usize), Rgb>,
-    /// Author-set font colors from the workbook, keyed by (row, col).
+    /// The color each cell's text takes, already resolved to one per cell.
     text_colors: HashMap<(usize, usize), TextColor>,
     /// Frozen panes from the workbook: (rows, cols) pinned while scrolling.
     frozen: (usize, usize),

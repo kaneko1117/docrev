@@ -1,5 +1,6 @@
-//! docrev's own model of a reviewable document. No IO, no dependencies
-//! on other layers, and no other format's grammar — see CLAUDE.md.
+//! docrev's own model of a reviewable document: what a document, a location
+//! and a comment are. No IO and no dependencies on other layers; what else
+//! belongs here is settled by the criterion in CLAUDE.md.
 
 pub mod anchor;
 pub mod cell;
