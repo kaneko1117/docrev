@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::domain::anchor::Anchor;
+use crate::domain::cell::CellValue;
 use crate::domain::comment::CommentThread;
 use crate::domain::document::Document;
 use crate::domain::workbook_comment::WorkbookComment;
@@ -21,6 +22,10 @@ pub struct Filter<'a> {
 pub struct CellContext {
     /// The anchored cell's displayed text; a merged anchor shows its region's.
     pub value: String,
+    /// The machine-readable value behind a formatted date/time display
+    /// (`2026-08-31 00:00:00`, `13:05:00`, elapsed `36:00:00`); `None` for
+    /// every other cell kind.
+    pub raw: Option<String>,
     /// The row's other non-empty cells as (A1 ref, displayed text), in
     /// column order — a spec sheet reads row-wise.
     pub row: Vec<(String, String)>,
@@ -92,7 +97,12 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
     let index = document.index_of(sheet)?;
     let sheet = &document.sheets()[index];
     let (row, col) = (*row as usize, *col as usize);
-    let value = sheet.display_cell(row, col).display_text();
+    let display = sheet.display_cell(row, col);
+    let value = display.display_text();
+    let raw = match display {
+        CellValue::DateTime { raw, .. } => Some(raw.clone()),
+        _ => None,
+    };
     // `value` already speaks for the whole anchored region, so every cell of
     // it is excluded from the siblings; raw cells (not display) keep other
     // merges from repeating their anchor value across the row. The lookup is
@@ -112,6 +122,7 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
         .collect();
     Some(CellContext {
         value,
+        raw,
         row: siblings,
     })
 }
@@ -319,6 +330,10 @@ mod tests {
                         CellValue::Empty,
                         CellValue::Text("隣".into()),
                     ],
+                    vec![CellValue::DateTime {
+                        text: "2026年8月31日(月)".into(),
+                        raw: "2026-08-31 00:00:00".into(),
+                    }],
                 ],
             )
             .with_merges(vec![MergedRange {
@@ -377,6 +392,22 @@ mod tests {
             vec![("C3".to_string(), "隣".to_string())],
             "the covered cell is not repeated as a sibling"
         );
+    }
+
+    #[test]
+    fn a_date_anchor_carries_its_machine_readable_raw() {
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!A4");
+        let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert_eq!(context.value, "2026年8月31日(月)");
+        assert_eq!(context.raw.as_deref(), Some("2026-08-31 00:00:00"));
+
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!C2");
+        let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert_eq!(context.raw, None, "non-date cells carry no raw");
     }
 
     #[test]

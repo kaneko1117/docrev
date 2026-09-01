@@ -199,6 +199,30 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
             '/' if section.has_number => return None, // fractions
             '@' => return None,                       // text composition
             'y' | 'Y' | 'm' | 'M' | 'd' | 'D' | 'h' | 'H' | 's' | 'S' | 'g' | 'G' | 'e' | 'E' => {
+                // the word `General` must be seen whole before its letters
+                // are read as era codes (`General;[Red]-General` is real)
+                if c.eq_ignore_ascii_case(&'g') {
+                    let mut look = chars.clone();
+                    let general = "eneral".chars().all(|want| {
+                        look.next()
+                            .is_some_and(|got| got.eq_ignore_ascii_case(&want))
+                    });
+                    if general {
+                        for _ in 0..6 {
+                            chars.next();
+                        }
+                        end_cluster(
+                            &mut in_number,
+                            &mut number_done,
+                            &mut section.scale,
+                            &mut pending_commas,
+                        );
+                        flush(&mut literal, &mut tokens);
+                        tokens.push(Token::General);
+                        section.has_general = true;
+                        continue;
+                    }
+                }
                 let mut run = 1;
                 while chars.peek().is_some_and(|p| p.eq_ignore_ascii_case(&c)) {
                     chars.next();
@@ -313,6 +337,11 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
     // digits and date parts in one section (`0.0"日"yyyy`, `ss.00`) are out
     // of the subset — no faithful rendering exists for the pair
     if section.has_date && section.has_number {
+        return None;
+    }
+    // `General` composes with nothing — a section mixing it with digits or
+    // date parts is outside the subset
+    if section.has_general && (section.has_number || section.has_date) {
         return None;
     }
     // Excel renders at most 30 decimal places, and far beyond that the

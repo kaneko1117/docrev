@@ -851,10 +851,11 @@ fn parse_color_attrs(
     Some(apply_tint(base, tint))
 }
 
-/// The numeric subset of the reserved built-in formats (ECMA-376 §18.8.30);
-/// these are referenced by id only and never written into styles.xml.
-/// Date/time ids (14-22, 45-48) and text (49) are intentionally absent so
-/// those cells keep their existing rendering.
+/// The reserved built-in formats (ECMA-376 §18.8.30); these are referenced
+/// by id only and never written into styles.xml. Ids 14-22 and the locale
+/// block 27-36 are locale-dependent — docrev targets Japanese business
+/// sheets, so they carry the ja-JP renderings. Scientific (11, 48) and
+/// text (49) stay absent so those cells keep their existing rendering.
 fn builtin_format(id: u32) -> Option<&'static str> {
     Some(match id {
         1 => "0",
@@ -863,6 +864,25 @@ fn builtin_format(id: u32) -> Option<&'static str> {
         4 => "#,##0.00",
         9 => "0%",
         10 => "0.00%",
+        14 => "yyyy/m/d",
+        15 => "d-mmm-yy",
+        16 => "d-mmm",
+        17 => "mmm-yy",
+        18 => "h:mm AM/PM",
+        19 => "h:mm:ss AM/PM",
+        20 => "h:mm",
+        21 => "h:mm:ss",
+        22 => "yyyy/m/d h:mm",
+        27 => "[$-411]ge.m.d",
+        28 => "[$-411]ggge\"年\"m\"月\"d\"日\"",
+        29 => "[$-411]ggge\"年\"m\"月\"d\"日\"",
+        30 => "m/d/yy",
+        31 => "yyyy\"年\"m\"月\"d\"日\"",
+        32 => "h\"時\"mm\"分\"",
+        33 => "h\"時\"mm\"分\"ss\"秒\"",
+        34 => "yyyy\"年\"m\"月\"",
+        35 => "m\"月\"d\"日\"",
+        36 => "[$-411]ge.m.d",
         37 => "#,##0;(#,##0)",
         38 => "#,##0;[Red](#,##0)",
         39 => "#,##0.00;(#,##0.00)",
@@ -871,6 +891,10 @@ fn builtin_format(id: u32) -> Option<&'static str> {
         42 => r#"_-"$"* #,##0_-;-"$"* #,##0_-;_-"$"* "-"_-;_-@_-"#,
         43 => r#"_-* #,##0.00_-;-* #,##0.00_-;_-* "-"??_-;_-@_-"#,
         44 => r#"_-"$"* #,##0.00_-;-"$"* #,##0.00_-;_-"$"* "-"??_-;_-@_-"#,
+        45 => "mm:ss",
+        46 => "[h]:mm:ss",
+        // 47 (`mm:ss.0`) uses fractional seconds, which the engine degrades
+        // to the fallback anyway — resolving it would change nothing
         _ => return None,
     })
 }
@@ -1177,10 +1201,17 @@ mod tests {
     }
 
     #[test]
-    fn date_builtins_are_not_resolved() {
+    fn date_builtins_resolve_to_their_japanese_renderings() {
+        // the standard picker stores these ids with no format code at all,
+        // so the table is the only route to a formatted date (#97)
         for id in 14..=22 {
-            assert_eq!(builtin_format(id), None, "id {id} must stay unresolved");
+            assert!(builtin_format(id).is_some(), "id {id} must resolve");
         }
+        assert_eq!(builtin_format(14), Some("yyyy/m/d"));
+        assert_eq!(builtin_format(28), Some("[$-411]ggge\"年\"m\"月\"d\"日\""));
+        assert_eq!(builtin_format(46), Some("[h]:mm:ss"));
+        assert_eq!(builtin_format(47), None, "fractional seconds stay out");
+        assert_eq!(builtin_format(48), None, "scientific stays unresolved");
         assert_eq!(builtin_format(49), None, "text format must stay unresolved");
     }
 

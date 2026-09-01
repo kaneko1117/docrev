@@ -74,7 +74,7 @@ pub(super) fn render_datetime(section: &Section, parts: &DateTimeParts) -> Strin
                 continue;
             }
             // digit clusters never coexist with date tokens (parse rejects)
-            Token::Number => continue,
+            Token::Number | Token::General => continue,
             Token::Date(date) => date,
         };
         match date {
@@ -97,8 +97,24 @@ pub(super) fn render_datetime(section: &Section, parts: &DateTimeParts) -> Strin
                 let hour = if section.has_ampm { hour12 } else { parts.hour };
                 push_padded(&mut out, u64::from(hour), *pad);
             }
-            DateToken::Minute { pad } => push_padded(&mut out, u64::from(parts.minute), *pad),
-            DateToken::Second { pad } => push_padded(&mut out, u64::from(parts.second), *pad),
+            // in elapsed sections the remainders come from the serial:
+            // negative 1904-epoch durations saturate the calendar parts to 0
+            DateToken::Minute { pad } => {
+                let minute = if has_elapsed {
+                    (total / 60) % 60
+                } else {
+                    u64::from(parts.minute)
+                };
+                push_padded(&mut out, minute, *pad);
+            }
+            DateToken::Second { pad } => {
+                let second = if has_elapsed {
+                    total % 60
+                } else {
+                    u64::from(parts.second)
+                };
+                push_padded(&mut out, second, *pad);
+            }
             DateToken::AmPm => out.push_str(if parts.hour < 12 { "AM" } else { "PM" }),
             DateToken::EraLetter => out.push(era.letter),
             DateToken::EraAbbr => out.push_str(era.abbr),

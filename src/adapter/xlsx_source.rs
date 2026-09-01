@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use calamine::{Data, Range};
+use calamine::{Data, ExcelDateTime, ExcelDateTimeType, Range};
 
 use crate::app::error::LoadError;
 use crate::app::ports::DocumentSource;
@@ -9,6 +9,7 @@ use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
 use crate::domain::sheet::{MergedRange, Rgb, Sheet, TextColor};
 use crate::domain::workbook_comment::{WorkbookComment, WorkbookReply};
+use crate::infra::datetime::{DateTimeKind, DateTimeParts};
 use crate::infra::number_format::NumberFormat;
 use crate::infra::{xlsx, xlsx_meta};
 
@@ -20,6 +21,8 @@ impl DocumentSource for XlsxSource {
             xlsx::ReadError::Open { .. } => LoadError::Open(e.to_string()),
             xlsx::ReadError::Sheet { .. } => LoadError::Sheet(e.to_string()),
         })?;
+        let is_1904 = raw.is_1904;
+        let raw = raw.sheets;
         // widths, formats and fills are cosmetic — a parse failure must not
         // block opening; cells then simply show their raw, unpainted values
         let meta = xlsx_meta::read_meta(path);
@@ -62,6 +65,7 @@ impl DocumentSource for XlsxSource {
                     cells,
                     &styles.styles,
                     &formats,
+                    is_1904,
                 )
                 .with_merges(merges)
                 .with_frozen(frozen_rows, frozen_cols)
@@ -141,19 +145,35 @@ fn to_sheet(
     cells: Option<&HashMap<(u32, u32), usize>>,
     styles: &[xlsx_meta::CellStyle],
     formats: &[Option<NumberFormat>],
+    is_1904: bool,
 ) -> Sheet {
     let Some((start_row, start_col)) = range.start() else {
         return Sheet::new(name, Vec::new());
     };
     let mut rows: Vec<Vec<CellValue>> = Vec::with_capacity(start_row as usize + range.height());
     rows.resize_with(start_row as usize, Vec::new);
-    for raw in range.rows() {
+    // calendar parts stay beside the grid so apply_styles can render a date
+    // cell through its format; the domain keeps only the finished strings
+    let mut date_parts: HashMap<(usize, usize), DateTimeParts> = HashMap::new();
+    for (r, raw) in range.rows().enumerate() {
         let mut row = vec![CellValue::Empty; start_col as usize];
-        row.extend(raw.iter().map(to_cell));
+        for (c, data) in raw.iter().enumerate() {
+            if let Data::DateTime(dt) = data {
+                let parts = to_parts(dt);
+                date_parts.insert((start_row as usize + r, start_col as usize + c), parts);
+                let text = parts.fallback_text();
+                row.push(CellValue::DateTime {
+                    raw: text.clone(),
+                    text,
+                });
+            } else {
+                row.push(to_cell(data));
+            }
+        }
         rows.push(row);
     }
     let (fills, text_colors) = match cells {
-        Some(cells) => apply_styles(&mut rows, cells, styles, formats),
+        Some(cells) => apply_styles(&mut rows, cells, styles, formats, &date_parts, is_1904),
         None => (HashMap::new(), HashMap::new()),
     };
     Sheet::new(name, rows)
@@ -165,14 +185,16 @@ type Fills = HashMap<(usize, usize), Rgb>;
 type TextColors = HashMap<(usize, usize), TextColor>;
 
 /// Applies workbook styles to the freshly built grid. Numbers with a format
-/// gain their display text (date cells were already converted by calamine
-/// and text/bool cells have no numeric value, so only `Number` is touched);
-/// fills and text colors are collected for the viewer, empty cells included.
+/// gain their display text, date cells render through their format's date
+/// tokens (an unsupported format keeps the fallback text); fills and text
+/// colors are collected for the viewer, empty cells included.
 fn apply_styles(
     rows: &mut [Vec<CellValue>],
     cells: &HashMap<(u32, u32), usize>,
     styles: &[xlsx_meta::CellStyle],
     formats: &[Option<NumberFormat>],
+    date_parts: &HashMap<(usize, usize), DateTimeParts>,
+    is_1904: bool,
 ) -> (Fills, TextColors) {
     let mut fills = HashMap::new();
     let mut text_colors = HashMap::new();
@@ -185,19 +207,45 @@ fn apply_styles(
             fills.insert((row, col), Rgb { r, g, b });
         }
         // a named color only exists once the format actually rendered a
-        // number: a `[Red]` code on a text cell colors nothing, as in Excel
+        // value: a `[Red]` code on a text cell colors nothing, as in Excel
         let mut named = None;
         if let Some(Some(format)) = formats.get(idx)
             && !format.is_general()
             && let Some(cell) = rows.get_mut(row).and_then(|r| r.get_mut(col))
-            && let CellValue::Number(value) = *cell
         {
-            let formatted = format.format(value);
-            named = formatted.color;
-            *cell = CellValue::FormattedNumber {
-                value,
-                text: formatted.text,
-            };
+            match cell {
+                // calamine only types a cell as a date when it recognizes
+                // the format; the ja locale builtin ids (27-36) are not in
+                // its table, so those cells arrive as plain numbers and are
+                // promoted here from their serial value
+                CellValue::Number(value) if format.is_date() => {
+                    if let Some(parts) = serial_parts(*value, is_1904) {
+                        let formatted = format.format_datetime(&parts);
+                        named = formatted.color;
+                        *cell = CellValue::DateTime {
+                            text: formatted.text,
+                            raw: parts.fallback_text(),
+                        };
+                    }
+                }
+                CellValue::Number(value) => {
+                    let formatted = format.format(*value);
+                    named = formatted.color;
+                    *cell = CellValue::FormattedNumber {
+                        value: *value,
+                        text: formatted.text,
+                    };
+                }
+                // `raw` keeps the fallback rendering for agents
+                CellValue::DateTime { text, .. } => {
+                    if let Some(parts) = date_parts.get(&(row, col)) {
+                        let formatted = format.format_datetime(parts);
+                        named = formatted.color;
+                        *text = formatted.text;
+                    }
+                }
+                _ => {}
+            }
         }
         // Excel's precedence: a color the number format names beats the
         // cell's font color. The workbook-default font was already filtered
@@ -214,6 +262,7 @@ fn apply_styles(
     (fills, text_colors)
 }
 
+/// `Data::DateTime` is handled by the caller, which also needs the parts.
 fn to_cell(data: &Data) -> CellValue {
     match data {
         Data::Empty => CellValue::Empty,
@@ -221,13 +270,58 @@ fn to_cell(data: &Data) -> CellValue {
         Data::Float(f) => CellValue::Number(*f),
         Data::Int(i) => CellValue::Number(*i as f64),
         Data::Bool(b) => CellValue::Bool(*b),
-        Data::DateTime(dt) => match dt.as_datetime() {
-            Some(t) => CellValue::DateTime(t.to_string()),
-            None => CellValue::Number(dt.as_f64()),
+        Data::DateTime(dt) => {
+            let text = to_parts(dt).fallback_text();
+            CellValue::DateTime {
+                raw: text.clone(),
+                text,
+            }
+        }
+        Data::DateTimeIso(s) => CellValue::DateTime {
+            text: s.clone(),
+            raw: s.clone(),
         },
-        Data::DateTimeIso(s) => CellValue::DateTime(s.clone()),
         Data::DurationIso(s) => CellValue::Text(s.clone()),
         Data::Error(e) => CellValue::Error(e.to_string()),
+    }
+}
+
+/// A plain number wearing a date format: valid serials (Excel's range,
+/// 0 to 9999-12-31) become calendar parts, anything else stays a number.
+fn serial_parts(value: f64, is_1904: bool) -> Option<DateTimeParts> {
+    const MAX_SERIAL: f64 = 2_958_465.0;
+    if !(0.0..=MAX_SERIAL).contains(&value) {
+        return None;
+    }
+    Some(to_parts(&ExcelDateTime::new(
+        value,
+        ExcelDateTimeType::DateTime,
+        is_1904,
+    )))
+}
+
+/// Splits a workbook date into calendar parts; calamine has already absorbed
+/// the 1904 epoch and the 1900 leap-year quirk. Sub-second precision is
+/// dropped — xlsx cells carry whole seconds in practice.
+fn to_parts(dt: &ExcelDateTime) -> DateTimeParts {
+    let (year, month, day, hour, minute, second, _milli) = dt.to_ymd_hms_milli();
+    let serial = dt.as_f64();
+    let kind = if dt.is_duration() {
+        DateTimeKind::Duration
+    } else if serial < 1.0 {
+        DateTimeKind::TimeOnly
+    } else {
+        DateTimeKind::DateTime
+    };
+    DateTimeParts {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        serial,
+        kind,
     }
 }
 
@@ -307,7 +401,8 @@ mod tests {
             ((8, 25), 0), // outside the grid: must not panic
         ]
         .into();
-        let (fills, text_colors) = apply_styles(&mut rows, &cells, &styles, &formats);
+        let (fills, text_colors) =
+            apply_styles(&mut rows, &cells, &styles, &formats, &HashMap::new(), false);
         assert_eq!(
             rows[0][0],
             CellValue::FormattedNumber {
@@ -369,5 +464,182 @@ mod tests {
             None,
             "a format with no color and no font leaves the cell uncolored"
         );
+    }
+
+    fn date_cell(text: &str) -> CellValue {
+        CellValue::DateTime {
+            text: text.into(),
+            raw: text.into(),
+        }
+    }
+
+    #[test]
+    fn date_cells_render_through_their_format_and_keep_raw() {
+        let full = DateTimeParts {
+            year: 2026,
+            month: 8,
+            day: 31,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            serial: 46_265.0,
+            kind: DateTimeKind::DateTime,
+        };
+        let time_only = DateTimeParts {
+            year: 1899,
+            month: 12,
+            day: 31,
+            hour: 13,
+            minute: 5,
+            second: 0,
+            serial: 47_100.0 / 86_400.0,
+            kind: DateTimeKind::TimeOnly,
+        };
+        let mut rows = vec![vec![
+            date_cell("2026-08-31 00:00:00"),
+            date_cell("13:05:00"),
+            date_cell("2026-08-31 00:00:00"),
+        ]];
+        let styles = vec![
+            xlsx_meta::CellStyle {
+                format: Some("yyyy\"年\"m\"月\"d\"日\"(aaa)".into()),
+                fill: None,
+                font: None,
+            },
+            // fractional seconds are outside the engine's subset
+            xlsx_meta::CellStyle {
+                format: Some("mm:ss.00".into()),
+                fill: None,
+                font: None,
+            },
+            // a numeric format on a date cell paints the serial, like Excel
+            xlsx_meta::CellStyle {
+                format: Some("0.00".into()),
+                fill: None,
+                font: None,
+            },
+        ];
+        let formats: Vec<Option<NumberFormat>> = styles
+            .iter()
+            .map(|s| s.format.as_deref().map(NumberFormat::parse))
+            .collect();
+        let date_parts = HashMap::from([
+            ((0usize, 0usize), full),
+            ((0, 1), time_only),
+            ((0, 2), full),
+        ]);
+        let cells = [((0u32, 0u32), 0usize), ((0, 1), 1), ((0, 2), 2)].into();
+        apply_styles(&mut rows, &cells, &styles, &formats, &date_parts, false);
+        assert_eq!(
+            rows[0][0],
+            CellValue::DateTime {
+                text: "2026年8月31日(月)".into(),
+                raw: "2026-08-31 00:00:00".into(),
+            },
+            "the format renders, raw keeps the machine-readable value"
+        );
+        assert_eq!(
+            rows[0][1],
+            date_cell("13:05:00"),
+            "an unsupported format keeps the fallback — no epoch date leaks"
+        );
+        assert_eq!(
+            rows[0][2],
+            CellValue::DateTime {
+                text: "46265.00".into(),
+                raw: "2026-08-31 00:00:00".into(),
+            },
+            "a numeric format paints the serial value"
+        );
+    }
+
+    #[test]
+    fn a_number_wearing_a_date_format_is_promoted_to_a_date() {
+        // ja builtin ids (27-36) are unknown to calamine, so the cell
+        // arrives as a plain number and only the format says "date"
+        let mut rows = vec![vec![
+            CellValue::Number(46_265.0),
+            CellValue::Number(-5.0),
+            CellValue::Number(3.0e9),
+        ]];
+        let styles = vec![xlsx_meta::CellStyle {
+            format: Some("[$-411]ggge\"年\"m\"月\"d\"日\"".into()),
+            fill: None,
+            font: None,
+        }];
+        let formats: Vec<Option<NumberFormat>> = styles
+            .iter()
+            .map(|s| s.format.as_deref().map(NumberFormat::parse))
+            .collect();
+        let cells = [((0u32, 0u32), 0usize), ((0, 1), 0), ((0, 2), 0)].into();
+        apply_styles(&mut rows, &cells, &styles, &formats, &HashMap::new(), false);
+        assert_eq!(
+            rows[0][0],
+            CellValue::DateTime {
+                text: "令和8年8月31日".into(),
+                raw: "2026-08-31 00:00:00".into(),
+            },
+            "promoted from the serial value"
+        );
+        assert_eq!(
+            rows[0][1],
+            CellValue::Number(-5.0),
+            "a value no calendar can hold stays a number"
+        );
+        assert_eq!(
+            rows[0][2],
+            CellValue::Number(3.0e9),
+            "beyond Excel's last date (9999-12-31) stays a number"
+        );
+    }
+
+    #[test]
+    fn a_general_sectioned_format_never_promotes_a_number() {
+        // regression: `General`'s G and e once read as era tokens, turning
+        // 46265 into "R8n8ral" and the cell into a fake date
+        let mut rows = vec![vec![CellValue::Number(46_265.0)]];
+        let styles = vec![xlsx_meta::CellStyle {
+            format: Some("General;[Red]-General".into()),
+            fill: None,
+            font: None,
+        }];
+        let formats: Vec<Option<NumberFormat>> = styles
+            .iter()
+            .map(|s| s.format.as_deref().map(NumberFormat::parse))
+            .collect();
+        let cells = [((0u32, 0u32), 0usize)].into();
+        apply_styles(&mut rows, &cells, &styles, &formats, &HashMap::new(), false);
+        assert_eq!(
+            rows[0][0],
+            CellValue::FormattedNumber {
+                value: 46_265.0,
+                text: "46265".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn to_parts_classifies_dates_times_and_durations() {
+        use calamine::ExcelDateTimeType;
+
+        let noon = ExcelDateTime::new(1.5, ExcelDateTimeType::DateTime, false);
+        let parts = to_parts(&noon);
+        assert_eq!(
+            (parts.year, parts.month, parts.day),
+            (1900, 1, 1),
+            "calamine owns the serial-to-calendar conversion"
+        );
+        assert_eq!(parts.kind, DateTimeKind::DateTime);
+        assert_eq!(parts.fallback_text(), "1900-01-01 12:00:00");
+
+        let afternoon = ExcelDateTime::new(47_100.0 / 86_400.0, ExcelDateTimeType::DateTime, false);
+        let parts = to_parts(&afternoon);
+        assert_eq!(parts.kind, DateTimeKind::TimeOnly);
+        assert_eq!(parts.fallback_text(), "13:05:00");
+
+        let elapsed = ExcelDateTime::new(1.5, ExcelDateTimeType::TimeDelta, false);
+        let parts = to_parts(&elapsed);
+        assert_eq!(parts.kind, DateTimeKind::Duration);
+        assert_eq!(parts.fallback_text(), "36:00:00");
     }
 }
