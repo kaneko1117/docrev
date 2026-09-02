@@ -1,12 +1,10 @@
-//! Per-worksheet attributes: `<cols>` widths and the frozen `<pane>`.
-
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
 use super::MetaError;
 use super::archive::attr_value;
 
-/// 1-based column range with its Excel width (in characters).
+/// 1-based inclusive column range; width in characters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnWidth {
     pub min: u32,
@@ -14,9 +12,7 @@ pub struct ColumnWidth {
     pub width: f64,
 }
 
-/// The first frozen `<pane>`. Non-frozen splits measure their offsets in
-/// twips, not cells, so anything without a frozen state is ignored; frozen
-/// splits carry whole cell counts in `xSplit`/`ySplit`.
+/// (rows, cols) of the first frozen `<pane>`; non-frozen splits are in twips, not cells, and are ignored.
 pub(super) fn parse_pane(xml: &str) -> Result<Option<(usize, usize)>, MetaError> {
     let mut reader = Reader::from_str(xml);
     loop {
@@ -39,7 +35,7 @@ pub(super) fn parse_pane(xml: &str) -> Result<Option<(usize, usize)>, MetaError>
                 }
                 return Ok(None);
             }
-            // panes live in <sheetViews> at the top; stop before cell data
+            // panes precede sheetData
             Event::Start(e) if e.local_name().as_ref() == b"sheetData" => return Ok(None),
             Event::Eof => return Ok(None),
             _ => {}
@@ -47,7 +43,6 @@ pub(super) fn parse_pane(xml: &str) -> Result<Option<(usize, usize)>, MetaError>
     }
 }
 
-/// `<col min="1" max="1" width="20.5"/>` entries from a sheet XML.
 pub(super) fn parse_cols(xml: &str) -> Result<Vec<ColumnWidth>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut out = Vec::new();

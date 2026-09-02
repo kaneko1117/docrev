@@ -1,5 +1,3 @@
-//! Numeric rendering: digit clusters, grouping, scaling, padding.
-
 use super::{Section, Token, general};
 
 pub(super) fn render(section: &Section, value: f64, drop_sign: bool) -> String {
@@ -22,7 +20,7 @@ pub(super) fn render(section: &Section, value: f64, drop_sign: bool) -> String {
             Token::Literal(text) => out.push_str(text),
             Token::Number => out.push_str(&digits),
             Token::General => out.push_str(&general(v.abs())),
-            // date sections never reach here (format() showed the raw value)
+            // format() never sends a date section here
             Token::Date(_) => {}
         }
     }

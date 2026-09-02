@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-/// Missing file is `Ok(None)` — a document without a sidecar is normal.
+/// Missing file is `Ok(None)`.
 pub fn read_optional(path: &Path) -> io::Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -11,16 +11,14 @@ pub fn read_optional(path: &Path) -> io::Result<Option<String>> {
     }
 }
 
-/// Advisory lock for sidecar read-modify-write cycles, backed by a
-/// `<sidecar>.lock` file. Released on drop.
+/// Advisory lock backed by `<sidecar>.lock`; released on drop.
 pub struct SidecarLock {
     lock: fd_lock::RwLock<fs::File>,
 }
 
 impl SidecarLock {
     pub fn acquire(lock_path: &Path) -> io::Result<Self> {
-        // read+write, not append: Windows' LockFileEx denies handles that
-        // carry only append permission
+        // read+write, not append: Windows' LockFileEx rejects append-only handles
         let file = fs::OpenOptions::new()
             .create(true)
             .read(true)
@@ -38,10 +36,7 @@ impl SidecarLock {
     }
 }
 
-/// Sibling temp file + rename, so readers never observe a half-written file.
-/// The temp name is unique per write so concurrent writers cannot clobber
-/// each other's temp file (the last rename still wins; writers needing
-/// exclusion hold the sidecar lock).
+/// Sibling temp file + rename; the last rename wins, exclusion is the lock's job.
 pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(

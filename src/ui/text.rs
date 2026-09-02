@@ -2,14 +2,11 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::domain::cell::CellValue;
 
-/// The workbook's display text, made safe for a terminal line.
 pub(crate) fn cell_text(cell: &CellValue) -> String {
     sanitize(&cell.display_text())
 }
 
-/// The workbook's display text as grid lines: one per line break the
-/// author typed (Alt+Enter), each wrapped to `width` in turn. `\r\n` and a
-/// lone `\r` count as one break, like Excel treats them.
+/// One line per `\n`, `\r\n` or lone `\r`, each wrapped to `width`.
 pub(crate) fn cell_lines(cell: &CellValue, width: usize) -> Vec<String> {
     cell.display_text()
         .replace("\r\n", "\n")
@@ -19,17 +16,15 @@ pub(crate) fn cell_lines(cell: &CellValue, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// Control characters would break a terminal line; callers that want
-/// line breaks honored split on them first (see `cell_lines`).
+/// Callers that want line breaks honored split on them first.
 pub(crate) fn sanitize(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
 
-/// Breaks text into display-width-sized lines, char by char (CJK-safe).
-/// A char wider than `width` still gets a line of its own so the result
-/// always makes progress; empty text is one empty line.
+/// A char wider than `width` still gets a line of its own so the loop makes progress; empty text is
+/// one empty line.
 pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![String::new()];
@@ -82,8 +77,7 @@ pub(crate) fn center(text: &str, width: usize) -> String {
     format!("{}{text}{}", " ".repeat(left), " ".repeat(pad - left))
 }
 
-/// A query line with its cursor block, clipped from the front: when the
-/// query outgrows the field, the end being typed is what must stay visible.
+/// Clipped from the front; the cursor block is always kept.
 pub(crate) fn query_line(query: &str, width: usize) -> String {
     let mut out = String::from("█");
     let mut used = 1;
@@ -121,7 +115,6 @@ mod tests {
         assert_eq!(query_line("abc", 10), "abc█");
         assert_eq!(query_line("", 10), "█");
         assert_eq!(query_line("abcdefgh", 5), "efgh█", "the tail stays");
-        // CJK: a char that would half-fit is dropped whole
         assert_eq!(query_line("あいうえお", 5), "えお█");
         assert_eq!(query_line("abc", 0), "█", "never empty, renderer clips");
     }
@@ -130,12 +123,10 @@ mod tests {
     fn cell_lines_break_where_the_author_did_then_wrap() {
         let cell = CellValue::Text("行1\n行2が長い\n行3".into());
         assert_eq!(cell_lines(&cell, 8), vec!["行1", "行2が長", "い", "行3"]);
-        // CRLF and a bare CR are one break each, never a blank line
         assert_eq!(
             cell_lines(&CellValue::Text("a\r\nb\rc".into()), 8),
             vec!["a", "b", "c"]
         );
-        // other control characters still become a space on the same line
         assert_eq!(cell_lines(&CellValue::Text("a\tb".into()), 8), vec!["a b"]);
         assert_eq!(cell_lines(&CellValue::Empty, 8), vec![""]);
     }
@@ -145,8 +136,6 @@ mod tests {
         assert_eq!(wrap("abcdef", 4), vec!["abcd", "ef"]);
         // CJK chars are 2 cells wide: 4 cells fit two of them
         assert_eq!(wrap("あいうえお", 4), vec!["あい", "うえ", "お"]);
-        // a wide char never splits: 「あ」(2 cells) does not fit next to
-        // 「い」 in 3 cells, so it moves whole to the next line
         assert_eq!(wrap("いあ", 3), vec!["い", "あ"]);
         assert_eq!(wrap("いいあ", 3), vec!["い", "い", "あ"]);
         assert_eq!(wrap("", 4), vec![""]);

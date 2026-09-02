@@ -1,5 +1,3 @@
-//! The comment editor mode: building the buffer and submitting it.
-
 use crate::domain::anchor::Anchor;
 
 use super::{EditTarget, Event, Mode, Notice, Viewer};
@@ -17,12 +15,11 @@ impl Viewer {
             }
             Event::CancelEdit => self.mode = Mode::Grid,
             Event::Submit => self.submit(),
-            _ => {} // navigation is ignored while editing
+            _ => {}
         }
     }
 
-    /// Empty input closes the editor without saving. A failed save keeps the
-    /// editor open (the text is not lost) and shows a notice.
+    /// Empty input closes without saving; a failed save keeps the editor open.
     fn submit(&mut self) {
         let Mode::Editing { target, buffer } = &self.mode else {
             return;
@@ -34,8 +31,7 @@ impl Viewer {
         }
         let result = match target {
             EditTarget::NewThread => {
-                // inside a merged region, anchor at its top-left so the
-                // comment is one with the visually single cell
+                // a merged region anchors at its top-left
                 let (row, col) = self.cursor();
                 let (row, col) = match self.sheet().merge_at(row, col) {
                     Some(merge) => merge.anchor(),
@@ -53,10 +49,9 @@ impl Viewer {
                     None => self.comments.push(thread),
                 }
                 self.mode = Mode::Grid;
-                self.notice = None; // a stale "save failed" would lie now
-                // deliberately NOT refreshing `revision` here: our own write
-                // makes the next tick reload, which is how a write an agent
-                // made while the user was typing gets picked up
+                self.notice = None;
+                // `revision` is deliberately not refreshed: the next tick must
+                // reload, or a write that landed while typing is lost
             }
             Err(e) => self.notice = Some(Notice::Save(format!("save failed: {e}"))),
         }
@@ -201,8 +196,6 @@ mod tests {
             ]);
         let doc = Document::new(vec![sheet]);
 
-        // a thread anchored on an interior cell (B1) must be discoverable
-        // from anywhere in the region
         let comments = vec![thread("one", 0, 1, false)];
         let store = RecordingStore::default();
         let log = store.log.clone();
@@ -211,7 +204,6 @@ mod tests {
         v.apply(Event::Move { rows: 0, cols: 2 });
         assert!(v.thread_at_cursor().is_some(), "found from C1");
 
-        // `c` on the interior cell replies to that thread instead of forking
         v.apply(Event::StartComment);
         assert!(matches!(
             v.mode(),
@@ -222,9 +214,8 @@ mod tests {
         ));
         v.apply(Event::CancelEdit);
 
-        // a new thread from an interior cell anchors at the region's top-left
         v.apply(Event::Move { rows: 1, cols: 0 });
-        v.apply(Event::Move { rows: -1, cols: -1 }); // B1 (interior)
+        v.apply(Event::Move { rows: -1, cols: -1 }); // B1
         assert_eq!(v.cursor(), (0, 1));
         v.apply(Event::StartReply);
         v.apply(Event::CancelEdit);
@@ -241,7 +232,7 @@ mod tests {
         let store2 = RecordingStore::default();
         let log2 = store2.log.clone();
         let mut v2 = Viewer::from_document(doc2, Vec::new(), None, None, Box::new(store2)).unwrap();
-        v2.apply(Event::Move { rows: 0, cols: 1 }); // B1, interior, no thread yet
+        v2.apply(Event::Move { rows: 0, cols: 1 }); // B1
         v2.apply(Event::StartComment);
         type_text(&mut v2, "on merge");
         v2.apply(Event::Submit);
@@ -253,8 +244,6 @@ mod tests {
         drop(log);
     }
 
-    /// The review's headline finding: an agent writing while the user typed
-    /// used to be stamped as "already seen" by the save, hiding it forever.
     #[test]
     fn a_save_does_not_swallow_an_agents_concurrent_write() {
         #[derive(Clone, Default)]
@@ -305,11 +294,9 @@ mod tests {
         let shared = store.clone();
         let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
 
-        // the user starts typing; no tick fires while keys keep arriving
         v.apply(Event::StartComment);
         type_text(&mut v, "mine");
 
-        // an agent writes to the same sidecar mid-typing
         shared.threads.borrow_mut().push(thread("one", 2, 2, false));
         *shared.revision.borrow_mut() += 1;
 
@@ -325,8 +312,6 @@ mod tests {
         );
     }
 
-    /// The user answers a thread the agent resolved mid-composition.
-    /// The reply must come back into view rather than vanish.
     #[test]
     fn replying_to_a_thread_resolved_mid_composition_reopens_it() {
         #[derive(Clone, Default)]
@@ -365,7 +350,7 @@ mod tests {
                     body: body.into(),
                     created_at: "2026-08-15T00:00:00Z".into(),
                 });
-                t.resolved = false; // the store's contract
+                t.resolved = false;
                 *self.revision.borrow_mut() += 1;
                 Ok(t.clone())
             }
@@ -387,7 +372,6 @@ mod tests {
         v.apply(Event::StartReply);
         type_text(&mut v, "actually, no");
 
-        // the agent resolves it while the user is still typing
         shared.threads.borrow_mut()[0].resolved = true;
         *shared.revision.borrow_mut() += 1;
 
@@ -444,7 +428,6 @@ mod tests {
         v.apply(Event::Submit);
         assert!(v.notice().unwrap().contains("save failed"));
 
-        // an unrelated agent write must not make the warning disappear
         *shared.revision.borrow_mut() += 1;
         v.apply(Event::Tick);
         assert!(

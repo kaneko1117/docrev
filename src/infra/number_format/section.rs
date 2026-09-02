@@ -1,14 +1,12 @@
-//! One `;`-delimited section: the tokenizer and its tag/cluster helpers.
-
 use crate::domain::sheet::NamedColor;
 
 use super::{DateToken, Section, Token};
 
 enum Tag {
     Color(NamedColor),
-    /// Recognized but not rendered — stripped from the output.
+    /// Recognized but not rendered.
     StripOnly,
-    /// `[$¥-411]` locale currency: the symbol becomes a literal.
+    /// `[$¥-411]`: the symbol becomes a literal.
     Currency(String),
     Unsupported,
 }
@@ -19,7 +17,7 @@ fn classify_tag(tag: &str) -> Tag {
         return Tag::Currency(symbol.to_string());
     }
     let lowered = tag.to_ascii_lowercase();
-    // indexed palette colors ([Color 5] etc.) — recognized, not rendered
+    // [Color 5] etc.
     if let Some(rest) = lowered.strip_prefix("color") {
         if rest.trim().parse::<u8>().is_ok() {
             return Tag::StripOnly;
@@ -42,13 +40,13 @@ fn end_cluster(in_number: &mut bool, number_done: &mut bool, scale: &mut u32, pe
     if *in_number {
         *in_number = false;
         *number_done = true;
-        // commas not followed by more digits were trailing scalers
+        // commas not followed by digits are scalers
         *scale += *pending;
         *pending = 0;
     }
 }
 
-/// `None` = the section uses something outside our subset.
+/// `None`: outside the subset.
 pub(super) fn parse_section(code: &str) -> Option<Section> {
     let mut section = Section::default();
     let mut tokens = Vec::new();
@@ -125,7 +123,7 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
                 );
                 literal.push(chars.next()?);
             }
-            // `_x` reserves the width of x (render a space), `*x` is a fill
+            // `_x` renders a space, `*x` is a fill
             '_' => {
                 end_cluster(
                     &mut in_number,
@@ -199,8 +197,7 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
             '/' if section.has_number => return None, // fractions
             '@' => return None,                       // text composition
             'y' | 'Y' | 'm' | 'M' | 'd' | 'D' | 'h' | 'H' | 's' | 'S' | 'g' | 'G' | 'e' | 'E' => {
-                // the word `General` must be seen whole before its letters
-                // are read as era codes (`General;[Red]-General` is real)
+                // `General` must lex whole before its letters read as era codes
                 if c.eq_ignore_ascii_case(&'g') {
                     let mut look = chars.clone();
                     let general = "eneral".chars().all(|want| {
@@ -274,7 +271,6 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
                     &mut section.scale,
                     &mut pending_commas,
                 );
-                // the one multi-letter token whose letters differ: AM/PM
                 let mut look = chars.clone();
                 let ampm = ['m', '/', 'p', 'm'].iter().all(|&want| {
                     look.next()
@@ -290,8 +286,7 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
                     section.has_ampm = true;
                     continue;
                 }
-                // ECMA-376's `A/P` half-token is outside the subset — degrade
-                // rather than leak a literal "A/P" beside a 24-hour clock
+                // `A/P` is outside the subset; degrade rather than leak a literal
                 let mut half = chars.clone();
                 if half.next() == Some('/')
                     && half
@@ -334,18 +329,15 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
         }
     }
     section.scale += pending_commas;
-    // digits and date parts in one section (`0.0"日"yyyy`, `ss.00`) are out
-    // of the subset — no faithful rendering exists for the pair
+    // digits and date parts in one section are outside the subset
     if section.has_date && section.has_number {
         return None;
     }
-    // `General` composes with nothing — a section mixing it with digits or
-    // date parts is outside the subset
+    // `General` composes with nothing
     if section.has_general && (section.has_number || section.has_date) {
         return None;
     }
-    // Excel renders at most 30 decimal places, and far beyond that the
-    // rounding scale (10^max_frac) overflows f64 into NaN output
+    // Excel's limit; beyond it 10^max_frac overflows f64 into NaN
     section.max_frac = section.max_frac.min(30);
     section.forced_frac = section.forced_frac.min(section.max_frac);
     flush(&mut literal, &mut tokens);
@@ -354,7 +346,6 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
     Some(section)
 }
 
-/// `[h]`/`[mm]`/`[s]` elapsed-time tags; anything else is not elapsed.
 fn elapsed_token(tag: &str) -> Option<DateToken> {
     let all =
         |letter: char| !tag.is_empty() && tag.chars().all(|c| c.eq_ignore_ascii_case(&letter));
@@ -370,8 +361,7 @@ fn elapsed_token(tag: &str) -> Option<DateToken> {
     }
 }
 
-/// An `m` next to hours or seconds means minutes, otherwise months —
-/// Excel's rule, with literals (`:` etc.) transparent to adjacency.
+/// `m` next to hours or seconds means minutes, otherwise months; literals are transparent to adjacency.
 fn resolve_minutes(tokens: &mut [Token]) {
     let date_of = |t: &Token| match t {
         Token::Date(date) => Some(*date),

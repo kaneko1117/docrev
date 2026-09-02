@@ -1,12 +1,9 @@
-//! The sheet-picker mode: filtering sheet names and switching on Enter.
-
 use crate::domain::anchor::Anchor;
 
 use super::matching::{contains_folded, fold};
 use super::{Event, Mode, Viewer, add_clamped};
 
-/// What the picker shows this frame; `candidates` are sheet indices in
-/// workbook order.
+/// `candidates` are sheet indices in workbook order.
 pub struct PickerState<'a> {
     pub query: &'a str,
     pub selected: usize,
@@ -33,9 +30,8 @@ impl Viewer {
         })
     }
 
-    /// Unresolved threads per sheet, aligned with `sheet_names()`. Indexed
-    /// through a map: the sidecar is agent-written and can hold thousands of
-    /// threads, and this runs on every keystroke while the picker is open.
+    /// Aligned with `sheet_names()`. Goes through a map: runs per keystroke
+    /// over possibly thousands of threads.
     pub fn unresolved_counts(&self) -> Vec<usize> {
         let names = self.sheet_names();
         let index: std::collections::HashMap<&str, usize> = names
@@ -53,8 +49,6 @@ impl Viewer {
         counts
     }
 
-    /// After a document reload the sheet list may have shrunk under the
-    /// picker; the selection is pulled back onto the last candidate.
     pub(super) fn clamp_picker_selection(&mut self) {
         let count = match self.picker_state() {
             Some(state) => state.candidates.len(),
@@ -74,14 +68,11 @@ impl Viewer {
             return;
         };
         match event {
-            // every edit resets the selection: "type, then arrow down" always
-            // behaves the same, whatever survived the previous filter
             Event::Insert(c) => {
                 query.push(c);
                 *selected = 0;
             }
-            // only an actual edit resets — Backspace on an empty query must
-            // not throw away the selection the picker opened on
+            // Backspace on an empty query must keep the selection
             Event::Backspace => {
                 if query.pop().is_some() {
                     *selected = 0;
@@ -93,7 +84,6 @@ impl Viewer {
                     *selected = add_clamped(*selected, rows, max);
                 }
             }
-            // Enter only — a single remaining candidate never auto-switches
             Event::Submit => {
                 if let Some(&sheet) = candidates.get(*selected) {
                     self.active = sheet;
@@ -149,7 +139,6 @@ mod tests {
     fn the_filter_folds_case_and_full_width_characters() {
         let mut v = viewer_named(&["概要", "IT-01", "IT-02", "不具合等報告"]);
         v.apply(Event::OpenSheetPicker);
-        // an IME left on full-width: ｉｔ－0 must still find IT-01 and IT-02
         type_text(&mut v, "ｉｔ－0");
         assert_eq!(v.picker_state().unwrap().candidates, vec![1, 2]);
 

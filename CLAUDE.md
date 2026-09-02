@@ -67,6 +67,14 @@ src/
 - `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass before every PR.
 - Everything in this repo is in English: code, comments, doc comments, CLI help,
   error messages, commit messages, README.
+- Comments are the bare minimum, one sentence each. Write one only for: a
+  contract the signature cannot show (`None`/error conditions, 0- or 1-based,
+  units, call-order preconditions, side effects); the meaning of a tuple or
+  primitive field (`(rows, cols)`); or the reason for code that looks wrong
+  or unnecessary. Everything else — restating a name, design rationale,
+  history, issue numbers, test narration — goes in the PR, not the code.
+  Module docs (`//!`) are at most one line, and only for a layering
+  constraint.
 - Conversation with the user may be in Japanese; artifacts are English.
 
 ## Workflow

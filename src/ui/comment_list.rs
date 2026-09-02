@@ -2,7 +2,6 @@ use crate::domain::comment::CommentThread;
 
 use super::text::sanitize;
 
-/// Human-readable `comment list` output (agents use `--json`).
 pub fn render(threads: &[CommentThread]) -> String {
     if threads.is_empty() {
         return "no comments\n".to_string();

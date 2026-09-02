@@ -27,7 +27,7 @@ fn frozen_split_counts_too_and_axes_may_be_absent() {
 
 #[test]
 fn non_frozen_splits_and_garbage_are_ignored() {
-    // a plain split measures in twips, not cells — not a freeze
+    // a plain split is in twips
     let split = r#"<sheetView><pane xSplit="2310" ySplit="1050"/></sheetView>"#;
     assert_eq!(parse_pane(split).unwrap(), None);
     let garbage = r#"<sheetView><pane xSplit="NaN" ySplit="-3" state="frozen"/></sheetView>"#;
@@ -122,7 +122,7 @@ fn theme_palette_reads_clr_scheme_in_display_order() {
         <a:folHlink><a:srgbClr val="954F72"/></a:folHlink>
     </a:clrScheme></a:themeElements></a:theme>"#;
     let palette = parse_theme_palette(theme).unwrap();
-    // display order swaps the pairs: 0=lt1 (white), 1=dk1 (black)
+    // 0=lt1 (white), 1=dk1 (black)
     assert_eq!(palette[0], (0xFF, 0xFF, 0xFF));
     assert_eq!(palette[1], (0x00, 0x00, 0x00));
     assert_eq!(palette[4], (0x11, 0x22, 0x33), "accent1 from the file");
@@ -138,7 +138,7 @@ fn truncated_theme_is_an_error() {
 
 #[test]
 fn multibyte_hex_strings_are_rejected_not_a_panic() {
-    // "Aあ12" is 6 bytes but slicing it at byte 2 would split あ
+    // "Aあ12" is 6 bytes; slicing at byte 2 would split あ
     assert_eq!(parse_hex_rgb("Aあ12"), None);
     assert_eq!(parse_hex_rgb("あdd12"), None, "8-byte variant");
     assert_eq!(parse_hex_rgb("FF0000"), Some((0xFF, 0, 0)));
@@ -166,8 +166,6 @@ fn an_empty_palette_drops_theme_fills_but_keeps_rgb() {
 
 #[test]
 fn the_default_font_is_skipped_by_id_not_by_color() {
-    // a theme may paint the default font a near-black like 0D0D0D:
-    // matching on the color value would let every stock cell through
     let styles = r#"<styleSheet>
         <fonts count="2">
             <font><color rgb="FF0D0D0D"/></font>
@@ -185,7 +183,6 @@ fn the_default_font_is_skipped_by_id_not_by_color() {
 
 #[test]
 fn multibyte_font_colors_are_rejected_not_a_panic() {
-    // the same crafted-hex attack as fills, through the fonts entrance
     let styles = r#"<styleSheet>
         <fonts count="2">
             <font/>
@@ -209,8 +206,6 @@ fn tint_lightens_and_darkens() {
 
 #[test]
 fn date_builtins_resolve_to_their_japanese_renderings() {
-    // the standard picker stores these ids with no format code at all,
-    // so the table is the only route to a formatted date (#97)
     for id in 14..=22 {
         assert!(builtin_format(id).is_some(), "id {id} must resolve");
     }
@@ -252,8 +247,6 @@ fn cell_styles_keep_only_cells_with_a_visible_style() {
 
 #[test]
 fn cells_without_references_take_sequential_positions() {
-    // ECMA-376 allows omitting r on both <row> and <c>; streaming
-    // writers do exactly that
     let sheet = r#"<worksheet><sheetData>
         <row><c s="1"><v>1</v></c><c><v>2</v></c><c s="1"><v>3</v></c></row>
         <row r="5"><c s="1"><v>4</v></c></row>
@@ -265,8 +258,7 @@ fn cells_without_references_take_sequential_positions() {
         p.sort_unstable();
         p
     };
-    // row 0: A and C (B has no style); r="5" is row index 4;
-    // then B6 re-anchors to (5, 1) and the next cell continues at (5, 2)
+    // r="5" is row index 4; B6 re-anchors to (5, 1) and the next cell continues at (5, 2)
     assert_eq!(positions, vec![(0, 0), (0, 2), (4, 0), (5, 1), (5, 2)]);
 }
 

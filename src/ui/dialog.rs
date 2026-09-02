@@ -1,5 +1,3 @@
-//! The sheet-picker dialog: a centered modal over a dimmed screen.
-
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -14,9 +12,8 @@ use super::theme::Palette;
 const PICKER_HINT: &str = " Enter:switch  Esc:cancel ";
 const NOTES_HINT: &str = " ↓↑:scroll  Esc:close ";
 
-/// The read-only notes dialog: the cursor cell's workbook comments.
 pub struct NotesView {
-    /// `C10` — where the comments live.
+    /// A1 address, e.g. `C10`.
     pub cell_ref: String,
     pub comments: Vec<NoteView>,
     pub scroll: usize,
@@ -29,8 +26,6 @@ pub struct NoteView {
     pub replies: Vec<(String, String)>,
 }
 
-/// A centered, read-only dialog for the workbook's own comments — same
-/// chrome as the sheet picker, ↓/↑ to scroll, Esc to close.
 pub(crate) fn draw_notes(p: &Palette, frame: &mut Frame, view: &NotesView) {
     let area = frame.area();
     frame.render_widget(
@@ -83,8 +78,8 @@ pub(crate) fn draw_notes(p: &Palette, frame: &mut Frame, view: &NotesView) {
         width,
         height,
     };
-    // the viewer only counts key presses; the far end is clamped here,
-    // where the wrapped line count is known
+    // the viewer only counts key presses; the far end is clamped here, where the wrapped line count
+    // is known
     let scroll = view.scroll.min(lines.len().saturating_sub(visible)) as u16;
 
     frame.render_widget(Clear, popup);
@@ -103,11 +98,8 @@ pub(crate) fn draw_notes(p: &Palette, frame: &mut Frame, view: &NotesView) {
     frame.render_widget(widget, popup);
 }
 
-/// Centered popup: the query line, a rule, then the candidates windowed
-/// around the selection. The grid behind never moves until Enter.
 pub(crate) fn draw_picker(p: &Palette, frame: &mut Frame, view: &PickerView) {
     let area = frame.area();
-    // a scrim: dim everything behind, so the dialog is unmistakably on top
     frame.render_widget(
         Block::new().style(Style::new().add_modifier(Modifier::DIM)),
         area,
@@ -133,7 +125,6 @@ pub(crate) fn draw_picker(p: &Palette, frame: &mut Frame, view: &PickerView) {
     let layout = picker::picker_layout(view, inner_width, visible);
 
     let mut lines = Vec::with_capacity(visible + 2);
-    // the input field keeps the canvas white — a light well in the gray
     lines.push(Line::styled(
         query_line(&sanitize(&view.query), inner_width),
         canvas(p),
@@ -162,7 +153,6 @@ pub(crate) fn draw_picker(p: &Palette, frame: &mut Frame, view: &PickerView) {
     }
 
     frame.render_widget(Clear, popup);
-    // a crisp, undimmed frame — against the scrim it is the one sharp edge
     let widget = Paragraph::new(lines).style(dialog(p)).block(
         Block::bordered()
             .title(Line::styled(

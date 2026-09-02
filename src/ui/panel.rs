@@ -1,6 +1,3 @@
-//! The sidebar: the cursor's thread, plus the comment editor — docked at the
-//! sidebar's bottom when there is room, overlaying the frame otherwise.
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -14,13 +11,11 @@ use super::theme::Palette;
 
 const PANEL_MIN_WIDTH: u16 = 32;
 const PANEL_MAX_WIDTH: u16 = 48;
-/// Grid columns that must remain visible beside the sidebar.
 pub(crate) const GRID_MIN_WIDTH: u16 = 20;
-/// Rows the docked editor needs to show a border plus one line of text.
+/// Border plus one line of text.
 pub(crate) const MIN_DOCKED_EDITOR: u16 = 3;
 
-/// One third of the screen, clamped, and only when the grid keeps its
-/// minimum width.
+/// `None` when the grid would drop below `GRID_MIN_WIDTH`.
 pub(crate) fn panel_width(total: u16, wanted: bool) -> Option<u16> {
     if !wanted {
         return None;
@@ -29,8 +24,6 @@ pub(crate) fn panel_width(total: u16, wanted: bool) -> Option<u16> {
     (total >= width + GRID_MIN_WIDTH).then_some(width)
 }
 
-/// The sidebar: the cursor's thread, with the comment editor docked at the
-/// bottom while composing so the grid is never covered.
 pub(crate) fn draw_panel(
     p: &Palette,
     frame: &mut Frame,
@@ -48,9 +41,7 @@ pub(crate) fn draw_panel(
         None => (area, None),
     };
 
-    // wrapped by us, not ratatui: the height must be known so the panel can
-    // follow its tail — with the editor docked below, the newest reply
-    // is what the user came to read, and it must never hide behind the box
+    // wrapped by us, not ratatui: the height must be known to follow the tail
     let inner_width = thread_area.width.saturating_sub(1).max(1) as usize;
     let mut lines = Vec::new();
     if let Some(thread) = view.thread {
@@ -98,15 +89,12 @@ fn push_message(p: &Palette, lines: &mut Vec<Line>, author: &str, body: &str, wi
 
 const EDITOR_HINT: &str = " Ctrl+S:save  Esc:cancel ";
 
-/// Text columns inside the editor's border.
 fn editor_inner_width(width: u16) -> usize {
     width.saturating_sub(2).max(1) as usize
 }
 
-/// The editor's visible lines, wrapped by us rather than by ratatui: the
-/// height estimate and the render must agree exactly, and ratatui's `Wrap`
-/// breaks on words (a long word or URL would silently need more rows).
-/// The last line carries the cursor block.
+/// Wrapped by us, not ratatui: the height estimate and the render must agree, and ratatui's `Wrap`
+/// breaks on words. The last line carries the cursor block.
 fn editor_lines(editor: &EditorView, inner_width: usize) -> Vec<String> {
     let logical: Vec<String> = editor.buffer.split('\n').map(sanitize).collect();
     let mut out = Vec::new();
@@ -121,8 +109,7 @@ fn editor_lines(editor: &EditorView, inner_width: usize) -> Vec<String> {
     out
 }
 
-/// Bounded by what the area can actually give: at most two thirds of the
-/// sidebar, and never more than its height.
+/// At most two thirds of the sidebar, never more than its height.
 fn editor_height(editor: &EditorView, inner_width: usize, available: u16) -> u16 {
     if available == 0 {
         return 0;
@@ -134,8 +121,7 @@ fn editor_height(editor: &EditorView, inner_width: usize, available: u16) -> u16
 
 fn draw_editor(p: &Palette, frame: &mut Frame, area: Rect, editor: &EditorView) {
     let lines = editor_lines(editor, editor_inner_width(area.width));
-    // the cursor lives on the last line, so scrolling to the bottom keeps it
-    // visible however small the box gets
+    // the cursor is on the last line, so scrolling to the bottom keeps it visible
     let inner_height = area.height.saturating_sub(2) as usize;
     let scroll = lines.len().saturating_sub(inner_height) as u16;
 
@@ -149,15 +135,13 @@ fn draw_editor(p: &Palette, frame: &mut Frame, area: Rect, editor: &EditorView) 
                     EditorKind::Comment => format!(" Comment on {} ", editor.address),
                     EditorKind::Reply => format!(" Reply on {} ", editor.address),
                 })
-                // the hint rides on the border so it can never be scrolled
-                // out of a short box
+                // on the border so it cannot scroll out of a short box
                 .title_bottom(EDITOR_HINT)
                 .border_style(chrome(p)),
         );
     frame.render_widget(widget, area);
 }
 
-/// Fallback for terminals too narrow for a sidebar.
 pub(crate) fn draw_editor_overlay(p: &Palette, frame: &mut Frame, editor: &EditorView) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).clamp(20, 50);
@@ -231,8 +215,6 @@ mod tests {
         insta::assert_snapshot!(render_text(&view, &mut scroll, 76, 12));
     }
 
-    /// With the editor docked below, the panel follows its tail — the
-    /// newest reply is what the user came to read.
     #[test]
     fn the_newest_reply_stays_visible_above_the_editor() {
         let sheet = sheet_3x3();
@@ -267,8 +249,6 @@ mod tests {
         }
     }
 
-    /// The marker alone says a thread is there — moving onto the cell
-    /// must not reshape the grid.
     #[test]
     fn a_thread_under_the_cursor_alone_never_moves_the_layout() {
         let sheet = sheet_3x3();
@@ -353,10 +333,6 @@ mod tests {
         assert!(text.contains('█'), "the editor is on screen too");
     }
 
-    /// The docked editor must keep the cursor and the hint on screen no
-    /// matter how the text wraps — long words and URLs included. (The older
-    /// test only ran at 50 columns, which falls back to the overlay and so
-    /// never exercised this path.)
     #[test]
     fn docked_editor_keeps_cursor_and_hint_visible() {
         let sheet = sheet_3x3();

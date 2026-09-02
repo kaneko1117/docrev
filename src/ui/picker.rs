@@ -1,23 +1,20 @@
-//! Pure sheet-picker layout: which candidates are visible around the
-//! selection and how each row is formatted. No ratatui; `grid.rs` renders.
+//! Layout only: no ratatui here; `grid.rs` renders.
 
 use super::text::{clip, pad_left, pad_right};
 
-/// What the frontend hands the renderer, already filtered by the viewer.
 pub struct PickerView {
     pub query: String,
     /// Index into `items`.
     pub selected: usize,
-    /// Sheets in the workbook, for the `5/32` counter.
+    /// Sheets in the workbook.
     pub total: usize,
     pub items: Vec<PickerItem>,
 }
 
 pub struct PickerItem {
     pub name: String,
-    /// Unresolved threads on the sheet; 0 renders blank.
+    /// 0 renders blank.
     pub count: usize,
-    /// The sheet open behind the picker.
     pub active: bool,
 }
 
@@ -28,10 +25,10 @@ pub(crate) struct PickerLayout {
     pub no_match: bool,
 }
 
-/// One candidate row: `▸ name    ● 2`, pre-padded to the popup width.
+/// Pre-padded to the popup width.
 pub(crate) struct PickerLine {
     pub name: String,
-    /// Right-aligned marker + count, empty when the sheet has no threads.
+    /// Empty when the sheet has no threads.
     pub count: String,
     pub selected: bool,
     pub active: bool,
@@ -52,7 +49,7 @@ pub(crate) fn picker_layout(view: &PickerView, width: usize, visible: usize) -> 
             } else {
                 String::new()
             };
-            // name and count split the row: their widths always sum to `width`
+            // name and count widths always sum to `width`
             let count_width = unicode_width::UnicodeWidthStr::width(count.as_str());
             let name_width = width.saturating_sub(count_width);
             let name = clip(&item.name, name_width.saturating_sub(2));
@@ -71,8 +68,7 @@ pub(crate) fn picker_layout(view: &PickerView, width: usize, visible: usize) -> 
     }
 }
 
-/// The slice of `len` rows that keeps `selected` visible, centered when
-/// possible — opening on sheet 20 of 32 shows it mid-list, not at an edge.
+/// Keeps `selected` visible, centered when possible.
 fn window(len: usize, selected: usize, visible: usize) -> std::ops::Range<usize> {
     if visible == 0 || len == 0 {
         return 0..0;

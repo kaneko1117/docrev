@@ -16,22 +16,16 @@ pub struct Filter<'a> {
     pub sheet: Option<&'a str>,
 }
 
-/// What the anchored cell says, derived from the workbook at list time so an
-/// agent can act on a batch of threads without reading the sheets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CellContext {
-    /// The anchored cell's displayed text; a merged anchor shows its region's.
+    /// A merged anchor shows its region's text.
     pub value: String,
-    /// The machine-readable value behind a formatted date/time display
-    /// (`2026-08-31 00:00:00`, `13:05:00`, elapsed `36:00:00`); `None` for
-    /// every other cell kind.
+    /// `None` for every cell kind but date/time.
     pub raw: Option<String>,
-    /// The row's other non-empty cells as (A1 ref, displayed text), in
-    /// column order — a spec sheet reads row-wise.
+    /// (A1 ref, displayed text) in column order.
     pub row: Vec<(String, String)>,
 }
 
-/// A runaway guard for hostile row widths, not a real limit.
 const ROW_CONTEXT_CAP: usize = 100;
 
 pub fn list(
@@ -47,18 +41,13 @@ pub fn list(
         .collect())
 }
 
-/// `list` plus everything an agent needs from the workbook: each thread's
-/// cell content, and the workbook's own comments (read-only, no id — kept
-/// apart so a mis-targeted reply is structurally impossible).
 pub struct ContextualList {
     pub threads: Vec<(CommentThread, Option<CellContext>)>,
-    /// (sheet name, comment), filtered like the threads.
+    /// (sheet name, comment).
     pub workbook: Vec<(String, WorkbookComment)>,
 }
 
-/// The workbook is context, not the point: any failure to read it (corrupt
-/// zip, renamed sheet) degrades to threads without a context and no
-/// workbook comments, never an error.
+/// A workbook that cannot be read yields threads without context, never an error.
 pub fn list_with_context(
     source: &impl DocumentSource,
     store: &impl CommentStore,
@@ -103,10 +92,7 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
         CellValue::DateTime { raw, .. } => Some(raw.clone()),
         _ => None,
     };
-    // `value` already speaks for the whole anchored region, so every cell of
-    // it is excluded from the siblings; raw cells (not display) keep other
-    // merges from repeating their anchor value across the row. The lookup is
-    // loop-invariant — hoisted, or a merge-heavy row scans per column.
+    // hoisted: a per-column merge lookup scans the merge list each time
     let anchor_merge = sheet.merge_at(row, col);
     let in_anchor_region = |c: usize| match anchor_merge {
         Some(merge) => merge.contains(row, c),
@@ -127,8 +113,7 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
     })
 }
 
-/// `target` is `"Sheet!B3"`. The sheet must exist in the document; the cell
-/// may lie outside the used range.
+/// The sheet must exist; the cell may lie outside the used range.
 pub fn add(
     source: &impl DocumentSource,
     store: &mut impl CommentStore,
@@ -379,7 +364,7 @@ mod tests {
     #[test]
     fn a_merged_anchor_resolves_to_its_regions_value() {
         let mut store = MemoryStore::default();
-        // B3 is the covered cell of the A3:B3 merge
+        // B3 is covered by the A3:B3 merge
         thread_at(&mut store, "IT-01!B3");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
         let context = items.threads[0].1.as_ref().unwrap();
@@ -424,7 +409,6 @@ mod tests {
     fn a_renamed_sheet_or_broken_workbook_degrades_to_no_context() {
         let mut store = MemoryStore::default();
         let mut thread = thread_at(&mut store, "IT-01!A1");
-        // simulate a rename after the comment was written
         thread.anchor = Anchor::cell("改名済み", 0, 0);
         store.threads[0] = thread;
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();

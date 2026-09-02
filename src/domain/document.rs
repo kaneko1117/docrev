@@ -1,6 +1,5 @@
 use super::sheet::Sheet;
 
-/// An ordered collection of sheets.
 #[derive(Debug, Clone)]
 pub struct Document {
     sheets: Vec<Sheet>,

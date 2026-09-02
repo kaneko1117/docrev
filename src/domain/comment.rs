@@ -9,7 +9,7 @@ pub struct Reply {
     pub created_at: String,
 }
 
-/// A root comment and its replies; `resolved` applies to the whole thread.
+/// `resolved` applies to the whole thread.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommentThread {
     pub id: String,

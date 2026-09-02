@@ -5,20 +5,15 @@ use ratatui::style::Color;
 
 use crate::domain::sheet::NamedColor;
 
-/// Which palette the viewer paints with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
-    /// A Google Sheets-flavored white canvas, the same on every terminal.
     #[default]
     Sheets,
-    /// Leave the background alone and use the terminal's own 16 colors, so
-    /// the viewer matches the surrounding shell (dark themes included).
     Terminal,
 }
 
 impl Theme {
-    /// Reads `DOCREV_THEME`; an unknown value falls back to the default
-    /// rather than refusing to start over a cosmetic setting.
+    /// An unknown value falls back to the default.
     pub fn from_env() -> Self {
         std::env::var("DOCREV_THEME")
             .ok()
@@ -44,8 +39,6 @@ impl Theme {
                 reverse_selection: false,
                 dim_chrome: false,
             },
-            // `Reset` means "whatever the terminal uses", and the named
-            // colors follow the user's palette instead of fighting it.
             Theme::Terminal => Palette {
                 text: Color::Reset,
                 canvas_bg: Color::Reset,
@@ -58,8 +51,6 @@ impl Theme {
                 gridline: Color::Reset,
                 user_fg: Color::Yellow,
                 agent_fg: Color::Cyan,
-                // workbook fills and font colors are absolute RGB tuned for
-                // white paper; on an unknown background they can vanish
                 paint_workbook_colors: false,
                 reverse_selection: true,
                 dim_chrome: true,
@@ -107,28 +98,19 @@ pub(crate) struct Palette {
     pub header_bg: Color,
     pub header_fg: Color,
     pub selection_bg: Color,
-    /// The dragged range — a step lighter than the cursor cell, so the two
-    /// stay tellable apart.
     pub range_bg: Color,
     pub marker_fg: Color,
     pub notice_fg: Color,
     pub gridline: Color,
     pub user_fg: Color,
     pub agent_fg: Color,
-    /// Whether cell fills and font colors from the workbook are painted.
     pub paint_workbook_colors: bool,
-    /// Reverse video instead of a selection color: on an unknown palette it
-    /// is the only way the cursor cell stays as readable as body text.
     pub reverse_selection: bool,
-    /// Dim the default foreground instead of naming a color: any fixed slot
-    /// is the background itself in some scheme (8 is Solarized Dark's).
+    /// A fixed color slot is the background in some schemes (8 in Solarized Dark).
     pub dim_chrome: bool,
 }
 
 impl Palette {
-    /// Colors the workbook names rather than numbers. The Sheets palette
-    /// darkens yellow and white, which would be unreadable on white paper;
-    /// the terminal palette hands them to the user's own 16 colors.
     pub fn named_fg(&self, color: NamedColor) -> Color {
         if self.canvas_bg == Color::Reset {
             return match color {

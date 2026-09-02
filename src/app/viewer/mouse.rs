@@ -1,11 +1,8 @@
-//! Mouse events on the grid: click to select, drag to copy as TSV.
-
 use crate::domain::sheet::Sheet;
 
 use super::{Event, Notice, Viewer};
 
-/// Common terminals drop OSC 52 payloads around 100KB; past this the copy
-/// would silently vanish while the notice claimed success.
+/// Common terminals silently drop OSC 52 payloads past about 100KB.
 const COPY_LIMIT_BYTES: usize = 100_000;
 
 impl Viewer {
@@ -14,7 +11,6 @@ impl Viewer {
         let max_col = self.sheet().col_count().saturating_sub(1);
         let clamp = |row: usize, col: usize| (row.min(max_row), col.min(max_col));
         match event {
-            // the press: moves the cursor and arms a possible drag
             Event::SelectCell { row, col } => {
                 let cell = clamp(row, col);
                 self.selection = Some((cell, cell));
@@ -31,15 +27,11 @@ impl Viewer {
                     *current = clamp(row, col);
                 }
             }
-            // the release: always dissolves the selection; copies only
-            // after a real drag, never after a plain click
             Event::DragEnd { copy } => {
                 if let (Some((start, end)), true) = (self.selection.take(), copy) {
                     let rows = start.0.abs_diff(end.0) + 1;
                     let cols = start.1.abs_diff(end.1) + 1;
                     let text = tsv(self.sheet(), start, end);
-                    // OSC 52 payloads beyond ~100KB are silently dropped by
-                    // common terminals — refuse rather than claim success
                     if text.len() > COPY_LIMIT_BYTES {
                         self.notice = Some(Notice::Copy("Selection too large to copy".to_string()));
                     } else {
@@ -53,10 +45,7 @@ impl Viewer {
     }
 }
 
-/// The dragged rectangle as tab-separated values — full displayed texts, not
-/// what the clipped screen shows, so the result pastes into a spreadsheet as
-/// a table. Tabs and line breaks inside a cell would tear that table apart,
-/// so they flatten to spaces.
+/// Full displayed texts; tabs and line breaks inside a cell become spaces.
 fn tsv(sheet: &Sheet, a: (usize, usize), b: (usize, usize)) -> String {
     let (r0, r1) = (a.0.min(b.0), a.0.max(b.0));
     let (c0, c1) = (a.1.min(b.1), a.1.max(b.1));
@@ -158,7 +147,6 @@ mod tests {
 
     #[test]
     fn clicks_win_over_open_prompts_in_one_motion() {
-        // composing: the draft is discarded, the click acts
         let mut v = viewer_with(3, 3, Vec::new(), Box::new(NullStore));
         v.apply(Event::StartComment);
         type_text(&mut v, "half-typed");
@@ -166,13 +154,11 @@ mod tests {
         assert_eq!(*v.mode(), Mode::Grid);
         assert_eq!(v.cursor(), (2, 1));
 
-        // the sheet picker closes and the click lands
         v.apply(Event::OpenSheetPicker);
         v.apply(Event::SelectCell { row: 0, col: 0 });
         assert_eq!(*v.mode(), Mode::Grid);
         assert_eq!(v.cursor(), (0, 0));
 
-        // search closes without restoring its origin — the click chose anew
         v.apply(Event::Move { rows: 1, cols: 1 });
         v.apply(Event::OpenSearch);
         v.apply(Event::SelectCell { row: 2, col: 2 });
@@ -193,8 +179,7 @@ mod tests {
     #[test]
     fn any_key_event_dissolves_a_stale_selection() {
         let mut v = viewer_with(3, 3, Vec::new(), Box::new(NullStore));
-        // a lost Up event leaves the press armed; Tab must not carry the
-        // rectangle onto another sheet
+        // a lost Up event leaves the press armed
         v.apply(Event::SelectCell { row: 1, col: 1 });
         v.apply(Event::NextSheet);
         assert_eq!(v.selection(), None, "sheet switches clear it");

@@ -1,6 +1,3 @@
-//! styles.xml: what a cell's `s=` index resolves to, and which cells of a
-//! sheet carry a style worth resolving.
-
 use std::collections::HashMap;
 
 use quick_xml::Reader;
@@ -12,8 +9,7 @@ use super::MetaError;
 use super::archive::attr_value;
 use super::theme::{apply_tint, parse_hex_rgb};
 
-/// What a cell's `s=` style index resolves to: a number-format code, a
-/// solid fill color and/or a font color (sRGB).
+/// What a cell's `s=` index resolves to; colors are sRGB.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CellStyle {
     pub format: Option<String>,
@@ -27,15 +23,14 @@ impl CellStyle {
     }
 }
 
-/// Everything cells reference in styles.xml, plus which cells reference it:
-/// `sheets` maps 0-based (row, col) positions to indices in `styles`.
+/// `sheets` maps 0-based (row, col) to indices in `styles`.
 #[derive(Debug, Default, Clone)]
 pub struct WorkbookStyles {
     pub styles: Vec<CellStyle>,
     pub sheets: HashMap<String, HashMap<(u32, u32), usize>>,
 }
 
-/// One `CellStyle` per `cellXfs` entry (the style a cell's `s=` points at).
+/// One entry per `cellXfs` `<xf>`.
 pub(super) fn parse_styles(
     xml: &str,
     palette: &[(u8, u8, u8)],
@@ -45,18 +40,14 @@ pub(super) fn parse_styles(
     let mut fills: Vec<Option<(u8, u8, u8)>> = Vec::new();
     let mut fonts: Vec<Option<(u8, u8, u8)>> = Vec::new();
     let mut xfs: Vec<(u32, usize, usize)> = Vec::new();
-    // `<numFmt>` also appears under `<dxfs>`, `<xf>` under `<cellStyleXfs>`,
-    // `<fill>` and `<font>` under `<dxfs>`; only the `<numFmts>`, `<fills>`,
-    // `<fonts>` and `<cellXfs>` sections define what cells reference.
+    // the same elements also appear under <dxfs> and <cellStyleXfs>, which cells never reference
     let mut in_num_fmts = false;
     let mut in_fills = false;
     let mut in_fonts = false;
     let mut in_cell_xfs = false;
-    // fill state: set inside `<fill>` once a solid `<patternFill>` is seen
     let mut fill_depth = 0u32;
     let mut solid = false;
     let mut fill_color: Option<(u8, u8, u8)> = None;
-    // font state: set inside `<font>` when its `<color>` child appears
     let mut font_depth = 0u32;
     let mut font_color: Option<(u8, u8, u8)> = None;
     loop {
@@ -167,9 +158,7 @@ pub(super) fn parse_styles(
                 None => builtin_format(num_fmt).map(str::to_string),
             },
             fill: fills.get(fill_id).copied().flatten(),
-            // font 0 is the workbook default — its color is the stock text
-            // color (whatever the theme paints it), not an author's choice,
-            // so inheriting it would restyle every plain cell
+            // font 0 is the workbook default; inheriting its color would restyle every plain cell
             font: if font_id == 0 {
                 None
             } else {
@@ -179,8 +168,7 @@ pub(super) fn parse_styles(
         .collect())
 }
 
-/// A color element's attributes: `rgb="FFRRGGBB"` wins, else `theme="n"`
-/// (optionally tinted) through the palette. Legacy `indexed=` is ignored.
+/// `rgb=` wins, else `theme=` (+ `tint=`) through the palette; `indexed=` is ignored.
 fn parse_color_attrs(
     e: &quick_xml::events::BytesStart,
     reader: &Reader<&[u8]>,
@@ -205,11 +193,7 @@ fn parse_color_attrs(
     Some(apply_tint(base, tint))
 }
 
-/// The reserved built-in formats (ECMA-376 §18.8.30); these are referenced
-/// by id only and never written into styles.xml. Ids 14-22 and the locale
-/// block 27-36 are locale-dependent — docrev targets Japanese business
-/// sheets, so they carry the ja-JP renderings. Scientific (11, 48) and
-/// text (49) stay absent so those cells keep their existing rendering.
+/// Built-in ids (ECMA-376 §18.8.30) with ja-JP renderings for the locale-dependent ones; scientific (11, 48) and text (49) stay `None`.
 pub(super) fn builtin_format(id: u32) -> Option<&'static str> {
     Some(match id {
         1 => "0",
@@ -247,16 +231,12 @@ pub(super) fn builtin_format(id: u32) -> Option<&'static str> {
         44 => r#"_-"$"* #,##0.00_-;-"$"* #,##0.00_-;_-"$"* "-"??_-;_-@_-"#,
         45 => "mm:ss",
         46 => "[h]:mm:ss",
-        // 47 (`mm:ss.0`) uses fractional seconds, which the engine degrades
-        // to the fallback anyway — resolving it would change nothing
+        // 47 (`mm:ss.0`): fractional seconds degrade to the fallback anyway
         _ => return None,
     })
 }
 
-/// `<c r="B2" s="5">` entries from a sheet XML, keeping only cells whose
-/// style resolves to something visible. ECMA-376 makes both `<row r=…>` and
-/// `<c r=…>` optional — positions then continue from the previous element —
-/// so row and column are tracked explicitly.
+/// Cells whose style is not plain. `<row r=…>` and `<c r=…>` are optional; positions then continue from the previous element.
 pub(super) fn parse_cell_styles(
     xml: &str,
     styles: &[CellStyle],
@@ -288,13 +268,11 @@ pub(super) fn parse_cell_styles(
                     }
                 }
                 let position = match reference.as_deref().map(Anchor::parse_cell_ref) {
-                    // an explicit reference also re-anchors the trackers
                     Some(Some((r, c))) => {
                         row = Some(r);
                         next_col = c + 1;
                         Some((r, c))
                     }
-                    // a present but unparseable reference names no cell
                     Some(None) => None,
                     None => row.map(|r| {
                         let c = next_col;
