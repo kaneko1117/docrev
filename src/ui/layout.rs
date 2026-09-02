@@ -240,12 +240,16 @@ impl RowBuilder<'_> {
         let sheet = self.input.sheet;
         let width_of = |c: usize| self.plan.width_of(c);
         let mut height = 1;
-        for (start, end) in self.plan.segments() {
+        for (seg_index, (start, end)) in self.plan.segments().enumerate() {
             let mut col = start;
             while col < end {
                 if let Some(merge) = sheet.merge_at(row, col) {
                     let segment_end = (merge.end_col + 1).min(end);
-                    if row == merge.start_row {
+                    // a merge that began inside the frozen columns draws its
+                    // text there; the body shows a blank continuation, whose
+                    // narrower span must not count (mirrors `build`)
+                    let continuation = seg_index == 1 && merge.start_col < self.plan.frozen_cols;
+                    if row == merge.start_row && !continuation {
                         let span_cols = segment_end - col;
                         let span_width: usize =
                             (col..segment_end).map(width_of).sum::<usize>() + (span_cols - 1);
@@ -900,6 +904,50 @@ mod tests {
         let mut scroll = Scroll::default();
         let layout = grid_layout(&input, &Viewport { width: 20, rows: 3 }, &mut scroll);
         assert_eq!(layout.header_boundary, None, "column freeze dropped");
+    }
+
+    #[test]
+    fn a_merge_crossing_the_column_freeze_is_as_tall_as_its_pinned_text() {
+        // the title fits on one line in the wide pinned column; the body
+        // continuation draws nothing, so its narrow span must not count
+        let sheet = Sheet::new(
+            "s",
+            vec![
+                vec![CellValue::Text("hello world this is a merged title".into()); 5],
+                vec![CellValue::Text("next".into()); 5],
+            ],
+        )
+        .with_merges(vec![MergedRange {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 4,
+        }])
+        .with_frozen(0, 1);
+        let notes = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (1, 1),
+            markers: &HashSet::new(),
+            notes: &notes,
+            col_widths: &[Some(60.0), Some(4.0), Some(4.0), Some(4.0), Some(4.0)],
+            selection: None,
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(
+            &input,
+            &Viewport {
+                width: 100,
+                rows: 6,
+            },
+            &mut scroll,
+        );
+        assert!(layout.lines[0].slots[0].text.starts_with("hello world"));
+        assert!(layout.lines[0].ruled, "the title row is one line tall");
+        assert!(
+            layout.lines[1].label.contains('2'),
+            "row 2 follows directly"
+        );
     }
 
     #[test]
