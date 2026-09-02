@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use super::cell::CellValue;
 use super::workbook_comment::WorkbookComment;
 
-/// A color inherited from the workbook (cell background or font), sRGB.
+/// sRGB.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rgb {
     pub r: u8,
@@ -11,9 +11,7 @@ pub struct Rgb {
     pub b: u8,
 }
 
-/// A color the workbook names rather than numbers. The presentation layer
-/// is free to reinterpret it — the terminal theme hands these to the user's
-/// own 16 colors, where a literal `Rgb` has nothing left to interpret.
+/// A color the workbook names; the ui may reinterpret it, unlike `Rgb`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NamedColor {
     Red,
@@ -26,18 +24,13 @@ pub enum NamedColor {
     White,
 }
 
-/// The color a cell's text takes. Which of the two a cell carries is
-/// resolved outside the model; what the model keeps is the distinction the
-/// ui branches on — a named color it may reinterpret, or a literal one it
-/// may only paint or drop.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TextColor {
     Named(NamedColor),
     Literal(Rgb),
 }
 
-/// An inclusive rectangle of merged cells; the value lives at the anchor
-/// (top-left).
+/// Inclusive; the value lives at the top-left anchor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergedRange {
     pub start_row: usize,
@@ -57,23 +50,21 @@ impl MergedRange {
     }
 }
 
-/// A grid of cells, 0-based, row-major.
+/// 0-based, row-major.
 #[derive(Debug, Clone)]
 pub struct Sheet {
     name: String,
     rows: Vec<Vec<CellValue>>,
-    /// Author-set column widths from the workbook, index = column.
+    /// Index = column.
     col_widths: Vec<Option<f64>>,
     merges: Vec<MergedRange>,
-    /// Solid cell backgrounds from the workbook, keyed by (row, col).
+    /// Keyed by (row, col).
     fills: HashMap<(usize, usize), Rgb>,
-    /// The color each cell's text takes, already resolved to one per cell.
     text_colors: HashMap<(usize, usize), TextColor>,
-    /// Frozen panes from the workbook: (rows, cols) pinned while scrolling.
+    /// (rows, cols) pinned while scrolling.
     frozen: (usize, usize),
-    /// Formulas by (row, col), without their leading `=`.
+    /// By (row, col), without the leading `=`.
     formulas: HashMap<(usize, usize), String>,
-    /// The workbook's own comments (notes and threaded), read-only.
     workbook_comments: Vec<WorkbookComment>,
 }
 
@@ -103,15 +94,12 @@ impl Sheet {
         self.fills.get(&(row, col)).copied()
     }
 
-    /// Text colors already resolved to one per cell: which source wins is
-    /// the workbook format's rule, settled before the model sees it.
     pub fn with_text_colors(mut self, colors: HashMap<(usize, usize), TextColor>) -> Self {
         self.text_colors = colors;
         self
     }
 
-    /// Widths as the file states them: fractional character counts.
-    /// Rounding and clamping into terminal cells is the ui's decision.
+    /// Fractional character counts as the file states them; the ui rounds.
     pub fn with_col_widths(mut self, widths: Vec<Option<f64>>) -> Self {
         self.col_widths = widths;
         self
@@ -122,16 +110,12 @@ impl Sheet {
         self
     }
 
-    /// Frozen panes: the workbook pins the first `rows`/`cols` while the
-    /// rest scrolls.
     pub fn with_frozen(mut self, rows: usize, cols: usize) -> Self {
         self.frozen = (rows, cols);
         self
     }
 
-    /// A formula cell without a cached result (files written by tools that
-    /// never evaluate, e.g. openpyxl) lies outside the value grid — the grid
-    /// grows to reach it, showing `Empty` where no result is known.
+    /// Grows the grid to reach a formula outside the value range (no cached result).
     pub fn with_formulas(mut self, formulas: HashMap<(usize, usize), String>) -> Self {
         for &(row, col) in formulas.keys() {
             if self.rows.len() <= row {
@@ -146,17 +130,12 @@ impl Sheet {
         self
     }
 
-    /// The cell's own formula, without its leading `=`. Callers resolve
-    /// merged regions to their anchor themselves, like `cell` vs
-    /// `display_cell`.
+    /// Without the leading `=`; merged regions are not resolved to their anchor.
     pub fn formula_at(&self, row: usize, col: usize) -> Option<&str> {
         self.formulas.get(&(row, col)).map(String::as_str)
     }
 
-    /// Like formulas, a comment can sit outside the value grid (a note on
-    /// an empty cell past the used range) — the grid grows to reach it, or
-    /// its corner tint would be invisible and the cursor could never get
-    /// there.
+    /// Grows the grid to reach a comment outside the value range.
     pub fn with_workbook_comments(mut self, comments: Vec<WorkbookComment>) -> Self {
         for comment in &comments {
             if self.rows.len() <= comment.row {
@@ -175,8 +154,7 @@ impl Sheet {
         &self.workbook_comments
     }
 
-    /// The workbook comments a cursor on (row, col) should surface — inside
-    /// a merged region the whole region counts as one cell, like threads.
+    /// Inside a merged region the whole region counts as one cell.
     pub fn workbook_comments_at(&self, row: usize, col: usize) -> Vec<&WorkbookComment> {
         let merge = self.merge_at(row, col);
         let in_region = |r: usize, c: usize| match merge {
@@ -201,8 +179,7 @@ impl Sheet {
         self.col_widths.get(col).copied().flatten()
     }
 
-    /// The value a cell displays: inside a merged region that is the
-    /// region's anchor (top-left) value, which is where the workbook keeps it.
+    /// Inside a merged region, the anchor's value.
     pub fn display_cell(&self, row: usize, col: usize) -> &CellValue {
         match self.merge_at(row, col) {
             Some(merge) => {
@@ -213,8 +190,7 @@ impl Sheet {
         }
     }
 
-    /// The fill a cell paints with: inside a merged region the anchor's fill
-    /// covers the whole region.
+    /// Inside a merged region, the anchor's fill.
     pub fn display_fill_at(&self, row: usize, col: usize) -> Option<Rgb> {
         let (row, col) = match self.merge_at(row, col) {
             Some(merge) => merge.anchor(),
@@ -223,8 +199,7 @@ impl Sheet {
         self.fill_at(row, col)
     }
 
-    /// The color a cell's text takes: inside a merged region the anchor's
-    /// styling applies to the whole region.
+    /// Inside a merged region, the anchor's color.
     pub fn text_color_at(&self, row: usize, col: usize) -> Option<TextColor> {
         let (row, col) = match self.merge_at(row, col) {
             Some(merge) => merge.anchor(),
@@ -237,13 +212,11 @@ impl Sheet {
         self.merges.iter().find(|m| m.contains(row, col))
     }
 
-    /// All merged regions — for whole-sheet scans that cannot afford a
-    /// `merge_at` lookup per cell.
     pub fn merges(&self) -> &[MergedRange] {
         &self.merges
     }
 
-    /// Cells actually stored in a row; cells beyond are `Empty`.
+    /// Cells beyond are `Empty`.
     pub fn row_len(&self, row: usize) -> usize {
         self.rows.get(row).map(Vec::len).unwrap_or(0)
     }

@@ -1,6 +1,3 @@
-//! The screen: partitions the frame and draws the grid body; the chrome
-//! (`bars`), the sidebar (`panel`) and the modal (`dialog`) draw the rest.
-
 use std::collections::HashSet;
 
 use ratatui::Frame;
@@ -33,31 +30,22 @@ pub struct GridView<'a> {
     pub sheet_names: Vec<&'a str>,
     pub active: usize,
     pub cursor: (usize, usize),
-    /// Cells with an unresolved comment thread, marked with `●`.
+    /// Cells with an unresolved thread.
     pub markers: HashSet<(usize, usize)>,
-    /// Cells with the workbook's own comments — corner-tinted.
     pub notes: HashSet<(usize, usize)>,
-    /// The read-only notes dialog, when open.
     pub notes_view: Option<NotesView>,
     pub notice: Option<&'a str>,
-    /// Thread under the cursor — drives the status hint, and fills the side
-    /// panel while composing.
     pub thread: Option<&'a CommentThread>,
-    /// Comment editor state — shown as a popup.
     pub editor: Option<EditorView<'a>>,
-    /// Sheet picker state — shown as a centered popup.
     pub picker: Option<PickerView>,
-    /// Search prompt state — takes over the status bar.
     pub search: Option<SearchView>,
-    /// A drag in progress, highlighted like the cursor.
+    /// (press cell, current cell).
     pub selection: Option<((usize, usize), (usize, usize))>,
-    /// Per-column widths as the file states them; the layout rounds,
-    /// clamps and fills gaps with `DEFAULT_CELL_WIDTH`.
+    /// Excel character widths, not terminal cells.
     pub col_widths: Vec<Option<f64>>,
     pub theme: Theme,
 }
 
-/// What the editor is composing — the dialog derives its title from it.
 #[derive(Clone, Copy, PartialEq)]
 pub enum EditorKind {
     Comment,
@@ -66,29 +54,26 @@ pub enum EditorKind {
 
 pub struct EditorView<'a> {
     pub kind: EditorKind,
-    /// A1 address of the anchored cell, e.g. "B3".
+    /// A1 address, e.g. "B3".
     pub address: String,
     pub buffer: &'a str,
 }
 
-/// Where things were drawn last frame — the frontend maps mouse coordinates
-/// through this.
 #[derive(Default, Clone)]
 pub struct HitMap {
-    /// The grid area; its first line is the column-letter header.
+    /// Its first line is the column-letter header.
     pub(crate) grid: Rect,
-    /// Visible columns as (col, x-range) relative to the grid's left edge.
+    /// (col, x-range relative to the grid's left edge).
     pub(crate) col_spans: Vec<(usize, std::ops::Range<usize>)>,
     /// Sheet row per body line, starting under the header line.
     pub(crate) line_rows: Vec<usize>,
-    /// The tab bar's row, its clickable spans, and the `‹` / `›` arrows.
+    /// The tab bar's row; `tab_spans` are (sheet index, x-range).
     pub(crate) tabs_y: u16,
     pub(crate) tab_spans: Vec<(usize, std::ops::Range<u16>)>,
     pub(crate) arrow_left: Option<u16>,
     pub(crate) arrow_right: Option<u16>,
 }
 
-/// What a click landed on.
 #[derive(Debug, PartialEq)]
 pub enum Hit {
     Cell { row: usize, col: usize },
@@ -129,9 +114,6 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    // the sidebar opens only while composing: the ● marker already
-    // says a thread is there, and opening it is the user's decision (`c`) —
-    // the grid must not lose a third of its width to a cursor move
     let wants_panel = view.editor.is_some();
     let (grid_area, panel_area) = match panel::panel_width(main_area.width, wants_panel) {
         Some(width) => {
@@ -161,8 +143,6 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
         scroll,
     );
     draw_grid(p, frame, grid_area, &grid);
-    // the editor docks in the sidebar when there is room for it; otherwise it
-    // overlays the whole frame so composing still works on small terminals
     let docked = view.editor.is_some()
         && panel_area.is_some_and(|panel| panel.height >= panel::MIN_DOCKED_EDITOR);
     if let Some(area) = panel_area {
@@ -175,8 +155,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
     }
     let (tab_spans, arrow_left, arrow_right) = bars::draw_tabs(p, frame, tabs_area, view);
     bars::draw_status(p, frame, status_area, view, &grid);
-    // last, so a tall candidate list never loses its bottom border (and the
-    // counter riding on it) to the tab bar
+    // drawn last so a tall candidate list never loses its bottom border to the tab bar
     if let Some(picker) = &view.picker {
         dialog::draw_picker(p, frame, picker);
     }
@@ -194,8 +173,7 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
     }
 }
 
-/// Thin translator: all layout decisions live in `layout::grid_layout`;
-/// this maps the resulting description to `Span`s and nothing else.
+/// Maps the layout to `Span`s; no layout decisions here.
 fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
     if grid.empty {
         frame.render_widget(Paragraph::new("(empty sheet)").style(canvas(p)), area);
@@ -265,7 +243,6 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
                 base
             };
             if slot.note {
-                // the workbook-comment corner: tint the cell's last character
                 let split = slot.text.char_indices().last().map(|(i, _)| i).unwrap_or(0);
                 let (head, corner) = slot.text.split_at(split);
                 spans.push(Span::styled(head.to_string(), style));
@@ -512,8 +489,6 @@ mod tests {
         });
         assert!(painted, "the fill must reach the terminal background");
 
-        // the long text wraps inside its own column instead of spilling
-        // over the filled neighbor
         let text = buffer_text(buffer);
         assert!(
             text.contains("ても長いので"),
@@ -672,9 +647,7 @@ mod tests {
             theme: Theme::default(),
         };
         let text = render_text(&view, &mut Scroll::default(), 50, 12);
-        // the full text is visible — wrapped, not clipped (the cursor cell
-        // wraps like any other); search bottom-up so the formula bar's
-        // full-text preview doesn't match first
+        // searched bottom-up so the formula bar's preview does not match first
         let tail = text
             .lines()
             .rev()
@@ -835,7 +808,6 @@ mod tests {
             cell.style().bg,
             Some(Theme::default().palette().selection_bg)
         );
-        // formula bar shows the range
         let top: String = (0..20)
             .map(|x| buffer.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
             .collect::<Vec<_>>()
@@ -990,7 +962,6 @@ mod tests {
             "the user's terminal background must show through"
         );
 
-        // and the layout is identical either way — only the colors differ
         let terminal_text = buffer_text(buffer);
         view.theme = Theme::Sheets;
         let sheets_text = render_text(&view, &mut Scroll::default(), 50, 8);
@@ -1145,7 +1116,6 @@ mod tests {
             Some(p.header_fg),
             "the horizontal boundary is darker than a gridline"
         );
-        // an ordinary body row keeps the ordinary gridline color
         let body = buffer.cell((1, 3)).unwrap();
         assert_ne!(body.style().underline_color, Some(p.header_fg));
     }

@@ -3,21 +3,16 @@ pub enum CellValue {
     Empty,
     Text(String),
     Number(f64),
-    /// A number whose workbook format produced a display string
-    /// (e.g. `0.15` shown as `15%`); the raw value is kept for agents.
     FormattedNumber {
         value: f64,
         text: String,
     },
     Bool(bool),
-    /// A date/time cell as the workbook displays it; `raw` keeps the
-    /// machine-readable rendering (`2026-08-31 00:00:00`, time-only
-    /// `13:05:00`, elapsed `36:00:00`) for agents.
+    /// `raw` is `YYYY-MM-DD HH:MM:SS`, `HH:MM:SS` for a bare time, or elapsed `H+:MM:SS`.
     DateTime {
         text: String,
         raw: String,
     },
-    /// Excel error values such as `#DIV/0!`.
     Error(String),
 }
 
@@ -37,8 +32,6 @@ impl CellValue {
         matches!(self, CellValue::DateTime { .. })
     }
 
-    /// How the workbook displays this value: a formatted number shows its
-    /// format's output, a bare number its shortest round-tripping form.
     pub fn display_text(&self) -> String {
         match self {
             CellValue::Empty => String::new(),

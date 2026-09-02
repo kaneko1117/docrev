@@ -1,5 +1,4 @@
-/// Where a comment is attached. Internally 0-based; A1 notation exists only
-/// at the edges, converted by the methods here and nowhere else.
+/// 0-based; A1 notation is converted only by the methods here.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Anchor {
     Cell { sheet: String, row: u32, col: u32 },
@@ -41,7 +40,7 @@ impl Anchor {
         reversed.iter().rev().collect()
     }
 
-    /// `"Sheet!B3"` -> anchor. Splits on the last `!` (sheet names may contain `!`).
+    /// Splits on the last `!` (sheet names may contain `!`).
     pub fn parse_ref(reference: &str) -> Option<Anchor> {
         let (sheet, cell) = reference.rsplit_once('!')?;
         if sheet.is_empty() {

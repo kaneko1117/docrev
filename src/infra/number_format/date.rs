@@ -1,5 +1,3 @@
-//! Date/time rendering from adapter-resolved calendar parts.
-
 use crate::infra::datetime::DateTimeParts;
 
 use super::{DateToken, Section, Token};
@@ -42,8 +40,7 @@ fn push_padded(out: &mut String, value: u64, pad: bool) {
 }
 
 pub(super) fn render_datetime(section: &Section, parts: &DateTimeParts) -> String {
-    // cells store whole seconds; rounding wards off f64 dust (13:05 is
-    // 0.54513‥ whose ×86400 must land on 47100, not 47099.99‥)
+    // f64 dust: 13:05 × 86400 must land on 47100, not 47099.99‥
     let total_seconds = (parts.serial * 86_400.0).round();
     let total = total_seconds.abs() as u64;
     let month_index = (parts.month as usize).clamp(1, 12) - 1;
@@ -73,7 +70,7 @@ pub(super) fn render_datetime(section: &Section, parts: &DateTimeParts) -> Strin
                 out.push_str(text);
                 continue;
             }
-            // digit clusters never coexist with date tokens (parse rejects)
+            // parse rejects digits beside date tokens
             Token::Number | Token::General => continue,
             Token::Date(date) => date,
         };
@@ -97,8 +94,7 @@ pub(super) fn render_datetime(section: &Section, parts: &DateTimeParts) -> Strin
                 let hour = if section.has_ampm { hour12 } else { parts.hour };
                 push_padded(&mut out, u64::from(hour), *pad);
             }
-            // in elapsed sections the remainders come from the serial:
-            // negative 1904-epoch durations saturate the calendar parts to 0
+            // from the serial: negative durations saturate the calendar parts to 0
             DateToken::Minute { pad } => {
                 let minute = if has_elapsed {
                     (total / 60) % 60

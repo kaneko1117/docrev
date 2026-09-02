@@ -1,13 +1,9 @@
-//! OSC 52: ask the terminal itself to copy, which reaches the local
-//! clipboard even over SSH. Terminals without support ignore it silently.
+//! OSC 52 clipboard write; terminals without support ignore it silently.
 
-/// The escape sequence that requests a clipboard write.
 pub fn osc52(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
 }
 
-/// Standard base64 — hand-rolled because this is the only place that needs
-/// it, and a dependency would have to clear the license audit for 20 lines.
 fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

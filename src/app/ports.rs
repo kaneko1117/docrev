@@ -8,20 +8,16 @@ use super::error::{LoadError, StoreError};
 
 pub trait DocumentSource {
     fn load(&self, path: &Path) -> Result<Document, LoadError>;
-    /// A cheap token that changes whenever the file behind `path` changes,
-    /// so the viewer can notice an outside edit without re-parsing.
-    /// `None` when the source cannot report one — auto-reload then stays off.
+    /// Changes whenever the file changes; `None` disables auto-reload.
     fn revision(&self, _path: &Path) -> Option<u64> {
         None
     }
 }
 
-/// Comment persistence. Implementations assign ids and timestamps.
+/// Implementations assign ids and timestamps.
 pub trait CommentStore {
     fn load(&self) -> Result<Vec<CommentThread>, StoreError>;
-    /// A cheap token that changes whenever the backing store changes, so the
-    /// viewer can notice an agent's edits without re-reading the file.
-    /// `None` when the store cannot report one — auto-reload then stays off.
+    /// Changes whenever the store changes; `None` disables auto-reload.
     fn revision(&self) -> Option<u64> {
         None
     }

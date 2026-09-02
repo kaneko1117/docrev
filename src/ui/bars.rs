@@ -1,5 +1,3 @@
-//! The one-line chrome around the grid: formula bar, tab strip, status bar.
-
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -14,7 +12,6 @@ use super::style::{canvas, chrome};
 use super::text::{cell_text, clip, query_line, sanitize};
 use super::theme::Palette;
 
-/// Search prompt state — takes over the status bar while searching.
 pub struct SearchView {
     pub query: String,
     /// 1-based position among the matches; 0 when there is none.
@@ -26,9 +23,7 @@ fn column_label(index: u32) -> String {
     Anchor::column_label(index)
 }
 
-/// Sheets' name box + formula bar: `B2      │ 120`. A merged region shows
-/// its range and the anchor value; a cell with a formula shows the formula
-/// (`=SUM(E7:E34)`) — the grid keeps showing the result, like Excel.
+/// A merged region shows its range and the anchor value; a formula cell shows the formula.
 pub(crate) fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view: &GridView) {
     let (row, col) = view.cursor;
     let (address, cell) = match view.sheet.merge_at(row, col) {
@@ -49,7 +44,6 @@ pub(crate) fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view:
         Some(formula) => format!("={formula}"),
         None => cell_text(view.sheet.cell(cell.0, cell.1)),
     };
-    // one line only: clip with … and leave the full text to the agent CLI
     let address = format!(" {address:<7}");
     let used = unicode_width::UnicodeWidthStr::width(address.as_str()) + 2;
     let value = clip(
@@ -64,11 +58,9 @@ pub(crate) fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view:
     frame.render_widget(Paragraph::new(line).style(canvas(p)), area);
 }
 
-/// Where each tab landed, in absolute columns, for the mouse hit map.
+/// (sheet index, absolute column range).
 pub(crate) type TabSpans = Vec<(usize, std::ops::Range<u16>)>;
 
-/// Draws the tab strip and reports where each tab (and the `‹` / `›`
-/// arrows) landed.
 pub(crate) fn draw_tabs(
     p: &Palette,
     frame: &mut Frame,
@@ -103,7 +95,6 @@ pub(crate) fn draw_tabs(
     (tab_spans, arrow_left, arrow_right)
 }
 
-/// Hints, notices and — for a sheet wider than the screen — where the view is.
 pub(crate) fn draw_status(
     p: &Palette,
     frame: &mut Frame,
@@ -123,8 +114,6 @@ pub(crate) fn draw_status(
     } else {
         "c:comment  q:quit  ^G:sheet  ^F:find"
     };
-    // the workbook's own comments are invisible until pointed at — the
-    // hint appears exactly where pressing `n` would do something
     let (row, col) = view.cursor;
     let hint = if view.sheet.workbook_comments_at(row, col).is_empty() {
         hint.to_string()
@@ -132,7 +121,6 @@ pub(crate) fn draw_status(
         format!("n:notes  {hint}")
     };
     let hint = match visible_range(grid) {
-        // only when something is off screen; otherwise it is noise
         Some(range) => format!("{range}  {hint}"),
         None => hint.to_string(),
     };
@@ -149,9 +137,6 @@ pub(crate) fn draw_status(
     frame.render_widget(Paragraph::new(line).style(chrome(p)), area);
 }
 
-/// `Find: 合計█            3/17` — the input well is white like the grid so
-/// it reads as a place to type; `0/0` turns warning-colored when a non-empty
-/// query finds nothing.
 fn draw_search(p: &Palette, frame: &mut Frame, area: Rect, search: &SearchView) {
     let label = " Find: ";
     let counter = format!(" {}/{} ", search.current, search.total);
@@ -173,11 +158,10 @@ fn draw_search(p: &Palette, frame: &mut Frame, area: Rect, search: &SearchView) 
     frame.render_widget(Paragraph::new(line).style(chrome(p)), area);
 }
 
-/// `G–L / 30` while columns are off screen.
+/// `None` when every column is on screen.
 fn visible_range(grid: &GridLayout) -> Option<String> {
     let visible = grid.visible_cols.len();
-    // pinned columns are on screen too: with a freeze, "hidden" means
-    // hidden, not merely scrolled past the pin
+    // frozen columns are on screen too
     if grid.empty || visible == 0 || grid.frozen_cols + visible >= grid.col_count {
         return None;
     }
@@ -223,7 +207,6 @@ mod tests {
         );
         assert!(text.contains("A–"), "the range starts at the first column");
 
-        // a sheet that fits entirely says nothing
         let small = sheet_3x3();
         let mut small_view = view;
         small_view.sheet = &small;

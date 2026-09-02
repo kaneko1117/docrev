@@ -1,32 +1,24 @@
-//! The search mode: scan the active sheet's displayed text and cycle matches.
-
 use crate::domain::sheet::Sheet;
 
 use super::matching::{contains_folded, fold};
 use super::{Event, Mode, Viewer};
 
-/// What the status bar shows this frame. `current` is 1-based; 0 means the
-/// query has no matches.
+/// `current` is 1-based; 0 means no matches.
 pub struct SearchState<'a> {
     pub query: &'a str,
     pub current: usize,
     pub total: usize,
 }
 
-/// Every matching cell in row-major order. Matching runs over the *displayed*
-/// text (formatted numbers included), folded like the picker's filter, so it
-/// finds exactly what the user sees. A merged region matches once, on its
-/// anchor. An empty query matches nothing.
+/// Row-major, over the displayed text. A merged region matches once, on its
+/// anchor; an empty query matches nothing.
 fn matches_in(sheet: &Sheet, query: &str) -> Vec<(usize, usize)> {
     if query.is_empty() {
         return Vec::new();
     }
     let needle = fold(query);
-    // Indexed up front — a per-cell `merge_at` (a linear scan of the merge
-    // list) made merge-heavy 100k-row sheets freeze for seconds per
-    // keystroke. Covered cells are skipped; an anchor's value is its own
-    // cell, so no per-cell merge lookup is needed at all. Clamped to cells
-    // that actually exist, so a hostile whole-sheet merge cannot balloon it.
+    // indexed up front: a per-cell `merge_at` froze merge-heavy sheets;
+    // clamped to existing cells so a whole-sheet merge cannot balloon it
     let mut covered = std::collections::HashSet::new();
     for m in sheet.merges() {
         let anchor = m.anchor();
@@ -40,8 +32,8 @@ fn matches_in(sheet: &Sheet, query: &str) -> Vec<(usize, usize)> {
     }
     let mut out = Vec::new();
     for row in 0..sheet.row_count() {
-        // only cells that exist: a single stray value in Excel's last
-        // column must not widen the scan of every other row
+        // `row_len`, not `col_count`: one stray value in the last column must
+        // not widen every row's scan
         for col in 0..sheet.row_len(row) {
             if covered.contains(&(row, col)) {
                 continue;
@@ -55,8 +47,7 @@ fn matches_in(sheet: &Sheet, query: &str) -> Vec<(usize, usize)> {
     out
 }
 
-/// The first match at or after `origin` in row-major order, wrapping to the
-/// start — searching begins where the user is, not at A1.
+/// Row-major, wrapping to the start.
 fn first_at_or_after(matches: &[(usize, usize)], origin: (usize, usize)) -> usize {
     matches
         .iter()
@@ -86,9 +77,7 @@ impl Viewer {
         let Mode::Search { origin, .. } = &self.mode else {
             return;
         };
-        // matches on a merged region carry its anchor, so a cursor on any
-        // covered cell must compare as the anchor — otherwise the match
-        // right under the cursor would be skipped for the next one
+        // matches carry the merge anchor, so the cursor must compare as one
         let scan_origin = match self.sheets.get(self.active).merge_at(origin.0, origin.1) {
             Some(merge) => merge.anchor(),
             None => *origin,
@@ -105,8 +94,6 @@ impl Viewer {
         };
         let origin = *origin;
         match event {
-            // every edit restarts from the origin: the first match is always
-            // the nearest one below where the search began
             Event::Insert(c) => {
                 query.push(c);
                 *matches = sheet_matches(query);
@@ -128,7 +115,6 @@ impl Viewer {
                     };
                 }
             }
-            // Enter keeps the cursor on the match — found it, now work here
             Event::Submit => {
                 self.mode = Mode::Grid;
                 return;
@@ -144,8 +130,6 @@ impl Viewer {
             }
             _ => return,
         }
-        // the grid follows the cursor, so moving it is what scrolls the
-        // match into view; with no match the cursor waits at the origin
         let target = match &self.mode {
             Mode::Search { matches, index, .. } => matches.get(*index).copied().unwrap_or(origin),
             _ => return,
@@ -159,11 +143,8 @@ impl Viewer {
         }
     }
 
-    /// After a document reload the cached matches point into sheets that no
-    /// longer exist. Recompute them against the new active sheet so a search
-    /// in progress keeps working; the origin is pulled into the new bounds.
-    /// The cursor stays put — the next keystroke re-syncs it, and jumping it
-    /// because an agent saved would yank the grid out from under the user.
+    /// After a reload: matches are recomputed, the origin clamped, the cursor
+    /// deliberately left where it is.
     pub(super) fn refresh_search(&mut self) {
         let sheet = self.sheets.get(self.active);
         let (max_row, max_col) = (
@@ -275,8 +256,6 @@ mod tests {
 
     #[test]
     fn a_stray_far_right_cell_is_still_found() {
-        // one row reaches Excel's last column; the others must not be
-        // scanned at that width, but the stray value itself must match
         let mut wide = vec![CellValue::Empty; 16384];
         wide[16383] = text("迷子");
         let sheet = Sheet::new("s", vec![vec![text("a")], wide, vec![text("迷子ではない")]]);
@@ -299,7 +278,7 @@ mod tests {
             end_col: 1,
         }]);
         let mut v = search_viewer(sheet);
-        v.apply(Event::Move { rows: 0, cols: 1 }); // covered cell of the merge
+        v.apply(Event::Move { rows: 0, cols: 1 }); // covered by the merge
         v.apply(Event::OpenSearch);
         type_text(&mut v, "合計");
         assert_eq!(v.cursor(), (0, 0), "the merge under the cursor comes first");
@@ -397,7 +376,6 @@ mod tests {
         type_text(&mut v, "合計");
         let state = v.search_state().unwrap();
         assert_eq!((state.current, state.total), (1, 2));
-        // an agent rewrites the sheet: one match left, in a new place
         source.write_from_outside(vec![Sheet::new(
             "s",
             vec![vec![text("x"), text("合計だけ")]],

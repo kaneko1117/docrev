@@ -1,8 +1,4 @@
-//! Text matching shared by the sheet picker and search: substring after
-//! folding case and full-width characters, so an IME left on full-width
-//! still finds `IT-01`.
-
-/// Folds a query once; haystacks are folded on the fly by `contains_folded`.
+/// Case and full-width folding.
 pub(super) fn fold(text: &str) -> String {
     text.chars().flat_map(fold_char).collect()
 }
@@ -19,13 +15,9 @@ fn fold_char(c: char) -> impl Iterator<Item = char> {
     c.to_lowercase()
 }
 
-/// Substring test against the folded haystack, without building it — search
-/// folds every cell of a 100k-row sheet per keystroke, and a fresh `String`
-/// per cell costs seconds; folding char-by-char while scanning stays cheap.
-/// Matches start at the haystack's own char boundaries: a needle beginning
-/// mid-expansion (e.g. the bare combining dot of `İ` → `i̇`) never matches,
-/// which is stricter than `fold(haystack).contains(...)` and closer to what
-/// a user pointing at visible characters means.
+/// `needle_folded` must already be folded. Folds the haystack char by char
+/// instead of allocating; matches start only at the haystack's own char
+/// boundaries, never inside one char's fold.
 pub(super) fn contains_folded(haystack: &str, needle_folded: &str) -> bool {
     let mut start = haystack.chars();
     loop {
@@ -59,7 +51,7 @@ mod tests {
             ("abc", "zzz"),
             ("", "a"),
             ("abc", ""),
-            // 'İ' lowercases to two chars — the fold must not split matches
+            // 'İ' lowercases to two chars
             ("İstanbul", "i\u{307}stan"),
             ("İ", "istan"),
         ];
@@ -73,8 +65,6 @@ mod tests {
         }
     }
 
-    /// The documented divergence from the reference: matches only start at
-    /// the haystack's own char boundaries, never inside one char's fold.
     #[test]
     fn a_needle_starting_mid_expansion_does_not_match() {
         let needle = fold("\u{307}stan");

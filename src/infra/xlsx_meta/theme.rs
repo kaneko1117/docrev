@@ -1,5 +1,3 @@
-//! Colors: the theme palette from theme1.xml, hex parsing and Excel's tint.
-
 use std::collections::HashMap;
 
 use quick_xml::Reader;
@@ -8,8 +6,7 @@ use quick_xml::events::Event;
 use super::MetaError;
 use super::archive::attr_value;
 
-/// The default Office theme palette, in `theme=` attribute order (see
-/// `parse_theme_palette`); used when theme1.xml cannot be read.
+/// The default Office palette, in `theme=` attribute order.
 pub(super) fn default_palette() -> Vec<(u8, u8, u8)> {
     vec![
         (0xFF, 0xFF, 0xFF), // lt1
@@ -27,9 +24,7 @@ pub(super) fn default_palette() -> Vec<(u8, u8, u8)> {
     ]
 }
 
-/// The `theme=` attribute indexes the clrScheme colors in display order,
-/// which swaps each background/text pair relative to the file order:
-/// 0=lt1, 1=dk1, 2=lt2, 3=dk2, then accent1-6, hlink, folHlink.
+/// `theme=` index order, which swaps each lt/dk pair relative to the file order.
 const THEME_ORDER: [&[u8]; 12] = [
     b"lt1",
     b"dk1",
@@ -45,8 +40,7 @@ const THEME_ORDER: [&[u8]; 12] = [
     b"folHlink",
 ];
 
-/// Reads `<a:clrScheme>` from theme1.xml: each named child holds either
-/// `<a:srgbClr val="RRGGBB"/>` or `<a:sysClr … lastClr="RRGGBB"/>`.
+/// `<a:clrScheme>` children hold `<a:srgbClr val=…/>` or `<a:sysClr lastClr=…/>`.
 pub(super) fn parse_theme_palette(xml: &str) -> Result<Vec<(u8, u8, u8)>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut in_scheme = false;
@@ -90,8 +84,7 @@ pub(super) fn parse_theme_palette(xml: &str) -> Result<Vec<(u8, u8, u8)>, MetaEr
 
 /// `"RRGGBB"` or `"AARRGGBB"` (alpha ignored).
 pub(super) fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
-    // the byte-position slicing below panics mid-char on multi-byte input,
-    // and these strings come straight from untrusted XML
+    // the byte slicing below panics mid-char on multi-byte input
     if !hex.is_ascii() {
         return None;
     }
@@ -106,9 +99,7 @@ pub(super) fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
-/// Excel's tint: positive lightens toward white, negative darkens toward
-/// black. (Officially defined on HSL luminance; this per-channel linear
-/// approximation stays within a few units.)
+/// Positive lightens toward white, negative darkens toward black (linear approximation of Excel's HSL tint).
 pub(super) fn apply_tint(rgb: (u8, u8, u8), tint: f64) -> (u8, u8, u8) {
     let tint = tint.clamp(-1.0, 1.0);
     let channel = |c: u8| -> u8 {

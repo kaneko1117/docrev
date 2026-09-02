@@ -103,7 +103,6 @@ fn parse_theme(value: &str) -> Result<Theme, String> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    // an explicit flag wins over the environment, which wins over the default
     let theme = cli.theme.unwrap_or_else(Theme::from_env);
     match (cli.command, cli.file) {
         (
@@ -148,8 +147,6 @@ fn run_comment(action: CommentAction) -> ExitCode {
                 sheet: sheet.as_deref(),
             };
             if json {
-                // agents get each thread's cell content attached, so a batch
-                // of comments is actionable without reading the sheets
                 return match comments::list_with_context(&XlsxSource, &store, &document, &filter) {
                     Ok(items) => {
                         print_json(json_comment_store::threads_with_context_to_json(&items))
@@ -203,8 +200,7 @@ fn run_dump(file: &Path, sheet: Option<&str>, formulas: bool) -> ExitCode {
     }
 }
 
-/// All stdout goes through here: a downstream pipe closing early
-/// (e.g. `| head`, `| jq -e`) is not an error.
+/// A downstream pipe closing early (`| head`) is not an error.
 fn print_stdout(text: &str) -> ExitCode {
     match io::stdout().write_all(text.as_bytes()) {
         Ok(()) => ExitCode::SUCCESS,

@@ -1,5 +1,3 @@
-//! Use cases and the ports they need.
-
 pub mod comments;
 pub mod dump;
 pub mod error;

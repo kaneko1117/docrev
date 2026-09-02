@@ -1,5 +1,3 @@
-//! Store fakes and builders shared by the viewer's test modules.
-
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -31,7 +29,6 @@ impl CommentStore for NullStore {
     }
 }
 
-/// Records saves; the test keeps a clone of the shared log.
 #[derive(Clone, Default)]
 pub(crate) struct RecordingStore {
     pub(crate) log: Rc<RefCell<Vec<String>>>,
@@ -89,7 +86,6 @@ impl CommentStore for RecordingStore {
     }
 }
 
-/// A store an "agent" can edit behind the viewer's back.
 #[derive(Clone, Default)]
 pub(crate) struct SharedStore {
     pub(crate) threads: Rc<RefCell<Vec<CommentThread>>>,
@@ -99,7 +95,6 @@ pub(crate) struct SharedStore {
 }
 
 impl SharedStore {
-    /// Simulates an outside write: new content plus a new revision.
     pub(crate) fn write_from_outside(&self, threads: Vec<CommentThread>) {
         *self.threads.borrow_mut() = threads;
         *self.revision.borrow_mut() += 1;
@@ -128,7 +123,6 @@ impl CommentStore for SharedStore {
     }
 }
 
-/// A document an "agent" can rewrite behind the viewer's back.
 #[derive(Clone)]
 pub(crate) struct SharedSource {
     pub(crate) sheets: Rc<RefCell<Vec<Sheet>>>,
@@ -147,7 +141,6 @@ impl SharedSource {
         }
     }
 
-    /// Simulates an outside write: new content plus a new revision.
     pub(crate) fn write_from_outside(&self, sheets: Vec<Sheet>) {
         *self.sheets.borrow_mut() = sheets;
         if let Some(revision) = self.revision.borrow_mut().as_mut() {
@@ -170,7 +163,6 @@ impl DocumentSource for SharedSource {
     }
 }
 
-/// Opens a viewer on a `SharedSource`, auto-reload wired like production.
 pub(crate) fn viewer_on(source: &SharedSource) -> Viewer {
     viewer_on_with(source, Box::new(NullStore))
 }
@@ -194,7 +186,7 @@ pub(crate) fn viewer_with(
         Sheet::new("one", grid),
         Sheet::new("two", vec![vec![CellValue::Bool(true)]]),
     ]);
-    // mirror `open`: the revision is read before the comments are loaded
+    // like `open`: the revision is read before the comments are loaded
     let revision = store.revision();
     Viewer::from_document(doc, comments, None, revision, store).unwrap()
 }

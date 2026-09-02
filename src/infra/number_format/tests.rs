@@ -33,7 +33,6 @@ fn currency_literals() {
     assert_eq!(fmt("¥#,##0", 1200.0), "¥1,200");
     assert_eq!(fmt("$#,##0.00", 12.5), "$12.50");
     assert_eq!(fmt("¥#,##0", -1200.0), "-¥1,200");
-    // locale currency tag
     assert_eq!(fmt("[$¥-411]#,##0", 1200.0), "¥1,200");
 }
 
@@ -43,7 +42,6 @@ fn negative_and_zero_sections() {
     assert_eq!(fmt(code, 1234.0), "1,234");
     assert_eq!(fmt(code, -1234.0), "▲1,234");
     assert_eq!(fmt(code, 0.0), "-");
-    // two sections: negatives drop the automatic minus
     assert_eq!(fmt("0;(0)", -5.0), "(5)");
 }
 
@@ -73,8 +71,6 @@ fn all_eight_standard_colors_are_recognized() {
         assert_eq!(format.format(5.0).color, Some(expected), "{tag}");
         assert_eq!(format.format(5.0).text, "5");
     }
-    // indexed palette colors are stripped, not rendered — and must not
-    // knock the whole format back to General
     let indexed = NumberFormat::parse("[Color 5]#,##0");
     assert!(!indexed.is_general());
     assert_eq!(indexed.format(1234.0).text, "1,234");
@@ -130,7 +126,6 @@ fn unsupported_codes_fall_back_to_general() {
     ] {
         let format = NumberFormat::parse(code);
         if code == "0;0;0;@" {
-            // the 4th (text) section is simply ignored
             assert!(!format.is_general(), "{code}");
             continue;
         }
@@ -148,8 +143,6 @@ fn general_matches_the_raw_rendering() {
 
 #[test]
 fn absurdly_long_codes_degrade_to_general_instantly() {
-    // a hostile styles.xml can carry a multi-megabyte digit run; padding
-    // to that many placeholders would be quadratic, so it must not parse
     let bomb = "0".repeat(5_000_000);
     let format = NumberFormat::parse(&bomb);
     assert!(format.is_general());
@@ -161,9 +154,6 @@ fn absurdly_long_codes_degrade_to_general_instantly() {
 
 #[test]
 fn the_longest_accepted_code_still_formats_in_bounded_time() {
-    // MAX_CODE_LEN caps digit placeholders at 512, so the quadratic
-    // zero-padding worst case is ~512² byte moves — trivial. This pins
-    // the bound: rendering (not just parsing) must stay instant.
     let widest = "0".repeat(512);
     let format = NumberFormat::parse(&widest);
     assert!(!format.is_general(), "512 chars is within the cap");
@@ -174,7 +164,7 @@ fn the_longest_accepted_code_still_formats_in_bounded_time() {
 
 #[test]
 fn decimal_places_clamp_at_excels_thirty() {
-    // 10^510 overflows f64 — without the clamp this rendered "NaN"
+    // 10^510 overflows f64
     let deepest = format!("0.{}", "0".repeat(510));
     let text = NumberFormat::parse(&deepest).format(1.5).text;
     assert!(text.starts_with("1.5"), "got {text}");
@@ -210,7 +200,6 @@ fn time(hour: u8, minute: u8, second: u8) -> DateTimeParts {
     }
 }
 
-/// Mirrors the adapter: clock fields are the serial's remainder.
 fn duration(serial: f64) -> DateTimeParts {
     let total = (serial * 86_400.0).round() as u64;
     DateTimeParts {
@@ -299,7 +288,7 @@ fn elapsed_time_counts_past_twenty_four_hours() {
     assert_eq!(fmt_dt("[hh]:mm", duration(0.0625)), "01:30");
     assert_eq!(fmt_dt("[m]", duration(2.05)), "2952");
     assert_eq!(fmt_dt("[s]", duration(0.5)), "43200");
-    // f64 dust must not shave a minute off (13:05 is 0.54513‥)
+    // 13:05 is 0.54513‥
     assert_eq!(fmt_dt("[m]", time(13, 5, 0)), "785");
 }
 
@@ -353,15 +342,13 @@ fn the_word_general_in_a_section_renders_the_raw_value() {
     assert_eq!(format.format(-46_265.0).text, "-46265");
     assert_eq!(format.format(-46_265.0).color, Some(NamedColor::Red));
     assert_eq!(fmt("General;@", 1.5), "1.5");
-    // General composes with nothing
     assert!(NumberFormat::parse("General yyyy").is_general());
     assert!(NumberFormat::parse("0 General").is_general());
 }
 
 #[test]
 fn negative_durations_keep_their_minutes_and_seconds() {
-    // 1904-epoch books store negative elapsed times; the calendar parts
-    // saturate to 0 there, so remainders must come from the serial
+    // negative durations: the calendar parts saturate to 0
     assert_eq!(
         fmt_dt("[h]:mm:ss", duration(-108_900.0 / 86_400.0)),
         "-30:15:00"

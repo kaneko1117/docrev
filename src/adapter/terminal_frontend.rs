@@ -17,10 +17,10 @@ use crate::ui::grid::{
 };
 use crate::ui::theme::Theme;
 
-/// How long the viewer waits for input before checking for outside changes.
+/// Input wait before a `Tick`.
 const TICK: Duration = Duration::from_millis(500);
 
-/// Which key table applies — remembered at draw time for the next event.
+/// Which key table applies; remembered at draw time.
 #[derive(Clone, Copy, PartialEq)]
 enum InputMode {
     Grid,
@@ -36,7 +36,6 @@ pub struct TerminalFrontend {
     scrolls: Vec<Scroll>,
     page_rows: usize,
     input_mode: InputMode,
-    /// Where things were drawn last frame — clicks resolve through this.
     hits: HitMap,
     drag: DragState,
 }
@@ -55,8 +54,7 @@ impl TerminalFrontend {
     }
 }
 
-/// A left press on a cell, until its release; `dragged` turns true the
-/// moment the drag reaches another cell, telling release from click.
+/// `dragged` turns true once the drag reaches another cell.
 #[derive(Default)]
 struct DragState {
     pressed: bool,
@@ -65,8 +63,6 @@ struct DragState {
 
 fn map_mouse(hits: &HitMap, mode: InputMode, drag: &mut DragState, mouse: MouseEvent) -> Event {
     let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-    // wheel steps match what terminals faked as arrow keys before capture;
-    // prompts scroll their selection one entry at a time
     let step: isize = match mode {
         InputMode::Picker | InputMode::Search => 1,
         _ => 3,
@@ -94,9 +90,7 @@ fn map_mouse(hits: &HitMap, mode: InputMode, drag: &mut DragState, mouse: MouseE
         }
         MouseEventKind::Up(MouseButton::Left) if drag.pressed => {
             drag.pressed = false;
-            // the viewer must always learn the button came up, or the
-            // selection would outlive the press; a release that never left
-            // its cell was a click and copies nothing
+            // every release must reach the viewer or the selection outlives the press
             Event::DragEnd {
                 copy: std::mem::take(&mut drag.dragged),
             }
@@ -232,8 +226,6 @@ impl Frontend for TerminalFrontend {
 
     fn next_event(&mut self) -> Result<Event, FrontendError> {
         loop {
-            // waking up regularly is what lets agent replies appear without
-            // a keypress; the tick itself costs one `stat` upstream
             if !event::poll(TICK).map_err(|e| FrontendError(e.to_string()))? {
                 return Ok(Event::Tick);
             }
@@ -255,7 +247,6 @@ impl Frontend for TerminalFrontend {
         }
     }
 
-    /// OSC 52: the terminal is asked to put the text on the clipboard.
     fn copy(&mut self, text: &str) -> Result<(), FrontendError> {
         let mut out = std::io::stdout();
         out.write_all(clipboard::osc52(text).as_bytes())
@@ -269,7 +260,7 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
     if mode == InputMode::Editing {
         return match key.code {
             KeyCode::Esc => Event::CancelEdit,
-            // raw mode disables XOFF flow control, so Ctrl+S arrives as a key
+            // raw mode disables XOFF, so Ctrl+S arrives as a key
             KeyCode::Char('s') if ctrl => Event::Submit,
             KeyCode::Enter => Event::Newline,
             KeyCode::Backspace => Event::Backspace,
@@ -277,8 +268,6 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
             _ => Event::Noop,
         };
     }
-    // the picker and the search prompt share one grammar: type to filter,
-    // arrows to move, Enter to commit, Esc to cancel
     if mode == InputMode::Notes {
         return match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n') => Event::CancelEdit,
@@ -303,17 +292,13 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
     }
     match key.code {
         KeyCode::Char('q') => Event::Quit,
-        // raw mode turns Ctrl+C into a plain key event — without this, users
-        // who don't know 'q' cannot exit
+        // raw mode turns Ctrl+C into a plain key event
         KeyCode::Char('c') if ctrl => Event::Quit,
         KeyCode::Char('c') => Event::StartComment,
         KeyCode::Char('r') => Event::StartReply,
-        // Excel's Go To key, plus F5 for the same muscle memory
         KeyCode::Char('g') if ctrl => Event::OpenSheetPicker,
         KeyCode::F(5) => Event::OpenSheetPicker,
-        // Excel's Find key
         KeyCode::Char('f') if ctrl => Event::OpenSearch,
-        // the workbook's own comments, read-only
         KeyCode::Char('n') => Event::OpenNotes,
         KeyCode::Home if ctrl => Event::Top,
         KeyCode::End if ctrl => Event::Bottom,
@@ -513,7 +498,7 @@ mod tests {
     fn a_click_resolves_to_a_cell_and_a_plain_click_never_copies() {
         let hits = hitmap();
         let mut drag = DragState::default();
-        // y=2 is the first body line (y=1 is the column-letter header)
+        // y=1 is the column header, y=2 the first body line
         assert_eq!(
             map_mouse(
                 &hits,
@@ -563,7 +548,6 @@ mod tests {
             ),
             Event::DragEnd { copy: true }
         );
-        // a drag that never began (press missed the grid) stays inert
         assert_eq!(
             map_mouse(
                 &hits,

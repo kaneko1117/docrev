@@ -14,7 +14,7 @@ use crate::infra::fs;
 pub const SIDECAR_SUFFIX: &str = ".docrev.json";
 const SCHEMA_VERSION: u32 = 1;
 
-/// Persists comments to `<document>.docrev.json`, never touching the document.
+/// `<document>.docrev.json`.
 pub struct JsonCommentStore {
     sidecar: PathBuf,
 }
@@ -34,8 +34,6 @@ impl JsonCommentStore {
         PathBuf::from(path)
     }
 
-    /// Exclusive advisory lock preventing lost updates when the TUI and an
-    /// agent CLI write concurrently.
     fn lock(&self) -> Result<fs::SidecarLock, StoreError> {
         fs::SidecarLock::acquire(&self.lock_path())
             .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))
@@ -47,9 +45,7 @@ impl JsonCommentStore {
         else {
             return Ok(SidecarFile::default());
         };
-        // our atomic writes never produce an empty file, so one is a shell
-        // accident (`... > file.docrev.json` truncates before running);
-        // treating it as empty recovers instead of failing forever
+        // an empty file is a shell accident (`> file` truncation), not a sidecar
         if text.trim().is_empty() {
             return Ok(SidecarFile::default());
         }
@@ -72,10 +68,7 @@ impl JsonCommentStore {
 }
 
 impl CommentStore for JsonCommentStore {
-    /// Modification time and size folded together: mtime alone can have
-    /// one-second granularity, which would hide a quick second write.
-    /// A missing sidecar is `Some(0)`, so an agent creating one registers
-    /// as a change.
+    /// mtime mixed with size (mtime alone has one-second granularity); a missing file is `Some(0)`.
     fn revision(&self) -> Option<u64> {
         let metadata = match std::fs::metadata(&self.sidecar) {
             Ok(metadata) => metadata,
@@ -144,8 +137,7 @@ impl CommentStore for JsonCommentStore {
             body: body.to_string(),
             created_at: now(),
         });
-        // a reply reopens the thread: otherwise it is invisible to the viewer
-        // (no marker) and to agents (which list unresolved threads)
+        // a reply reopens the thread
         dto.resolved = false;
         let thread = dto.clone().into_domain()?;
         self.write(&file)?;
@@ -170,22 +162,18 @@ fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// CLI output: a single thread in the sidecar's thread shape.
 pub fn thread_to_json(thread: &CommentThread) -> Result<String, StoreError> {
     serde_json::to_string_pretty(&ThreadDto::from_domain(thread))
         .map_err(|e| StoreError::Io(e.to_string()))
 }
 
-/// CLI output for `list --json`: the sidecar shape, each thread augmented
-/// with its derived `cell` content, plus the workbook's own comments in a
-/// separate read-only array. Output-only — the sidecar file stores neither.
+/// Output-only: `cell` and `workbook_comments` are never stored in the sidecar.
 pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<String, StoreError> {
     let items = &list.threads;
     #[derive(Serialize)]
     struct File {
         version: u32,
         comments: Vec<Entry>,
-        /// The workbook's own, read-only — no id, never actionable.
         workbook_comments: Vec<WorkbookEntry>,
     }
     #[derive(Serialize)]
@@ -211,14 +199,12 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
     #[derive(Serialize)]
     struct CellDto {
         value: String,
-        /// Machine-readable date/time value; absent on every other cell kind.
+        /// Present only on date/time cells.
         #[serde(skip_serializing_if = "Option::is_none")]
         raw: Option<String>,
         row: RowDto,
     }
-    /// A JSON object in insertion order — `serde_json::Map` would sort keys
-    /// alphabetically, putting AA1 before Z1 and breaking the promised
-    /// column order for consumers that keep object order (Python dicts do).
+    /// Insertion-ordered object; `serde_json::Map` would sort AA1 before Z1.
     struct RowDto(Vec<(String, String)>);
     impl Serialize for RowDto {
         fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -300,7 +286,7 @@ struct ThreadDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnchorDto {
     sheet: String,
-    /// A1 notation — the sidecar is an edge (see CLAUDE.md).
+    /// A1 notation.
     cell: String,
 }
 
@@ -387,7 +373,7 @@ mod tests {
                 Some(comments::CellContext {
                     value: "ロック表示".into(),
                     raw: Some("2026-08-31 00:00:00".into()),
-                    // Z before AA: column order, which alphabetical keys break
+                    // Z before AA
                     row: vec![("Z2".into(), "先".into()), ("AA2".into(), "後".into())],
                 }),
             ),

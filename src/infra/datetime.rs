@@ -1,14 +1,11 @@
-//! Calendar components of a date/time cell. The adapter resolves the
-//! workbook's serial number into these parts; this module derives only
-//! weekday and era from them and owns no serial-to-calendar conversion.
+//! Calendar parts of a date/time cell; no serial-to-calendar conversion here.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DateTimeKind {
-    /// The value carries a calendar date.
     DateTime,
-    /// A bare time of day — the serial has no date component.
+    /// The serial has no date component.
     TimeOnly,
-    /// An elapsed amount (`[h]`-style formats), not a point in time.
+    /// An elapsed amount, not a point in time.
     Duration,
 }
 
@@ -23,7 +20,6 @@ pub struct DateTimeParts {
     pub minute: u8,
     pub second: u8,
     /// Days since the Excel epoch; the fraction is the time of day.
-    /// Elapsed-time tokens (`[h]`) count from this, not from the fields.
     pub serial: f64,
     pub kind: DateTimeKind,
 }
@@ -35,8 +31,7 @@ pub(crate) struct Era {
     start: (u16, u8, u8),
 }
 
-/// Newest first; the final entry is the floor (serials begin in 1900, well
-/// inside Meiji, so anything earlier is a crafted input and clamps to it).
+/// Newest first; dates before the last entry clamp to it.
 const ERAS: [Era; 5] = [
     Era {
         letter: 'R',
@@ -71,10 +66,7 @@ const ERAS: [Era; 5] = [
 ];
 
 impl DateTimeParts {
-    /// 0 = Sunday … 6 = Saturday (Sakamoto's method). Excel pretends the
-    /// nonexistent 1900-02-29 existed, shifting weekdays before 1900-03-01;
-    /// real calendars matter more than that two-month-old fiction, so we
-    /// follow the actual weekday.
+    /// 0 = Sunday … 6 = Saturday; the real calendar, not Excel's 1900-02-29.
     pub fn weekday_index(&self) -> usize {
         const T: [i64; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
         let month = (self.month as usize).clamp(1, 12);
@@ -86,9 +78,7 @@ impl DateTimeParts {
         (sum.rem_euclid(7)) as usize
     }
 
-    /// The rendering used when no supported format exists: date-bearing
-    /// values keep `YYYY-MM-DD HH:MM:SS`, bare times drop the fictional
-    /// epoch date, durations count elapsed time past 24 hours.
+    /// `YYYY-MM-DD HH:MM:SS`; bare times drop the date, durations count past 24 hours.
     pub fn fallback_text(&self) -> String {
         match self.kind {
             DateTimeKind::DateTime => format!(
@@ -112,15 +102,14 @@ impl DateTimeParts {
         }
     }
 
-    /// The Japanese era covering this date and the 1-based year within it.
+    /// The era and the 1-based year within it.
     pub(crate) fn era(&self) -> (&'static Era, u16) {
         let key = (self.year, self.month, self.day);
         let era = ERAS
             .iter()
             .find(|e| key >= e.start)
             .unwrap_or(&ERAS[ERAS.len() - 1]);
-        // saturation covers pre-Meiji clamps (0 + 1 = year 1); the +1 cannot
-        // overflow because every era starts after 1868
+        // pre-Meiji dates saturate to year 1
         let year = self.year.saturating_sub(era.start.0) + 1;
         (era, year)
     }

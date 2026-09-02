@@ -1,6 +1,3 @@
-//! The package itself: zip entries, the workbook's sheet-name → part map,
-//! and the attribute decoding every reader shares.
-
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -18,7 +15,7 @@ pub(super) fn open_archive(document: &Path) -> Result<zip::ZipArchive<File>, Met
     zip::ZipArchive::new(file).map_err(|e| MetaError(e.to_string()))
 }
 
-/// Relationship targets are zip paths relative to `xl/`, or absolute with `/`.
+/// Targets are relative to `xl/`, or absolute with a leading `/`.
 pub(super) fn entry_path(target: &str) -> String {
     match target.strip_prefix('/') {
         Some(absolute) => absolute.to_string(),
@@ -46,7 +43,7 @@ pub(super) fn attr_value(attr: &Attribute, decoder: quick_xml::Decoder) -> Strin
         .unwrap_or_default()
 }
 
-/// `<sheet name="売上" r:id="rId1"/>` pairs from workbook.xml.
+/// `<sheet name="売上" r:id="rId1"/>` → (name, rId).
 pub(super) fn parse_sheet_ids(xml: &str) -> Result<Vec<(String, String)>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut out = Vec::new();
@@ -73,7 +70,7 @@ pub(super) fn parse_sheet_ids(xml: &str) -> Result<Vec<(String, String)>, MetaEr
     Ok(out)
 }
 
-/// `<Relationship Id="rId1" Target="worksheets/sheet1.xml"/>` from the rels file.
+/// `<Relationship Id="rId1" Target="worksheets/sheet1.xml"/>` → (Id, Target).
 pub(super) fn parse_rel_targets(xml: &str) -> Result<HashMap<String, String>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut out = HashMap::new();

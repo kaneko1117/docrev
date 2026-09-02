@@ -1,6 +1,3 @@
-//! The workbook's own comments: legacy notes and threaded comments, found
-//! through each worksheet's relationship part.
-
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::Path;
@@ -15,7 +12,7 @@ use super::archive::{
     attr_value, entry_path, open_archive, parse_rel_targets, parse_sheet_ids, read_entry,
 };
 
-/// One workbook comment as read from the file, 0-based cell coordinates.
+/// 0-based cell coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawWorkbookComment {
     pub row: u32,
@@ -26,11 +23,7 @@ pub struct RawWorkbookComment {
     pub replies: Vec<(String, String)>,
 }
 
-/// The workbook's own comments per sheet name: Excel's legacy notes
-/// (`xl/comments*.xml`) and threaded comments (`xl/threadedComments/*.xml`),
-/// resolved through each worksheet's relationship part. calamine exposes
-/// neither. When a cell has a threaded comment, Excel also writes a legacy
-/// fallback note on it — the fallback is dropped, the thread wins.
+/// Per sheet name. A cell with a threaded comment also carries a legacy fallback note; the note is dropped.
 pub fn workbook_comments(
     document: &Path,
 ) -> Result<HashMap<String, Vec<RawWorkbookComment>>, MetaError> {
@@ -40,7 +33,7 @@ pub fn workbook_comments(
     let rels = read_entry(&mut archive, "xl/_rels/workbook.xml.rels")?;
     let sheets = parse_sheet_ids(&workbook)?;
     let targets = parse_rel_targets(&rels)?;
-    // person GUID → display name, for threaded comment authors
+    // person GUID → display name
     let persons = match read_entry(&mut archive, "xl/persons/person.xml") {
         Ok(xml) => parse_persons(&xml).unwrap_or_default(),
         Err(_) => HashMap::new(),
@@ -52,7 +45,6 @@ pub fn workbook_comments(
             continue;
         };
         let sheet_path = entry_path(target);
-        // one sheet's unreadable comments must not strip the others'
         let Some(sheet_rels) = read_sheet_rels(&mut archive, &sheet_path) else {
             continue;
         };
@@ -84,15 +76,13 @@ pub fn workbook_comments(
     Ok(result)
 }
 
-/// The rels part beside a worksheet: `worksheets/sheet1.xml` →
-/// `worksheets/_rels/sheet1.xml.rels`. Absent for most sheets.
+/// `worksheets/sheet1.xml` → `worksheets/_rels/sheet1.xml.rels`; `None` when absent.
 fn read_sheet_rels(archive: &mut zip::ZipArchive<File>, sheet_path: &str) -> Option<String> {
     let (dir, file) = sheet_path.rsplit_once('/')?;
     read_entry(archive, &format!("{dir}/_rels/{file}.rels")).ok()
 }
 
-/// Targets of relationships whose type ends with `/<kind>`, resolved
-/// relative to the worksheet's directory (`../comments1.xml` → `xl/...`).
+/// Targets whose relationship type ends with `/<kind>`, resolved against the worksheet's directory.
 fn related_targets(rels_xml: &str, sheet_path: &str, kind: &str) -> Vec<String> {
     let mut reader = Reader::from_str(rels_xml);
     let mut out = Vec::new();
@@ -138,7 +128,7 @@ fn resolve_relative(base: &str, target: &str) -> String {
     parts.join("/")
 }
 
-/// `<person displayName="田中" id="{GUID}"/>` pairs.
+/// `<person displayName="田中" id="{GUID}"/>` → (id, displayName).
 fn parse_persons(xml: &str) -> Result<HashMap<String, String>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut out = HashMap::new();
@@ -165,8 +155,7 @@ fn parse_persons(xml: &str) -> Result<HashMap<String, String>, MetaError> {
     Ok(out)
 }
 
-/// Legacy notes: `<authors>` by index, then `<comment ref author_id>` with
-/// the body as the concatenation of its `<t>` runs.
+/// `<comment ref authorId>` with the body as its `<t>` runs; authors by index.
 fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut authors: Vec<String> = Vec::new();
@@ -174,8 +163,7 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
     let mut in_author = false;
     let mut current: Option<RawWorkbookComment> = None;
     let mut in_text = false;
-    // phonetic runs (<rPh>) carry ruby readings in their own <t> — body
-    // text they are not, or 山田 would read 山田ヤマダ
+    // <rPh> runs are ruby readings, not body text (山田 would read 山田ヤマダ)
     let mut in_phonetic = false;
     loop {
         match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
@@ -245,8 +233,7 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
     Ok(out)
 }
 
-/// Threaded comments: roots have no `parentId`; replies attach to their
-/// parent in file order. `done="1"` on the root maps to resolved.
+/// Roots have no `parentId`; `done="1"` on the root maps to resolved.
 fn parse_threaded_comments(
     xml: &str,
     persons: &HashMap<String, String>,
@@ -257,10 +244,10 @@ fn parse_threaded_comments(
     }
     let mut reader = Reader::from_str(xml);
     let mut roots: Vec<Entry> = Vec::new();
-    // (parent id, author, body) until all roots are known
+    // (parent id, author, body)
     let mut replies: Vec<(String, String, String)> = Vec::new();
     let mut in_text = false;
-    // (is_reply, parent, buffer target index into roots or replies)
+    // Some(true) = a reply is open, Some(false) = a root is open
     let mut open: Option<bool> = None;
     loop {
         match reader.read_event().map_err(|e| MetaError(e.to_string()))? {

@@ -12,8 +12,7 @@ fn column_label(index: u32) -> String {
 
 const MAX_CELL_WIDTH: usize = 24;
 
-/// `formulas` switches formula cells to their formulas (`=SUM(...)`) instead
-/// of their results — Excel's "show formulas" mode for the agent CLI.
+/// `formulas` shows formula cells as `=…` instead of their results.
 pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> String {
     let mut out = format!("Sheet: {} ({}/{})\n\n", sheet.name(), position + 1, total);
     let col_count = sheet.col_count();
@@ -22,9 +21,6 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
         return out;
     }
 
-    // lines per cell: text breaks where the author did and wraps at the
-    // cell-width cap, numbers stay on one clipped line so digit groups
-    // never split
     let texts: Vec<Vec<Vec<String>>> = (0..sheet.row_count())
         .map(|r| {
             (0..col_count)
@@ -97,8 +93,7 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
             for (c, lines) in row.iter().enumerate() {
                 let w = col_widths.get(c).copied().unwrap_or(0);
                 let text = lines.get(sub).map(String::as_str).unwrap_or("");
-                // formulas read as text and align left, whatever their
-                // result type — Excel's formula view does the same
+                // formulas align left whatever their result type
                 let shows_formula = formulas && sheet.formula_at(r, c).is_some();
                 let aligned = if !shows_formula
                     && matches!(

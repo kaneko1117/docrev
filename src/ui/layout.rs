@@ -1,6 +1,4 @@
-//! Pure grid layout: decides what goes where — merges, wrapping,
-//! variable row heights, scroll following, alignment, semantic styling.
-//! No ratatui, no colors, no `Span`s; `grid.rs` translates the result.
+//! Layout only: no ratatui here; `grid.rs` renders the result.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,9 +9,7 @@ use super::text::{cell_lines, cell_text, center, clip, pad_left, pad_right};
 
 pub const DEFAULT_CELL_WIDTH: usize = 12;
 
-/// Excel widths are fractional character counts; a terminal cell wants an
-/// integer column count, clamped to a sane range. Absent or non-finite
-/// widths (NaN in the file) fall back to the default.
+/// Absent or non-finite widths fall back to the default.
 fn display_width(excel: Option<f64>) -> usize {
     match excel {
         Some(w) if w.is_finite() => w.round().clamp(4.0, 60.0) as usize,
@@ -31,75 +27,60 @@ pub(crate) struct LayoutInput<'a> {
     pub sheet: &'a Sheet,
     pub cursor: (usize, usize),
     pub markers: &'a HashSet<(usize, usize)>,
-    /// Cells carrying the workbook's own comments — tinted in the corner.
     pub notes: &'a HashSet<(usize, usize)>,
-    /// Widths as the file states them; `display_width` turns each into
-    /// terminal cells.
+    /// Excel character widths, not terminal cells.
     pub col_widths: &'a [Option<f64>],
-    /// A drag in progress, as (press cell, current cell) — highlighted like
-    /// the cursor.
+    /// (press cell, current cell).
     pub selection: Option<((usize, usize), (usize, usize))>,
 }
 
 pub(crate) struct Viewport {
-    /// Grid area width in terminal cells (including the row-label gutter).
+    /// In terminal cells, row-label gutter included.
     pub width: usize,
-    /// Grid line capacity below the column-header line.
+    /// Lines below the column-header line.
     pub rows: usize,
 }
 
 pub(crate) struct GridLayout {
     pub empty: bool,
     pub label_width: usize,
-    /// Scrolling-body columns currently on screen, and how many the sheet
-    /// has — the status bar tells the user where they are in a wide sheet.
+    /// Scrolling-body columns on screen; frozen columns are not included.
     pub visible_cols: std::ops::Range<usize>,
-    /// Columns pinned left of the body — they count as visible too.
     pub frozen_cols: usize,
     pub col_count: usize,
-    /// Centered column letters: frozen columns first, then the visible body.
+    /// Frozen columns first, then the visible body.
     pub header: Vec<String>,
     /// Index into `header` whose left separator is the freeze boundary.
     pub header_boundary: Option<usize>,
-    /// Each visible column with its x-span inside the grid area (separator
-    /// included), frozen columns first — the hit map for mouse clicks.
+    /// (col, x-range inside the grid area, left separator included), frozen columns first.
     pub col_spans: Vec<(usize, std::ops::Range<usize>)>,
     pub lines: Vec<BodyLine>,
 }
 
-/// One terminal line of the grid body; a sheet row wraps into several.
 pub(crate) struct BodyLine {
-    /// The sheet row this line belongs to — the hit map for mouse clicks.
     pub row: usize,
-    /// Row number on the first line of a sheet row, blanks below.
+    /// Blank on a sheet row's continuation lines.
     pub label: String,
-    /// Horizontal gridline under this line (a sheet row's last line);
-    /// applies to the label, the separators and non-merged slots.
+    /// True on a sheet row's last line.
     pub ruled: bool,
-    /// This line's gridline is the frozen-rows boundary — drawn emphasized.
     pub freeze_boundary: bool,
     pub slots: Vec<Slot>,
 }
 
 pub(crate) struct Slot {
     pub separator: Separator,
-    /// The left separator is the frozen-columns boundary — drawn emphasized.
     pub freeze_boundary: bool,
-    /// Clipped and aligned (padded) text for this line of the slot.
     pub text: String,
-    /// Cursor styling (the cursor is on — or, for merges, inside — it).
+    /// Also true inside a merge the cursor is in.
     pub cursor: bool,
-    /// Inside the dragged rectangle — drawn a step lighter than the cursor.
     pub selected: bool,
-    /// The cell carries a workbook comment: its top-right corner is tinted,
-    /// like Sheets. Only on the first line of the sheet row.
+    /// Only on the first line of the sheet row.
     pub note: bool,
-    /// Workbook fill; ignored under the cursor.
+    /// Ignored under the cursor.
     pub fill: Option<Rgb>,
-    /// Text color as resolved by the workbook; suppressed under the cursor
-    /// unless it comes from the number format.
+    /// Suppressed under the cursor unless it comes from the number format.
     pub font: Option<TextColor>,
-    /// Horizontal gridline under this slot (merges only rule their last row).
+    /// Merges only rule their last row.
     pub ruled: bool,
 }
 
@@ -108,8 +89,7 @@ pub(crate) enum Separator {
     Marker { fill: Option<Rgb> },
 }
 
-/// Literal font colors are dropped under the selection so light fonts stay
-/// readable on the selection blue; named colors carry meaning and are kept.
+/// Literal colors are dropped under the selection; named colors are kept.
 fn visible_color(color: Option<TextColor>, on_cursor: bool) -> Option<TextColor> {
     match color {
         Some(TextColor::Literal(_)) if on_cursor => None,
@@ -117,14 +97,11 @@ fn visible_color(color: Option<TextColor>, on_cursor: bool) -> Option<TextColor>
     }
 }
 
-/// The column stage: which columns are visible after horizontal scroll
-/// following, how wide each one draws, and where each spans on screen.
 struct ColumnPlan {
     label_width: usize,
     frozen_cols: usize,
     body_left: usize,
     last_col: usize,
-    /// Every column's display width, `DEFAULT_CELL_WIDTH` where unset.
     widths: Vec<usize>,
     header: Vec<String>,
     header_boundary: Option<usize>,
@@ -151,8 +128,7 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
         .collect();
     let width_of = |c: usize| widths.get(c).copied().unwrap_or(DEFAULT_CELL_WIDTH);
 
-    // Frozen columns pin to the left of the body. Dropped for the frame
-    // when they would leave the body no room at all (separator + one cell).
+    // dropped for the frame when they would leave the body no room (separator + one cell)
     let mut frozen_cols = sheet.frozen_cols().min(sheet.col_count().saturating_sub(1));
     let span_of = |cols: std::ops::Range<usize>| cols.map(|c| width_of(c) + 1).sum::<usize>();
     if frozen_cols > 0 && span_of(0..frozen_cols) + 2 > avail {
@@ -162,8 +138,6 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
 
     let (_, cursor_col) = input.cursor;
     scroll.left = scroll.left.max(frozen_cols);
-    // a cursor inside the frozen columns is always visible — only a body
-    // cursor drives horizontal scrolling
     if cursor_col >= frozen_cols {
         follow_col(
             &mut scroll.left,
@@ -174,8 +148,7 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
             frozen_cols,
         );
     } else {
-        // the no-blank-space-on-the-right invariant holds regardless of
-        // where the cursor is — widening the grid must still scroll back
+        // must run whatever the cursor did: widening the grid has to scroll back
         scroll_back_col(
             &mut scroll.left,
             sheet.col_count(),
@@ -194,8 +167,6 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
         .collect();
     let header_boundary = (frozen_cols > 0).then_some(frozen_cols);
 
-    // every visible column's x-span (its left separator included), so a
-    // click can be mapped back to a cell without re-deriving the geometry
     let mut col_spans = Vec::new();
     let mut x = label_width;
     for col in segments().flat_map(|(start, end)| start..end) {
@@ -216,26 +187,20 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
     }
 }
 
-/// The row stage: wraps text, lays out merged regions and builds each
-/// line's styled slots.
 struct RowBuilder<'a> {
     input: &'a LayoutInput<'a>,
     plan: &'a ColumnPlan,
 }
 
-/// What the vertical stage decided; `RowBuilder::build` needs it to place
-/// a merge's marker on its first *visible* line.
+/// Needed to place a merge's marker on its first *visible* line.
 struct RowViewport {
     frozen_rows: usize,
     body_top: usize,
 }
 
 impl RowBuilder<'_> {
-    /// Wrapped text and in-cell line breaks make row heights variable: a
-    /// sheet row is as tall as its tallest visible cell — frozen columns
-    /// included. Numbers stay
-    /// single-line, and a merged region wraps at the merged width,
-    /// counted on its anchor row.
+    /// Tallest visible cell, frozen columns included; numbers are single-line; a merge counts on
+    /// its anchor row at the merged width.
     fn height_of(&self, row: usize) -> usize {
         let sheet = self.input.sheet;
         let width_of = |c: usize| self.plan.width_of(c);
@@ -245,9 +210,7 @@ impl RowBuilder<'_> {
             while col < end {
                 if let Some(merge) = sheet.merge_at(row, col) {
                     let segment_end = (merge.end_col + 1).min(end);
-                    // a merge that began inside the frozen columns draws its
-                    // text there; the body shows a blank continuation, whose
-                    // narrower span must not count (mirrors `build`)
+                    // a merge that began in the frozen columns draws only in the pinned segment; mirrors `build`
                     let continuation = seg_index == 1 && merge.start_col < self.plan.frozen_cols;
                     if row == merge.start_row && !continuation {
                         let span_cols = segment_end - col;
@@ -276,7 +239,6 @@ impl RowBuilder<'_> {
         let (cursor_row, cursor_col) = input.cursor;
         let width_of = |c: usize| plan.width_of(c);
 
-        // the drag rectangle highlights a step lighter than the cursor cell
         let in_selection = |row: usize, col: usize| match input.selection {
             Some(((r0, c0), (r1, c1))) => {
                 (r0.min(r1)..=r0.max(r1)).contains(&row) && (c0.min(c1)..=c0.max(c1)).contains(&col)
@@ -284,8 +246,7 @@ impl RowBuilder<'_> {
             None => false,
         };
 
-        // the first visible line of a merge carries its ● marker; with a freeze
-        // the pinned rows are visible from the top, not from the scroll offset
+        // with a freeze the pinned rows are visible from the top, not from the scroll offset
         let first_visible_row = |merge: &crate::domain::sheet::MergedRange| {
             if merge.start_row < vp.frozen_rows {
                 merge.start_row
@@ -295,13 +256,10 @@ impl RowBuilder<'_> {
         };
 
         let height = self.height_of(row);
-        // a cell's lines are split and wrapped once per row, not once per
-        // sub-line: a cell with many line breaks would otherwise cost the
-        // square of its height every frame
+        // computed once per row: per sub-line would be quadratic in the row height
         let mut lines_of: HashMap<(usize, usize), Vec<String>> = HashMap::new();
         let mut out = Vec::with_capacity(height);
         for sub in 0..height {
-            // the horizontal gridline sits under a sheet row's LAST line
             let last_line = sub + 1 == height;
             let label = if sub == 0 {
                 pad_left(&(row + 1).to_string(), plan.label_width)
@@ -313,16 +271,9 @@ impl RowBuilder<'_> {
                 let mut col = start;
                 while col < end {
                     let freeze_boundary = plan.frozen_cols > 0 && seg_index == 1 && col == start;
-                    // A merged region lays out as one cell: the value on its
-                    // anchor row wrapped to the merged width, no gridlines
-                    // inside, and the whole region highlights when the cursor
-                    // is anywhere in it. A thread on ANY of its cells shows
-                    // one ● on the first visible line.
                     if let Some(merge) = sheet.merge_at(row, col) {
-                        // a merge that began inside the frozen columns has
-                        // already drawn its text and marker in the pinned
-                        // segment — the body segment shows only its blank
-                        // continuation, never a second copy
+                        // a merge that began in the frozen columns has drawn its text and marker in
+                        // the pinned segment; mirrors `height_of`
                         let continuation = seg_index == 1 && merge.start_col < plan.frozen_cols;
                         let region_marked = !continuation
                             && row == first_visible_row(merge)
@@ -365,10 +316,8 @@ impl RowBuilder<'_> {
                             cursor: on_cursor,
                             selected: in_range,
                             note,
-                            // the anchor's fill paints the whole merged region
                             fill: sheet.display_fill_at(row, col),
                             font,
-                            // the horizontal gridline only under the region's last row
                             ruled: row == merge.end_row && last_line,
                         });
                         col += span_cols;
@@ -383,13 +332,11 @@ impl RowBuilder<'_> {
                     };
                     let cell = sheet.cell(row, col);
                     let own_width = width_of(col);
-                    // dates align like numbers, as Excel shows them
+                    // dates align like numbers
                     let is_number = cell.is_number() || cell.is_datetime();
                     let on_cursor = (row, col) == input.cursor;
                     let in_range = in_selection(row, col);
 
-                    // text wraps within the column; numbers stay on one
-                    // right-aligned line so digit groups never split
                     let line_text = if is_number {
                         if sub == 0 {
                             cell_text(cell)
@@ -436,9 +383,6 @@ impl RowBuilder<'_> {
     }
 }
 
-/// The viewport glue: runs the column stage, decides the vertical window
-/// (frozen rows plus scroll following), and assembles the visible lines
-/// through the row stage.
 pub(crate) fn grid_layout(
     input: &LayoutInput,
     viewport: &Viewport,
@@ -464,10 +408,8 @@ pub(crate) fn grid_layout(
     let rows_visible = viewport.rows;
     let height_of = |row: usize| rows.height_of(row);
 
-    // Frozen rows pin above the body. Dropped when they would leave no
-    // line for the body to scroll in. Heights are at least 1, so more
-    // frozen rows than viewport lines can never fit — checked first, or a
-    // hostile ySplit would make this sum walk the whole sheet every frame.
+    // checked before the sum: heights are at least 1, and a hostile ySplit would make the sum walk
+    // the whole sheet every frame
     let mut frozen_rows = sheet.frozen_rows().min(sheet.row_count().saturating_sub(1));
     if frozen_rows >= rows_visible || (0..frozen_rows).map(height_of).sum::<usize>() >= rows_visible
     {
@@ -515,12 +457,11 @@ pub(crate) fn grid_layout(
     }
 }
 
-/// The slice of sheet tabs that fits, always including the active one, plus
-/// whether tabs are hidden on either side.
+/// Always includes the active tab.
 pub(crate) struct TabStrip {
     pub more_left: bool,
     pub more_right: bool,
-    /// (sheet index, rendered label) in display order.
+    /// (sheet index, rendered label).
     pub tabs: Vec<(usize, String)>,
 }
 
@@ -536,12 +477,10 @@ pub(crate) fn tab_strip(names: &[&str], active: usize, width: usize) -> TabStrip
     let w = |i: usize| unicode_width::UnicodeWidthStr::width(labels[i].as_str());
     let active = active.min(labels.len() - 1);
 
-    // grow around the active tab, preferring the tabs before it so the user
-    // keeps the context they scrolled through
+    // grows around the active tab, preferring the tabs before it
     let (mut start, mut end) = (active, active + 1);
     let mut used = w(active);
     loop {
-        // one column per arrow, only while tabs are actually hidden
         let budget = width
             .saturating_sub(usize::from(start > 0))
             .saturating_sub(usize::from(end < labels.len()));
@@ -567,9 +506,8 @@ pub(crate) fn tab_strip(names: &[&str], active: usize, width: usize) -> TabStrip
     }
 }
 
-/// Keeps the cursor row inside the visible window when rows have variable
-/// heights. A cursor row taller than the window scrolls to its first line.
-/// `floor` is the first scrollable row — frozen rows never scroll away.
+/// A cursor row taller than the window scrolls to its first line; `floor` is the first scrollable
+/// row.
 fn follow_row_wrapped(
     top: &mut usize,
     cursor: usize,
@@ -584,8 +522,7 @@ fn follow_row_wrapped(
         *top = cursor.max(floor);
         return;
     }
-    // heights are at least 1, so more than `visible` rows above the cursor
-    // can never fit — jump close before fine-tuning
+    // heights are at least 1, so jump close before fine-tuning
     if cursor >= *top + visible {
         *top = (cursor + 1 - visible).max(floor);
     }
@@ -602,8 +539,7 @@ fn follow_row_wrapped(
     }
 }
 
-/// Horizontal variant for variable column widths; `floor` is the first
-/// scrollable column.
+/// `floor` is the first scrollable column.
 fn follow_col(
     left: &mut usize,
     cursor: usize,
@@ -626,9 +562,7 @@ fn follow_col(
     scroll_back_col(left, col_count, avail, width_of, floor);
 }
 
-/// Never leave blank space on the right while columns hide on the left —
-/// otherwise widening the grid (closing the sidebar) would keep the view
-/// scrolled where the narrower grid had pushed it.
+/// Scrolls back so no blank space is left on the right while columns hide on the left.
 fn scroll_back_col(
     left: &mut usize,
     col_count: usize,
@@ -645,7 +579,7 @@ fn scroll_back_col(
     }
 }
 
-/// First column that no longer fits; always shows at least one column.
+/// Always at least one column.
 fn last_visible_col(
     left: usize,
     col_count: usize,
@@ -722,7 +656,7 @@ mod tests {
 
     #[test]
     fn widening_the_grid_scrolls_back_instead_of_leaving_blank_space() {
-        // 8 columns of the default width; the cursor sits on the 7th
+        // 8 default-width columns; the cursor is on the 7th
         let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 8]]);
         let markers = HashSet::new();
         let notes = HashSet::new();
@@ -736,12 +670,10 @@ mod tests {
         };
         let mut scroll = Scroll::default();
 
-        // narrow viewport (the sidebar is open) pushes the view right
         grid_layout(&input, &Viewport { width: 46, rows: 5 }, &mut scroll);
         let narrow_left = scroll.left;
         assert!(narrow_left > 0, "the cursor forced a scroll");
 
-        // closing the sidebar widens it again: the view must come back
         grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
         let wide_left = scroll.left;
         assert!(
@@ -749,7 +681,6 @@ mod tests {
             "widening must scroll back, got {wide_left} (was {narrow_left})"
         );
 
-        // and it must be stable: reopening and closing lands on the same place
         grid_layout(&input, &Viewport { width: 46, rows: 5 }, &mut scroll);
         grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
         assert_eq!(scroll.left, wide_left, "the view must not drift");
@@ -760,12 +691,10 @@ mod tests {
         let names = ["売上", "経費", "集計", "備考", "参考", "旧データ"];
         let refs: Vec<&str> = names.to_vec();
 
-        // everything fits: no arrows
         let all = tab_strip(&refs, 0, 200);
         assert_eq!(all.tabs.len(), names.len());
         assert!(!all.more_left && !all.more_right);
 
-        // narrow: the active tab is present wherever it is
         for active in 0..names.len() {
             let strip = tab_strip(&refs, active, 24);
             assert!(
@@ -908,8 +837,6 @@ mod tests {
 
     #[test]
     fn a_merge_crossing_the_column_freeze_is_as_tall_as_its_pinned_text() {
-        // the title fits on one line in the wide pinned column; the body
-        // continuation draws nothing, so its narrow span must not count
         let sheet = Sheet::new(
             "s",
             vec![
@@ -987,7 +914,6 @@ mod tests {
     fn widening_scrolls_back_even_while_the_cursor_sits_in_frozen_columns() {
         let sheet = Sheet::new("s", vec![vec![CellValue::Text("x".into()); 8]]).with_frozen(0, 1);
         let markers = HashSet::new();
-        // cursor in the pinned column, but the view was scrolled right
         let notes = HashSet::new();
         let input = LayoutInput {
             sheet: &sheet,
@@ -1147,7 +1073,6 @@ mod tests {
 
     #[test]
     fn in_cell_line_breaks_make_tall_rows_without_wrapping() {
-        // three short lines that would fit one column width side by side
         let sheet = Sheet::new(
             "s",
             vec![
@@ -1252,7 +1177,6 @@ mod tests {
             Some(TextColor::Named(NamedColor::Red))
         );
 
-        // on the cursor it survives, where a literal color would not
         let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 40, 3);
         assert_eq!(
             layout.lines[0].slots[0].font,

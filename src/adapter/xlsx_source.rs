@@ -23,12 +23,10 @@ impl DocumentSource for XlsxSource {
         })?;
         let is_1904 = raw.is_1904;
         let raw = raw.sheets;
-        // widths, formats and fills are cosmetic — a parse failure must not
-        // block opening; cells then simply show their raw, unpainted values
         let meta = xlsx_meta::read_meta(path);
         let (widths, styles, frozen) = (meta.widths, meta.styles, meta.frozen);
         let mut workbook_comments = xlsx_meta::workbook_comments(path).unwrap_or_default();
-        // parse each distinct format once per workbook, not per cell
+        // parse each format once per workbook
         let formats: Vec<Option<NumberFormat>> = styles
             .styles
             .iter()
@@ -83,9 +81,7 @@ impl DocumentSource for XlsxSource {
         Ok(Document::new(sheets))
     }
 
-    /// Modification time mixed with the size, mirroring the comment store's
-    /// token. A missing file reports `Some(0)`: deletion is a change worth
-    /// noticing, not a reason to stop watching.
+    /// mtime mixed with size; a missing file is `Some(0)`.
     fn revision(&self, path: &Path) -> Option<u64> {
         let metadata = match std::fs::metadata(path) {
             Ok(metadata) => metadata,
@@ -117,15 +113,11 @@ fn to_workbook_comment(raw: xlsx_meta::RawWorkbookComment) -> WorkbookComment {
     }
 }
 
-/// Excel widths come on 1-based inclusive column ranges; expanding them to
-/// one entry per column is translation. The values pass through as the file
-/// states them — rounding into terminal cells is the ui's decision.
+/// One entry per 0-based column, values as the file states them.
 fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<f64>> {
     let mut widths = vec![None; col_count];
     for col in cols {
-        // a width numbers cannot state (NaN, inf — reachable via parse())
-        // is treated as absent, so it cannot overwrite an earlier valid
-        // definition of the same column; that is translation, not display
+        // NaN/inf (reachable via parse()) must not overwrite an earlier valid width
         if !col.width.is_finite() {
             continue;
         }
@@ -138,7 +130,7 @@ fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Optio
     widths
 }
 
-/// Pads with `Empty` up to the used range's offset so row 0 / col 0 stay A1.
+/// Pads with `Empty` up to the used range's offset so (0, 0) stays A1.
 fn to_sheet(
     name: String,
     range: Range<Data>,
@@ -152,8 +144,6 @@ fn to_sheet(
     };
     let mut rows: Vec<Vec<CellValue>> = Vec::with_capacity(start_row as usize + range.height());
     rows.resize_with(start_row as usize, Vec::new);
-    // calendar parts stay beside the grid so apply_styles can render a date
-    // cell through its format; the domain keeps only the finished strings
     let mut date_parts: HashMap<(usize, usize), DateTimeParts> = HashMap::new();
     for (r, raw) in range.rows().enumerate() {
         let mut row = vec![CellValue::Empty; start_col as usize];
@@ -184,10 +174,7 @@ fn to_sheet(
 type Fills = HashMap<(usize, usize), Rgb>;
 type TextColors = HashMap<(usize, usize), TextColor>;
 
-/// Applies workbook styles to the freshly built grid. Numbers with a format
-/// gain their display text, date cells render through their format's date
-/// tokens (an unsupported format keeps the fallback text); fills and text
-/// colors are collected for the viewer, empty cells included.
+/// An unsupported date format keeps the fallback text; fills and colors are collected for empty cells too.
 fn apply_styles(
     rows: &mut [Vec<CellValue>],
     cells: &HashMap<(u32, u32), usize>,
@@ -206,18 +193,15 @@ fn apply_styles(
         if let Some((r, g, b)) = style.fill {
             fills.insert((row, col), Rgb { r, g, b });
         }
-        // a named color only exists once the format actually rendered a
-        // value: a `[Red]` code on a text cell colors nothing, as in Excel
+        // a `[Red]` code colors nothing unless the format rendered a value
         let mut named = None;
         if let Some(Some(format)) = formats.get(idx)
             && !format.is_general()
             && let Some(cell) = rows.get_mut(row).and_then(|r| r.get_mut(col))
         {
             match cell {
-                // calamine only types a cell as a date when it recognizes
-                // the format; the ja locale builtin ids (27-36) are not in
-                // its table, so those cells arrive as plain numbers and are
-                // promoted here from their serial value
+                // calamine does not know the ja builtin ids (27-36): those
+                // date cells arrive as plain numbers
                 CellValue::Number(value) if format.is_date() => {
                     if let Some(parts) = serial_parts(*value, is_1904) {
                         let formatted = format.format_datetime(&parts);
@@ -236,7 +220,6 @@ fn apply_styles(
                         text: formatted.text,
                     };
                 }
-                // `raw` keeps the fallback rendering for agents
                 CellValue::DateTime { text, .. } => {
                     if let Some(parts) = date_parts.get(&(row, col)) {
                         let formatted = format.format_datetime(parts);
@@ -247,10 +230,7 @@ fn apply_styles(
                 _ => {}
             }
         }
-        // Excel's precedence: a color the number format names beats the
-        // cell's font color. The workbook-default font was already filtered
-        // out in infra (by font id, not by color — a theme may paint the
-        // default any near-black), so what is left is an author's choice.
+        // the format's named color beats the font color
         let literal = style.font.map(|(r, g, b)| Rgb { r, g, b });
         if let Some(color) = named
             .map(TextColor::Named)
@@ -262,7 +242,7 @@ fn apply_styles(
     (fills, text_colors)
 }
 
-/// `Data::DateTime` is handled by the caller, which also needs the parts.
+/// `Data::DateTime` is the caller's job.
 fn to_cell(data: &Data) -> CellValue {
     match data {
         Data::Empty => CellValue::Empty,
@@ -286,8 +266,7 @@ fn to_cell(data: &Data) -> CellValue {
     }
 }
 
-/// A plain number wearing a date format: valid serials (Excel's range,
-/// 0 to 9999-12-31) become calendar parts, anything else stays a number.
+/// `None` outside Excel's serial range (0 to 9999-12-31).
 fn serial_parts(value: f64, is_1904: bool) -> Option<DateTimeParts> {
     const MAX_SERIAL: f64 = 2_958_465.0;
     if !(0.0..=MAX_SERIAL).contains(&value) {
@@ -300,9 +279,7 @@ fn serial_parts(value: f64, is_1904: bool) -> Option<DateTimeParts> {
     )))
 }
 
-/// Splits a workbook date into calendar parts; calamine has already absorbed
-/// the 1904 epoch and the 1900 leap-year quirk. Sub-second precision is
-/// dropped — xlsx cells carry whole seconds in practice.
+/// calamine has already absorbed the 1904 epoch and the 1900 quirk; sub-second precision is dropped.
 fn to_parts(dt: &ExcelDateTime) -> DateTimeParts {
     let (year, month, day, hour, minute, second, _milli) = dt.to_ymd_hms_milli();
     let serial = dt.as_f64();
@@ -337,8 +314,6 @@ mod tests {
                 max: 1,
                 width: 10.0,
             },
-            // a duplicate definition with an unusable width must not
-            // overwrite the valid one before it
             xlsx_meta::ColumnWidth {
                 min: 1,
                 max: 1,
@@ -506,13 +481,11 @@ mod tests {
                 fill: None,
                 font: None,
             },
-            // fractional seconds are outside the engine's subset
             xlsx_meta::CellStyle {
                 format: Some("mm:ss.00".into()),
                 fill: None,
                 font: None,
             },
-            // a numeric format on a date cell paints the serial, like Excel
             xlsx_meta::CellStyle {
                 format: Some("0.00".into()),
                 fill: None,
@@ -555,8 +528,7 @@ mod tests {
 
     #[test]
     fn a_number_wearing_a_date_format_is_promoted_to_a_date() {
-        // ja builtin ids (27-36) are unknown to calamine, so the cell
-        // arrives as a plain number and only the format says "date"
+        // 27-36 arrive as plain numbers
         let mut rows = vec![vec![
             CellValue::Number(46_265.0),
             CellValue::Number(-5.0),
@@ -595,8 +567,6 @@ mod tests {
 
     #[test]
     fn a_general_sectioned_format_never_promotes_a_number() {
-        // regression: `General`'s G and e once read as era tokens, turning
-        // 46265 into "R8n8ral" and the cell into a fake date
         let mut rows = vec![vec![CellValue::Number(46_265.0)]];
         let styles = vec![xlsx_meta::CellStyle {
             format: Some("General;[Red]-General".into()),

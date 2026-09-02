@@ -1,5 +1,3 @@
-//! Shared style helpers: how each palette role maps to a ratatui `Style`.
-
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::domain::sheet::Rgb;
@@ -29,8 +27,6 @@ pub(crate) fn selected(p: &Palette) -> Style {
     Style::new().bg(p.selection_bg).fg(p.text)
 }
 
-/// The dragged range: a step lighter than the cursor cell (dim-reversed on
-/// the terminal palette), so press point and range stay distinguishable.
 pub(crate) fn range_selected(p: &Palette) -> Style {
     if p.reverse_selection {
         return canvas(p).add_modifier(Modifier::REVERSED | Modifier::DIM);
@@ -46,7 +42,6 @@ pub(crate) fn chrome(p: &Palette) -> Style {
     }
 }
 
-/// Horizontal gridlines without spending screen rows: a colored underline.
 pub(crate) fn ruled(p: &Palette, style: Style) -> Style {
     if p.dim_chrome {
         return style.add_modifier(Modifier::UNDERLINED);
@@ -56,8 +51,6 @@ pub(crate) fn ruled(p: &Palette, style: Style) -> Style {
         .underline_color(p.gridline)
 }
 
-/// Canvas painted with the workbook fill when the cell has one — only for
-/// palettes whose background the workbook's absolute colors were meant for.
 pub(crate) fn filled_canvas(p: &Palette, fill: Option<Rgb>) -> Style {
     match fill.filter(|_| p.paint_workbook_colors) {
         Some(f) => canvas(p).bg(Color::Rgb(f.r, f.g, f.b)),
@@ -65,16 +58,10 @@ pub(crate) fn filled_canvas(p: &Palette, fill: Option<Rgb>) -> Style {
     }
 }
 
-/// The dialog surface: the header gray, so it reads as a layer above the
-/// white cells instead of blending into them. On the terminal palette both
-/// colors are `Reset` and the scrim alone carries the depth.
 pub(crate) fn dialog(p: &Palette) -> Style {
     Style::new().bg(p.header_bg).fg(p.text)
 }
 
-/// The frozen-pane boundary, horizontal: Excel's hairline translated — the
-/// same underline, drawn darker than its neighbors (undimmed, on the
-/// terminal palette, where naming a color is not allowed).
 pub(crate) fn freeze_ruled(p: &Palette, style: Style) -> Style {
     if p.dim_chrome {
         return style
@@ -86,7 +73,6 @@ pub(crate) fn freeze_ruled(p: &Palette, style: Style) -> Style {
         .underline_color(p.header_fg)
 }
 
-/// The frozen-pane boundary, vertical: the `│` separator, emphasized.
 pub(crate) fn freeze_gridline(p: &Palette) -> Style {
     if p.dim_chrome {
         return canvas(p);
@@ -94,9 +80,6 @@ pub(crate) fn freeze_gridline(p: &Palette) -> Style {
     canvas(p).fg(p.header_fg)
 }
 
-/// The workbook-comment corner: one tinted character in the cell's top
-/// right, like the Sheets/Excel corner triangle. On the terminal palette
-/// a reversed named color stands in for a background.
 pub(crate) fn note_corner(p: &Palette) -> Style {
     if p.dim_chrome {
         return canvas(p).fg(p.notice_fg).add_modifier(Modifier::REVERSED);

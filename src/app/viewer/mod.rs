@@ -1,7 +1,3 @@
-//! The viewer state machine: one `Viewer`, one `Mode` per way of looking at
-//! it. Grid navigation and reload live here; `editing` and `picker` carry
-//! their modes' rules.
-
 mod editing;
 mod matching;
 mod mouse;
@@ -38,21 +34,18 @@ pub enum Event {
     PrevSheet,
     OpenSheetPicker,
     OpenSearch,
-    /// `n`: view the workbook's own comments on the cell, read-only.
     OpenNotes,
-    /// A click on a grid cell (also the press that may begin a drag).
+    /// A click, or the press that may begin a drag.
     SelectCell {
         row: usize,
         col: usize,
     },
-    /// A click on a sheet tab.
     SelectSheet(usize),
-    /// The drag extended to another cell — the selection grows.
     DragTo {
         row: usize,
         col: usize,
     },
-    /// The button came up; `copy` when it was a real drag, not a click.
+    /// `copy` is true after a real drag, not a plain click.
     DragEnd {
         copy: bool,
     },
@@ -63,8 +56,7 @@ pub enum Event {
     Backspace,
     Submit,
     CancelEdit,
-    /// The frontend saw no input for a while — a chance to notice outside
-    /// changes (an agent replying) without any keypress.
+    /// Fired when no input arrived for a while; triggers reload checks.
     Tick,
     Quit,
     Noop,
@@ -73,8 +65,7 @@ pub enum Event {
 pub trait Frontend {
     fn draw(&mut self, viewer: &Viewer) -> Result<(), FrontendError>;
     fn next_event(&mut self) -> Result<Event, FrontendError>;
-    /// Hands finished-drag TSV to the clipboard; the default drops it, for
-    /// frontends without one.
+    /// The default drops the text.
     fn copy(&mut self, _text: &str) -> Result<(), FrontendError> {
         Ok(())
     }
@@ -86,17 +77,13 @@ pub enum EditTarget {
     Reply { thread_id: String },
 }
 
-/// Why a notice is on screen. A reload must not clear a save failure: the
-/// user would take the empty status bar for a successful save and press Esc,
-/// losing the text the editor is still holding.
 #[derive(Debug, Clone, PartialEq)]
 enum Notice {
     Reload(String),
-    /// The document file changed but could not be re-read; the grid still
-    /// shows the previous load.
+    /// The file changed but could not be re-read; the grid shows the previous load.
     Document(String),
     Save(String),
-    /// `Copied 3×2 cells` — cleared by the next input.
+    /// Cleared by the next input.
     Copy(String),
 }
 
@@ -118,29 +105,24 @@ pub enum Mode {
         target: EditTarget,
         buffer: String,
     },
-    /// The sheet picker: type to filter, Enter to switch, Esc to cancel.
-    /// `selected` indexes the *filtered* candidate list, not the workbook.
+    /// `selected` indexes the filtered candidate list, not the workbook.
     SheetPicker {
         query: String,
         selected: usize,
     },
-    /// Search on the active sheet: type to jump, ↓/↑ to cycle matches,
-    /// Enter to stay, Esc to go back to `origin`. `matches` is cached and
-    /// recomputed when the document reloads underneath the search.
+    /// Esc returns to `origin`; `matches` is recomputed on document reload.
     Search {
         query: String,
         origin: (usize, usize),
         matches: Vec<(usize, usize)>,
         index: usize,
     },
-    /// The workbook's own comments on the cursor cell, read-only: ↓/↑
-    /// scroll, Esc closes.
     Notes {
         scroll: usize,
     },
 }
 
-/// Non-empty by construction: `first` always exists.
+/// Non-empty by construction.
 struct Sheets {
     first: Sheet,
     rest: Vec<Sheet>,
@@ -168,33 +150,26 @@ pub struct Viewer {
     notice: Option<Notice>,
     mode: Mode,
     store: Box<dyn CommentStore>,
-    /// Store revision the loaded comments came from.
     revision: Option<u64>,
-    /// Where the document came from, so ticks can re-read it; `None` for
-    /// viewers built straight from a `Document`, where auto-reload stays off.
+    /// `None` disables document auto-reload.
     source: Option<(Box<dyn DocumentSource>, PathBuf)>,
-    /// Source revision the loaded document came from.
     doc_revision: Option<u64>,
-    /// Why the grid no longer matches the file, when the last reload was
-    /// refused. Kept apart from `notice` so other notices cannot bury it.
+    /// Set when the last document reload failed; kept apart from `notice`.
     doc_stale: Option<String>,
-    /// A drag in progress: (press cell, current cell). Transient — it exists
-    /// only while the button is down.
+    /// (press cell, current cell), only while the button is down.
     selection: Option<((usize, usize), (usize, usize))>,
-    /// TSV waiting for the frontend to hand to the clipboard.
+    /// TSV waiting for the frontend.
     copy_request: Option<String>,
 }
 
 impl Viewer {
-    /// A broken comment store must not block reading the document: the
-    /// viewer opens without comments and carries a notice instead.
+    /// A broken comment store yields a viewer without comments plus a notice.
     pub fn open(
         source: Box<dyn DocumentSource>,
         store: Box<dyn CommentStore>,
         path: &Path,
     ) -> Result<Self, DocumentError> {
-        // read the revisions first: a write that lands while we are loading
-        // must look newer than what we loaded, not older
+        // revisions are read before loading so a concurrent write looks newer
         let doc_revision = source.revision(path);
         let document = source.load(path)?;
         let revision = store.revision();
@@ -254,9 +229,7 @@ impl Viewer {
         &self.mode
     }
 
-    /// The thread under the cursor; unresolved threads win over resolved
-    /// ones. Inside a merged region the whole region counts as one cell, so
-    /// threads anchored to any of its cells are found.
+    /// Unresolved threads win; a merged region counts as one cell.
     pub fn thread_at_cursor(&self) -> Option<&CommentThread> {
         let (row, col) = self.cursor();
         let sheet = self.sheet();
@@ -284,7 +257,7 @@ impl Viewer {
             .or_else(|| at_cell.first().copied())
     }
 
-    /// (row, col) of every unresolved thread on the active sheet.
+    /// (row, col) per unresolved thread.
     pub fn unresolved_on_active_sheet(&self) -> Vec<(usize, usize)> {
         let active = self.sheet().name();
         self.comments
@@ -325,13 +298,12 @@ impl Viewer {
         self.quit
     }
 
-    /// The drag rectangle in progress, as (press cell, current cell).
+    /// (press cell, current cell).
     pub fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.selection
     }
 
-    /// The notes dialog: the cursor cell's workbook comments plus the
-    /// scroll offset, while the dialog is open.
+    /// (comments, scroll offset) while the notes dialog is open.
     pub fn notes_state(&self) -> Option<(Vec<&WorkbookComment>, usize)> {
         let Mode::Notes { scroll } = &self.mode else {
             return None;
@@ -340,15 +312,11 @@ impl Viewer {
         Some((self.sheet().workbook_comments_at(row, col), *scroll))
     }
 
-    /// Whether the cursor cell has workbook comments — drives the `n:notes`
-    /// status hint.
     pub fn has_notes_at_cursor(&self) -> bool {
         let (row, col) = self.cursor();
         !self.sheet().workbook_comments_at(row, col).is_empty()
     }
 
-    /// Cells on the active sheet carrying workbook comments, for the
-    /// corner tint.
     pub fn workbook_comment_cells(&self) -> Vec<(usize, usize)> {
         self.sheet()
             .workbook_comments()
@@ -357,35 +325,28 @@ impl Viewer {
             .collect()
     }
 
-    /// TSV produced by a finished drag; the run loop hands it to the frontend.
     pub fn take_copy_request(&mut self) -> Option<String> {
         self.copy_request.take()
     }
 
     pub fn apply(&mut self, event: Event) {
-        // outside changes are picked up in either mode; typing is untouched
         if event == Event::Tick {
             self.reload_comments_if_changed();
             self.reload_document_if_changed();
             return;
         }
-        // a copy notice is a receipt, not a warning — the next real input
-        // retires it (Noop covers bare pointer motion, which would kill it
-        // within milliseconds of the drag that earned it)
+        // Noop is bare pointer motion, which must not retire the copy notice
         if event != Event::Noop && matches!(self.notice, Some(Notice::Copy(_))) {
             self.notice = None;
         }
-        // the selection lives exactly as long as the drag: any event that
-        // is not part of one (a key, a sheet switch) dissolves it, so a
-        // stale rectangle can never survive onto another sheet or screen
+        // any event outside the drag dissolves the selection
         if !matches!(
             event,
             Event::SelectCell { .. } | Event::DragTo { .. } | Event::DragEnd { .. } | Event::Noop
         ) {
             self.selection = None;
         }
-        // clicks win over any open prompt: the modal closes and the
-        // click acts, in one motion — a draft being composed is discarded
+        // a click closes any prompt (discarding a draft) and then acts
         if Self::is_mouse(event) && !matches!(self.mode, Mode::Grid) {
             self.mode = Mode::Grid;
         }
@@ -404,8 +365,7 @@ impl Viewer {
         };
         match event {
             Event::Move { rows, .. } => {
-                // the dialog clamps the far end itself, since only the
-                // renderer knows how many lines the comments wrap into
+                // not clamped here: only the renderer knows the line count
                 *scroll = scroll.saturating_add_signed(rows);
             }
             Event::CancelEdit | Event::Submit | Event::OpenNotes => self.mode = Mode::Grid,
@@ -424,7 +384,6 @@ impl Viewer {
         )
     }
 
-    /// Re-reads the comments when the store reports a new revision.
     fn reload_comments_if_changed(&mut self) {
         let current = self.store.revision();
         if current.is_none() || current == self.revision {
@@ -434,7 +393,7 @@ impl Viewer {
         match self.store.load() {
             Ok(comments) => {
                 self.comments = comments;
-                // a save failure must survive: the editor still holds that text
+                // a save-failure notice must survive a reload
                 if matches!(self.notice, Some(Notice::Reload(_))) {
                     self.notice = None;
                 }
@@ -443,12 +402,8 @@ impl Viewer {
         }
     }
 
-    /// Re-reads the document when the file behind it changes, so an outside
-    /// edit shows up without any keypress — the same contract as comments.
-    /// A failed load keeps the current grid: external writers do not save
-    /// atomically, so a tick can land mid-write. The revision is latched
-    /// either way — a writer that finishes always bumps the token again, and
-    /// retrying an unchanged broken file would re-parse it on every tick.
+    /// A failed load keeps the current grid (a tick can land mid-write); the
+    /// revision is latched either way so a broken file is not re-parsed per tick.
     fn reload_document_if_changed(&mut self) {
         let Some((source, path)) = &self.source else {
             return;
@@ -461,9 +416,7 @@ impl Viewer {
                 Err(e) => self.doc_stale = Some(format!("document unavailable: {e}")),
             }
         }
-        // the staleness warning outlives the single notice slot: a save
-        // failure must never be clobbered by it, so it only takes the slot
-        // when free — and re-takes it once whatever occupied it is done
+        // only takes the notice slot when free; never clobbers a save failure
         match &self.doc_stale {
             Some(reason) => {
                 if matches!(self.notice, None | Some(Notice::Document(_))) {
@@ -478,10 +431,8 @@ impl Viewer {
         }
     }
 
-    /// Swaps the new sheets in while keeping the user's place: the active
-    /// sheet and every cursor carry over by sheet name (a reload must not
-    /// teleport the user), clamped into the new bounds. A document that lost
-    /// every sheet keeps the old view — an empty grid has nothing to review.
+    /// Active sheet and cursors carry over by sheet name, clamped; a document
+    /// with no sheets keeps the old view.
     fn replace_document(&mut self, document: Document) {
         let mut incoming = document.into_sheets().into_iter();
         let Some(first) = incoming.next() else {
@@ -518,20 +469,15 @@ impl Viewer {
             .unwrap_or(0);
         self.sheets = new;
         self.cursors = cursors;
-        // the rectangle's cells may no longer exist
         self.selection = None;
         self.doc_stale = None;
         self.refresh_mode_after_reload();
     }
 
-    /// The reload may have invalidated what a mode is looking at.
     fn refresh_mode_after_reload(&mut self) {
         match &self.mode {
-            // the cached matches point into the sheets that were replaced
             Mode::Search { .. } => self.refresh_search(),
-            // the sheet list changed under the picker's selection
             Mode::SheetPicker { .. } => self.clamp_picker_selection(),
-            // the editor's draft and the notes dialog read live state
             Mode::Grid | Mode::Editing { .. } | Mode::Notes { .. } => {}
         }
     }
@@ -557,7 +503,6 @@ impl Viewer {
                 self.active = (self.active + self.sheets.len() - 1) % self.sheets.len();
                 return;
             }
-            // opens on the active sheet so the picker doubles as "where am I"
             Event::OpenSheetPicker => {
                 self.mode = Mode::SheetPicker {
                     query: String::new(),
@@ -574,15 +519,13 @@ impl Viewer {
                 };
                 return;
             }
-            // read-only: opens only when the cell actually has any
             Event::OpenNotes => {
                 if !self.sheet().workbook_comments_at(row, col).is_empty() {
                     self.mode = Mode::Notes { scroll: 0 };
                 }
                 return;
             }
-            // Sheets model: one open thread per cell — `c` replies to it if
-            // present, otherwise starts a new thread.
+            // one open thread per cell: reply if present, else start one
             Event::StartComment => {
                 let target = match self.thread_at_cursor().filter(|t| !t.resolved) {
                     Some(thread) => EditTarget::Reply {
@@ -735,7 +678,7 @@ mod tests {
 
     #[test]
     fn a_store_without_a_revision_never_auto_reloads() {
-        let store = super::test_support::RecordingStore::default(); // uses the default revision(): None
+        let store = super::test_support::RecordingStore::default(); // revision() is None
         let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
         v.apply(Event::Tick);
         assert!(v.unresolved_on_active_sheet().is_empty());
@@ -766,7 +709,6 @@ mod tests {
         let mut v = viewer_on(&source);
         v.apply(Event::Move { rows: 2, cols: 2 });
         v.apply(Event::NextSheet);
-        // reordered and shrunk: "two" moves first, "one" loses two rows
         source.write_from_outside(vec![one_cell("two", "b"), one_cell("one", "shrunk")]);
         v.apply(Event::Tick);
         assert_eq!(v.sheet().name(), "two", "active follows the name");
@@ -803,7 +745,6 @@ mod tests {
             parses,
             "an unchanged broken file is not re-parsed on every tick"
         );
-        // the writer finishes, which always bumps the revision again
         *source.broken.borrow_mut() = false;
         source.write_from_outside(vec![one_cell("one", "new")]);
         v.apply(Event::Tick);
@@ -840,12 +781,10 @@ mod tests {
             v.notice(),
             Some("document unavailable: document has no sheets")
         );
-        // a sidecar hiccup takes the single notice slot...
         *store.broken.borrow_mut() = true;
         store.write_from_outside(Vec::new());
         v.apply(Event::Tick);
         assert_eq!(v.notice(), Some("comments unavailable: invalid sidecar"));
-        // ...and its recovery must not leave the stale grid unmarked
         *store.broken.borrow_mut() = false;
         store.write_from_outside(Vec::new());
         v.apply(Event::Tick);
@@ -877,7 +816,6 @@ mod tests {
             v.notice(),
             Some("document unavailable: document has no sheets")
         );
-        // content returns: the next write is picked up normally
         source.write_from_outside(vec![one_cell("one", "back")]);
         v.apply(Event::Tick);
         assert_eq!(v.sheet().cell(0, 0).display_text(), "back");
@@ -980,7 +918,6 @@ mod tests {
         v.apply(Event::CancelEdit);
         assert_eq!(*v.mode(), Mode::Grid, "Esc closes");
 
-        // clicks win here like over every prompt
         v.apply(Event::OpenNotes);
         v.apply(Event::SelectCell { row: 0, col: 0 });
         assert_eq!(*v.mode(), Mode::Grid);
