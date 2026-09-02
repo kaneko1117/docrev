@@ -7,14 +7,23 @@ pub(crate) fn cell_text(cell: &CellValue) -> String {
     sanitize(&cell.display_text())
 }
 
-/// Control characters would break the grid layout.
+/// The workbook's display text as grid lines: one per line break the
+/// author typed (Alt+Enter), each wrapped to `width` in turn. `\r\n` and a
+/// lone `\r` count as one break, like Excel treats them.
+pub(crate) fn cell_lines(cell: &CellValue, width: usize) -> Vec<String> {
+    cell.display_text()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split('\n')
+        .flat_map(|line| wrap(&sanitize(line), width))
+        .collect()
+}
+
+/// Control characters would break a terminal line; callers that want
+/// line breaks honored split on them first (see `cell_lines`).
 pub(crate) fn sanitize(text: &str) -> String {
     text.chars()
-        .map(|c| match c {
-            '\n' | '\r' => '⏎',
-            c if c.is_control() => ' ',
-            c => c,
-        })
+        .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
 
@@ -104,7 +113,7 @@ mod tests {
 
     #[test]
     fn sanitizes_control_chars() {
-        assert_eq!(sanitize("a\nb\tc"), "a⏎b c");
+        assert_eq!(sanitize("a\nb\tc\r\n"), "a b c  ");
     }
 
     #[test]
@@ -115,6 +124,20 @@ mod tests {
         // CJK: a char that would half-fit is dropped whole
         assert_eq!(query_line("あいうえお", 5), "えお█");
         assert_eq!(query_line("abc", 0), "█", "never empty, renderer clips");
+    }
+
+    #[test]
+    fn cell_lines_break_where_the_author_did_then_wrap() {
+        let cell = CellValue::Text("行1\n行2が長い\n行3".into());
+        assert_eq!(cell_lines(&cell, 8), vec!["行1", "行2が長", "い", "行3"]);
+        // CRLF and a bare CR are one break each, never a blank line
+        assert_eq!(
+            cell_lines(&CellValue::Text("a\r\nb\rc".into()), 8),
+            vec!["a", "b", "c"]
+        );
+        // other control characters still become a space on the same line
+        assert_eq!(cell_lines(&CellValue::Text("a\tb".into()), 8), vec!["a b"]);
+        assert_eq!(cell_lines(&CellValue::Empty, 8), vec![""]);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::sheet::Sheet;
 
-use super::text::{cell_text, center, clip, pad_left, pad_right, sanitize, wrap};
+use super::text::{cell_lines, cell_text, center, clip, pad_left, pad_right, sanitize, wrap};
 
 fn column_label(index: u32) -> String {
     Anchor::column_label(index)
@@ -22,8 +22,9 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
         return out;
     }
 
-    // wrapped lines per cell: text wraps at the cell-width cap,
-    // numbers stay on one clipped line so digit groups never split
+    // lines per cell: text breaks where the author did and wraps at the
+    // cell-width cap, numbers stay on one clipped line so digit groups
+    // never split
     let texts: Vec<Vec<Vec<String>>> = (0..sheet.row_count())
         .map(|r| {
             (0..col_count)
@@ -32,14 +33,13 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
                         return wrap(&sanitize(&format!("={formula}")), MAX_CELL_WIDTH);
                     }
                     let cell = sheet.cell(r, c);
-                    let text = cell_text(cell);
                     if matches!(
                         cell,
                         CellValue::Number(_) | CellValue::FormattedNumber { .. }
                     ) {
-                        vec![clip(&text, MAX_CELL_WIDTH)]
+                        vec![clip(&cell_text(cell), MAX_CELL_WIDTH)]
                     } else {
-                        wrap(&text, MAX_CELL_WIDTH)
+                        cell_lines(cell, MAX_CELL_WIDTH)
                     }
                 })
                 .collect()
@@ -171,16 +171,19 @@ Sheet: S (1/1)
     }
 
     #[test]
-    fn control_chars_stay_on_one_line() {
+    fn line_breaks_make_rows_tall_and_other_controls_stay_inline() {
         let sheet = Sheet::new(
             "s",
             vec![vec![
-                CellValue::Text("a\nb\tc".into()),
+                CellValue::Text("a\nb\tc\r\nd".into()),
                 CellValue::Number(1.0),
             ]],
         );
         let out = render(&sheet, 0, 1, false);
-        assert!(out.contains("a⏎b c"));
+        let body: Vec<&str> = out.lines().skip(5).take(3).collect();
+        assert!(body[0].contains("│ a   │ 1 │"), "{out}");
+        assert!(body[1].contains("│ b c │   │"), "the tab is a space: {out}");
+        assert!(body[2].contains("│ d   │   │"), "CRLF is one break: {out}");
         let widths: Vec<usize> = out.lines().skip(2).map(|l| l.width()).collect();
         assert!(
             widths.iter().all(|w| *w == widths[0]),
