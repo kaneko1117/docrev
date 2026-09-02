@@ -50,12 +50,16 @@ struct Section {
     has_date: bool,
     /// `AM/PM` present — hour tokens switch to the 12-hour clock.
     has_ampm: bool,
+    has_general: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Literal(String),
     Number,
+    /// The word `General` inside a section — renders the raw value. Lexed
+    /// as one token so its letters never read as date/era codes.
+    General,
     Date(DateToken),
 }
 
@@ -142,7 +146,10 @@ impl NumberFormat {
         }
         // literal-only sections (a zero shown as "-") are fine, but at least
         // one section must actually render digits or date parts
-        if !sections.iter().any(|s| s.has_number || s.has_date) {
+        if !sections
+            .iter()
+            .any(|s| s.has_number || s.has_date || s.has_general)
+        {
             return Self {
                 kind: Kind::General,
             };

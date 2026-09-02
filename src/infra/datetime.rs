@@ -86,6 +86,32 @@ impl DateTimeParts {
         (sum.rem_euclid(7)) as usize
     }
 
+    /// The rendering used when no supported format exists: date-bearing
+    /// values keep `YYYY-MM-DD HH:MM:SS`, bare times drop the fictional
+    /// epoch date, durations count elapsed time past 24 hours.
+    pub fn fallback_text(&self) -> String {
+        match self.kind {
+            DateTimeKind::DateTime => format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                self.year, self.month, self.day, self.hour, self.minute, self.second
+            ),
+            DateTimeKind::TimeOnly => {
+                format!("{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
+            }
+            DateTimeKind::Duration => {
+                let total = (self.serial * 86_400.0).round();
+                let sign = if total < 0.0 { "-" } else { "" };
+                let total = total.abs() as u64;
+                format!(
+                    "{sign}{}:{:02}:{:02}",
+                    total / 3600,
+                    (total / 60) % 60,
+                    total % 60
+                )
+            }
+        }
+    }
+
     /// The Japanese era covering this date and the 1-based year within it.
     pub(crate) fn era(&self) -> (&'static Era, u16) {
         let key = (self.year, self.month, self.day);
@@ -161,5 +187,32 @@ mod tests {
         let (era, year) = date(u16::MAX, 12, 31).era();
         assert_eq!(era.name, "令和");
         assert_eq!(year, 63517);
+    }
+
+    #[test]
+    fn fallback_text_never_shows_a_fictional_date() {
+        let full = DateTimeParts {
+            hour: 13,
+            minute: 5,
+            second: 0,
+            ..date(2026, 8, 31)
+        };
+        assert_eq!(full.fallback_text(), "2026-08-31 13:05:00");
+
+        let time_only = DateTimeParts {
+            hour: 13,
+            minute: 5,
+            second: 0,
+            kind: DateTimeKind::TimeOnly,
+            ..date(1899, 12, 31)
+        };
+        assert_eq!(time_only.fallback_text(), "13:05:00");
+
+        let elapsed = DateTimeParts {
+            serial: 1.5,
+            kind: DateTimeKind::Duration,
+            ..date(1900, 1, 1)
+        };
+        assert_eq!(elapsed.fallback_text(), "36:00:00");
     }
 }

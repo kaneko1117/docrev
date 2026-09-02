@@ -111,7 +111,15 @@ nothing changes for it until a new kind actually ships.
   **derived, output-only** addition: each thread carries a `cell` object with
   the anchored cell's displayed text and its row's other non-empty cells
   (`"cell": {"value": "...", "row": {"A2": "...", "D2": "..."}}`; `row` keys
-  come in column order and the object may be empty). It is computed from the
+  come in column order and the object may be empty). When the anchored cell
+  holds a date or time, `cell` also carries `"raw"` — the machine-readable
+  value behind the formatted display: `"2026-08-31 00:00:00"` for
+  date-bearing cells, `"13:05:00"` for time-only cells (never a fictional
+  epoch date), and elapsed `"36:00:00"` for `[h]`-style durations. The rare
+  cell an xlsx stores as ISO 8601 text (`t="d"`) passes that string through
+  verbatim (`"2026-08-31T13:05:00"`-shaped). `raw` is
+  absent on every other cell kind, so its presence also identifies date
+  cells. It is computed from the
   workbook at list time and is **never stored in the sidecar**; writers must
   ignore a `cell` key on input. When the workbook cannot be read (corrupt
   file) or the sheet was renamed, `cell` is omitted for the affected threads

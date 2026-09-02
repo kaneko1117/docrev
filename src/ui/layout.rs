@@ -255,7 +255,7 @@ impl RowBuilder<'_> {
                     continue;
                 }
                 let cell = sheet.cell(row, col);
-                if !cell.is_number() && !cell.is_empty() {
+                if !cell.is_number() && !cell.is_datetime() && !cell.is_empty() {
                     height = height.max(wrap(&cell_text(cell), width_of(col)).len());
                 }
                 col += 1;
@@ -370,7 +370,8 @@ impl RowBuilder<'_> {
                     };
                     let cell = sheet.cell(row, col);
                     let own_width = width_of(col);
-                    let is_number = cell.is_number();
+                    // dates align like numbers, as Excel shows them
+                    let is_number = cell.is_number() || cell.is_datetime();
                     let on_cursor = (row, col) == input.cursor;
                     let in_range = in_selection(row, col);
 
@@ -1104,6 +1105,34 @@ mod tests {
         );
         let second = &layout.lines[1].slots[1];
         assert_eq!(second.text.trim(), "", "no digits on continuation lines");
+    }
+
+    #[test]
+    fn dates_align_right_like_numbers() {
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![
+                CellValue::Text("a long wrapping text here".into()),
+                CellValue::DateTime {
+                    text: "8月31日".into(),
+                    raw: "2026-08-31 00:00:00".into(),
+                },
+            ]],
+        );
+        let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 40, 6);
+        let first = &layout.lines[0].slots[1];
+        assert!(
+            first.text.ends_with("8月31日"),
+            "right aligned like Excel: {:?}",
+            first.text
+        );
+        assert!(
+            first.text.starts_with(' '),
+            "padding sits left of the date: {:?}",
+            first.text
+        );
+        let second = &layout.lines[1].slots[1];
+        assert_eq!(second.text.trim(), "", "dates never wrap");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Numeric rendering: digit clusters, grouping, scaling, padding.
 
-use super::{Section, Token};
+use super::{Section, Token, general};
 
 pub(super) fn render(section: &Section, value: f64, drop_sign: bool) -> String {
     let mut v = if drop_sign { value.abs() } else { value };
@@ -21,6 +21,7 @@ pub(super) fn render(section: &Section, value: f64, drop_sign: bool) -> String {
         match token {
             Token::Literal(text) => out.push_str(text),
             Token::Number => out.push_str(&digits),
+            Token::General => out.push_str(&general(v.abs())),
             // date sections never reach here (format() showed the raw value)
             Token::Date(_) => {}
         }

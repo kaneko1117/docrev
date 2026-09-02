@@ -342,6 +342,34 @@ fn date_formats_carry_colors_too() {
 }
 
 #[test]
+fn the_word_general_in_a_section_renders_the_raw_value() {
+    let format = NumberFormat::parse("General;[Red]-General");
+    assert!(!format.is_general(), "the sections are understood");
+    assert!(
+        !format.is_date(),
+        "General's G and e must never read as era tokens"
+    );
+    assert_eq!(format.format(46_265.0).text, "46265");
+    assert_eq!(format.format(-46_265.0).text, "-46265");
+    assert_eq!(format.format(-46_265.0).color, Some(NamedColor::Red));
+    assert_eq!(fmt("General;@", 1.5), "1.5");
+    // General composes with nothing
+    assert!(NumberFormat::parse("General yyyy").is_general());
+    assert!(NumberFormat::parse("0 General").is_general());
+}
+
+#[test]
+fn negative_durations_keep_their_minutes_and_seconds() {
+    // 1904-epoch books store negative elapsed times; the calendar parts
+    // saturate to 0 there, so remainders must come from the serial
+    assert_eq!(
+        fmt_dt("[h]:mm:ss", duration(-108_900.0 / 86_400.0)),
+        "-30:15:00"
+    );
+    assert_eq!(fmt_dt("[h]:mm", duration(108_900.0 / 86_400.0)), "30:15");
+}
+
+#[test]
 fn a_trailing_text_section_is_ignored() {
     assert_eq!(fmt_dt("yyyy/m/d;@", date(2026, 8, 31)), "2026/8/31");
     assert_eq!(fmt("#,##0;@", 1234.0), "1,234");

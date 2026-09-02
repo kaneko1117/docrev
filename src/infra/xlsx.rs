@@ -28,7 +28,13 @@ pub struct RawSheet {
     pub formulas: Vec<((u32, u32), String)>,
 }
 
-pub fn read_workbook(path: &Path) -> Result<Vec<RawSheet>, ReadError> {
+pub struct RawWorkbook {
+    pub sheets: Vec<RawSheet>,
+    /// Legacy Mac workbooks count serial dates from 1904, not 1900.
+    pub is_1904: bool,
+}
+
+pub fn read_workbook(path: &Path) -> Result<RawWorkbook, ReadError> {
     let mut workbook: Xlsx<_> = open_workbook(path).map_err(|source| ReadError::Open {
         path: path.display().to_string(),
         source,
@@ -70,5 +76,8 @@ pub fn read_workbook(path: &Path) -> Result<Vec<RawSheet>, ReadError> {
             formulas,
         });
     }
-    Ok(sheets)
+    Ok(RawWorkbook {
+        is_1904: workbook.has_1904_epoch(),
+        sheets,
+    })
 }

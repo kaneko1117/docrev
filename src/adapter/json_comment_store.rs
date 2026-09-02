@@ -211,6 +211,9 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
     #[derive(Serialize)]
     struct CellDto {
         value: String,
+        /// Machine-readable date/time value; absent on every other cell kind.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        raw: Option<String>,
         row: RowDto,
     }
     /// A JSON object in insertion order — `serde_json::Map` would sort keys
@@ -235,6 +238,7 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
                 thread: ThreadDto::from_domain(thread),
                 cell: context.as_ref().map(|c| CellDto {
                     value: c.value.clone(),
+                    raw: c.raw.clone(),
                     row: RowDto(c.row.clone()),
                 }),
             })
@@ -382,6 +386,7 @@ mod tests {
                 thread("with"),
                 Some(comments::CellContext {
                     value: "ロック表示".into(),
+                    raw: Some("2026-08-31 00:00:00".into()),
                     // Z before AA: column order, which alphabetical keys break
                     row: vec![("Z2".into(), "先".into()), ("AA2".into(), "後".into())],
                 }),
@@ -391,6 +396,7 @@ mod tests {
                 thread("empty-row"),
                 Some(comments::CellContext {
                     value: String::new(),
+                    raw: None,
                     row: Vec::new(),
                 }),
             ),
@@ -418,6 +424,10 @@ mod tests {
         let first = &parsed["comments"][0];
         assert_eq!(first["anchor"]["cell"], "C2", "thread fields flatten");
         assert_eq!(first["cell"]["value"], "ロック表示");
+        assert_eq!(
+            first["cell"]["raw"], "2026-08-31 00:00:00",
+            "a date cell's machine-readable value rides along"
+        );
         assert_eq!(first["cell"]["row"]["Z2"], "先");
         assert!(
             json.find("\"Z2\"").unwrap() < json.find("\"AA2\"").unwrap(),
@@ -433,6 +443,10 @@ mod tests {
             third["cell"]["row"],
             serde_json::json!({}),
             "an empty row is an empty object, not a missing key"
+        );
+        assert!(
+            third["cell"].get("raw").is_none(),
+            "non-date cells carry no raw key"
         );
     }
 

@@ -59,8 +59,8 @@ fn unformatted_numbers_and_dates_keep_their_existing_behavior() {
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.cell(0, 5), &CellValue::Number(42.0));
     assert!(
-        matches!(sheet.cell(1, 0), CellValue::DateTime(_)),
-        "date cells stay on the calamine conversion: {:?}",
+        matches!(sheet.cell(1, 0), CellValue::DateTime { .. }),
+        "date cells keep their variant (rendering is pinned by dates.xlsx): {:?}",
         sheet.cell(1, 0)
     );
 }
