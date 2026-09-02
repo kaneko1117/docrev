@@ -2,12 +2,12 @@
 //! variable row heights, scroll following, alignment, semantic styling.
 //! No ratatui, no colors, no `Span`s; `grid.rs` translates the result.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::anchor::Anchor;
 use crate::domain::sheet::{Rgb, Sheet, TextColor};
 
-use super::text::{cell_text, center, clip, pad_left, pad_right, wrap};
+use super::text::{cell_lines, cell_text, center, clip, pad_left, pad_right};
 
 pub const DEFAULT_CELL_WIDTH: usize = 12;
 
@@ -231,8 +231,9 @@ struct RowViewport {
 }
 
 impl RowBuilder<'_> {
-    /// Wrapped text makes row heights variable: a sheet row is as tall as
-    /// its tallest visible cell — frozen columns included. Numbers stay
+    /// Wrapped text and in-cell line breaks make row heights variable: a
+    /// sheet row is as tall as its tallest visible cell — frozen columns
+    /// included. Numbers stay
     /// single-line, and a merged region wraps at the merged width,
     /// counted on its anchor row.
     fn height_of(&self, row: usize) -> usize {
@@ -248,15 +249,15 @@ impl RowBuilder<'_> {
                         let span_cols = segment_end - col;
                         let span_width: usize =
                             (col..segment_end).map(width_of).sum::<usize>() + (span_cols - 1);
-                        let text = cell_text(sheet.display_cell(row, col));
-                        height = height.max(wrap(&text, span_width).len());
+                        let lines = cell_lines(sheet.display_cell(row, col), span_width);
+                        height = height.max(lines.len());
                     }
                     col = segment_end;
                     continue;
                 }
                 let cell = sheet.cell(row, col);
                 if !cell.is_number() && !cell.is_datetime() && !cell.is_empty() {
-                    height = height.max(wrap(&cell_text(cell), width_of(col)).len());
+                    height = height.max(cell_lines(cell, width_of(col)).len());
                 }
                 col += 1;
             }
@@ -290,6 +291,10 @@ impl RowBuilder<'_> {
         };
 
         let height = self.height_of(row);
+        // a cell's lines are split and wrapped once per row, not once per
+        // sub-line: a cell with many line breaks would otherwise cost the
+        // square of its height every frame
+        let mut lines_of: HashMap<(usize, usize), Vec<String>> = HashMap::new();
         let mut out = Vec::with_capacity(height);
         for sub in 0..height {
             // the horizontal gridline sits under a sheet row's LAST line
@@ -329,7 +334,11 @@ impl RowBuilder<'_> {
                         let span_width: usize =
                             (col..segment_end).map(width_of).sum::<usize>() + (span_cols - 1);
                         let text = if row == merge.start_row && !continuation {
-                            wrap(&cell_text(sheet.display_cell(row, col)), span_width)
+                            lines_of
+                                .entry((col, span_width))
+                                .or_insert_with(|| {
+                                    cell_lines(sheet.display_cell(row, col), span_width)
+                                })
                                 .get(sub)
                                 .cloned()
                                 .unwrap_or_default()
@@ -384,7 +393,9 @@ impl RowBuilder<'_> {
                             String::new()
                         }
                     } else {
-                        wrap(&cell_text(cell), own_width)
+                        lines_of
+                            .entry((col, own_width))
+                            .or_insert_with(|| cell_lines(cell, own_width))
                             .get(sub)
                             .cloned()
                             .unwrap_or_default()
@@ -1084,6 +1095,27 @@ mod tests {
         );
         assert!(!layout.lines[0].ruled, "gridline only under the last line");
         assert!(layout.lines.last().is_some_and(|l| l.ruled));
+    }
+
+    #[test]
+    fn in_cell_line_breaks_make_tall_rows_without_wrapping() {
+        // three short lines that would fit one column width side by side
+        let sheet = Sheet::new(
+            "s",
+            vec![
+                vec![CellValue::Text("行1\n行2\n行3".into())],
+                vec![CellValue::Text("next".into())],
+            ],
+        );
+        let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 30, 8);
+        let texts: Vec<&str> = layout.lines[..3]
+            .iter()
+            .map(|l| l.slots[0].text.trim())
+            .collect();
+        assert_eq!(texts, vec!["行1", "行2", "行3"]);
+        assert!(layout.lines[2].ruled, "the row ends after its third line");
+        assert_eq!(layout.lines[3].slots[0].text.trim(), "next");
+        assert!(layout.lines[3].label.contains('2'));
     }
 
     #[test]
