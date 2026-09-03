@@ -1,6 +1,6 @@
 use super::styles::{builtin_format, parse_cell_styles, parse_styles};
 use super::theme::{apply_tint, default_palette, parse_hex_rgb, parse_theme_palette};
-use super::worksheet::parse_pane;
+use super::worksheet::{parse_cols, parse_hidden_rows, parse_pane};
 use super::*;
 
 fn formats_of(styles: &[CellStyle]) -> Vec<Option<&str>> {
@@ -34,6 +34,71 @@ fn non_frozen_splits_and_garbage_are_ignored() {
     assert_eq!(parse_pane(garbage).unwrap(), None);
     let none = r"<worksheet><sheetData/></worksheet>";
     assert_eq!(parse_pane(none).unwrap(), None);
+}
+
+#[test]
+fn cols_carry_width_and_hidden_and_stop_at_sheet_data() {
+    let xml = r#"<worksheet><cols>
+        <col min="1" max="1" width="20.5" customWidth="1"/>
+        <col min="3" max="4" width="9" hidden="1"/>
+        <col min="6" max="6" hidden="true"/>
+        <col min="7" max="7"/>
+    </cols><sheetData><row r="1"><c r="A1"/></row></sheetData></worksheet>"#;
+    let cols = parse_cols(xml).unwrap();
+    assert_eq!(
+        cols.len(),
+        3,
+        "a col with neither width nor hidden is dropped"
+    );
+    assert_eq!(
+        (cols[0].min, cols[0].max, cols[0].width, cols[0].hidden),
+        (1, 1, Some(20.5), false)
+    );
+    assert_eq!(
+        (cols[1].min, cols[1].max, cols[1].width, cols[1].hidden),
+        (3, 4, Some(9.0), true)
+    );
+    assert_eq!(
+        (cols[2].min, cols[2].max, cols[2].width, cols[2].hidden),
+        (6, 6, None, true)
+    );
+}
+
+#[test]
+fn hidden_rows_are_zero_based_and_follow_sequential_rows() {
+    let xml = r#"<worksheet><sheetData>
+        <row r="1"><c r="A1"/></row>
+        <row r="3" hidden="1"><c r="A3"/></row>
+        <row hidden="true"/>
+        <row r="10" hidden="0"/>
+        <row/>
+        <row hidden="1"/>
+    </sheetData></worksheet>"#;
+    assert_eq!(parse_hidden_rows(xml).unwrap(), vec![2, 3, 11]);
+    assert!(
+        parse_hidden_rows("<worksheet><sheetData/></worksheet>")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_row_counter_at_u32_max_stops_instead_of_wrapping() {
+    let xml = r#"<worksheet><sheetData>
+        <row r="4294967295"/><row/><row hidden="1"/>
+    </sheetData></worksheet>"#;
+    assert!(
+        parse_hidden_rows(xml).unwrap().is_empty(),
+        "row 0 must not turn hidden"
+    );
+    let styled = r#"<worksheet><sheetData>
+        <row r="4294967295"/><row/><row><c s="1"/></row>
+    </sheetData></worksheet>"#;
+    assert!(
+        parse_cell_styles(styled, &percent_style())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

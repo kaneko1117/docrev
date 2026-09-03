@@ -12,16 +12,16 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn reads_custom_column_widths_from_the_workbook() {
-    let widths = xlsx_meta::read_meta(&fixture("widths.xlsx")).widths;
-    let cols = widths.get("広い").expect("sheet with custom widths");
+    let cols = xlsx_meta::read_meta(&fixture("widths.xlsx")).cols;
+    let cols = cols.get("広い").expect("sheet with custom widths");
     assert!(
         cols.iter()
-            .any(|c| c.min == 1 && c.max == 1 && c.width.round() == 20.0),
+            .any(|c| c.min == 1 && c.max == 1 && c.width.map(f64::round) == Some(20.0)),
         "column A should be width 20: {cols:?}"
     );
     assert!(
         cols.iter()
-            .any(|c| c.min == 2 && c.max == 2 && c.width.round() == 6.0),
+            .any(|c| c.min == 2 && c.max == 2 && c.width.map(f64::round) == Some(6.0)),
         "column B should be width 6: {cols:?}"
     );
 }

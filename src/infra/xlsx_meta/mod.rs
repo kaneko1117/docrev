@@ -15,12 +15,12 @@ mod worksheet;
 
 pub use comments::{RawWorkbookComment, workbook_comments};
 pub use styles::{CellStyle, WorkbookStyles};
-pub use worksheet::ColumnWidth;
+pub use worksheet::ColumnRange;
 
 use archive::{entry_path, open_archive, parse_rel_targets, parse_sheet_ids, read_entry};
 use styles::{parse_cell_styles, parse_styles};
 use theme::{default_palette, parse_theme_palette};
-use worksheet::{parse_cols, parse_pane};
+use worksheet::{parse_cols, parse_hidden_rows, parse_pane};
 
 #[derive(Debug, Error)]
 #[error("{0}")]
@@ -29,7 +29,9 @@ pub struct MetaError(String);
 /// Each attribute falls back to its default when its part fails to parse.
 #[derive(Debug, Default)]
 pub struct WorkbookMeta {
-    pub widths: HashMap<String, Vec<ColumnWidth>>,
+    pub cols: HashMap<String, Vec<ColumnRange>>,
+    /// 0-based row indexes per sheet.
+    pub hidden_rows: HashMap<String, Vec<u32>>,
     pub styles: WorkbookStyles,
     pub frozen: HashMap<String, (usize, usize)>,
 }
@@ -78,7 +80,12 @@ pub fn read_meta(document: &Path) -> WorkbookMeta {
         if let Ok(cols) = parse_cols(&xml)
             && !cols.is_empty()
         {
-            meta.widths.insert(name.clone(), cols);
+            meta.cols.insert(name.clone(), cols);
+        }
+        if let Ok(rows) = parse_hidden_rows(&xml)
+            && !rows.is_empty()
+        {
+            meta.hidden_rows.insert(name.clone(), rows);
         }
         if let Ok(Some(frozen)) = parse_pane(&xml) {
             meta.frozen.insert(name.clone(), frozen);

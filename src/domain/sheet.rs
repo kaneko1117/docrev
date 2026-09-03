@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::cell::CellValue;
 use super::workbook_comment::WorkbookComment;
@@ -66,6 +66,10 @@ pub struct Sheet {
     /// By (row, col), without the leading `=`.
     formulas: HashMap<(usize, usize), String>,
     workbook_comments: Vec<WorkbookComment>,
+    /// The sheet itself is hidden in the workbook.
+    hidden: bool,
+    hidden_rows: HashSet<usize>,
+    hidden_cols: HashSet<usize>,
 }
 
 impl Sheet {
@@ -82,7 +86,37 @@ impl Sheet {
             frozen: (0, 0),
             formulas: HashMap::new(),
             workbook_comments: Vec::new(),
+            hidden: false,
+            hidden_rows: HashSet::new(),
+            hidden_cols: HashSet::new(),
         }
+    }
+
+    pub fn with_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
+    }
+
+    pub fn with_hidden_rows(mut self, rows: HashSet<usize>) -> Self {
+        self.hidden_rows = rows;
+        self
+    }
+
+    pub fn with_hidden_cols(mut self, cols: HashSet<usize>) -> Self {
+        self.hidden_cols = cols;
+        self
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.hidden
+    }
+
+    pub fn row_hidden(&self, row: usize) -> bool {
+        self.hidden_rows.contains(&row)
+    }
+
+    pub fn col_hidden(&self, col: usize) -> bool {
+        self.hidden_cols.contains(&col)
     }
 
     pub fn with_fills(mut self, fills: HashMap<(usize, usize), Rgb>) -> Self {
@@ -245,6 +279,20 @@ impl Sheet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_state_defaults_to_visible() {
+        let sheet = Sheet::new("s", vec![vec![CellValue::Number(1.0); 3]; 3]);
+        assert!(!sheet.is_hidden());
+        assert!(!sheet.row_hidden(1) && !sheet.col_hidden(1));
+        let sheet = sheet
+            .with_hidden(true)
+            .with_hidden_rows(HashSet::from([1]))
+            .with_hidden_cols(HashSet::from([2]));
+        assert!(sheet.is_hidden());
+        assert!(sheet.row_hidden(1) && !sheet.row_hidden(0));
+        assert!(sheet.col_hidden(2) && !sheet.col_hidden(1));
+    }
 
     #[test]
     fn out_of_range_is_empty() {
