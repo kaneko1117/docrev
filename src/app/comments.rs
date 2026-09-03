@@ -22,8 +22,11 @@ pub struct CellContext {
     pub value: String,
     /// `None` for every cell kind but date/time.
     pub raw: Option<String>,
-    /// (A1 ref, displayed text) in column order.
+    /// (A1 ref, displayed text) in column order; hidden columns are left out, and a hidden row
+    /// has none.
     pub row: Vec<(String, String)>,
+    /// The anchored cell is on a hidden row or column.
+    pub hidden: bool,
 }
 
 const ROW_CONTEXT_CAP: usize = 100;
@@ -98,11 +101,26 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
         Some(merge) => merge.contains(row, c),
         None => c == col,
     };
-    let siblings = (0..sheet.row_len(row))
-        .filter(|&c| !in_anchor_region(c))
+    // a merged anchor may sit on a hidden row while its region shows further down: the row a
+    // person sees is the region's first shown one
+    let shown = sheet.shown_cell_of(row, col);
+    let hidden = shown.is_none();
+    let sibling_row = shown.map_or(row, |(r, _)| r);
+    let visible_len = if hidden {
+        0
+    } else {
+        sheet.row_len(sibling_row)
+    };
+    let siblings = (0..visible_len)
+        .filter(|&c| !in_anchor_region(c) && !sheet.col_hidden(c))
         .filter_map(|c| {
-            let text = sheet.cell(row, c).display_text();
-            (!text.is_empty()).then(|| (Anchor::cell("", row as u32, c as u32).cell_ref(), text))
+            let text = sheet.cell(sibling_row, c).display_text();
+            (!text.is_empty()).then(|| {
+                (
+                    Anchor::cell("", sibling_row as u32, c as u32).cell_ref(),
+                    text,
+                )
+            })
         })
         .take(ROW_CONTEXT_CAP)
         .collect();
@@ -110,6 +128,7 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
         value,
         raw,
         row: siblings,
+        hidden,
     })
 }
 
@@ -359,6 +378,85 @@ mod tests {
             ],
             "siblings only, empties dropped, column order"
         );
+    }
+
+    struct HiddenSource;
+
+    impl DocumentSource for HiddenSource {
+        fn load(&self, path: &Path) -> Result<Document, LoadError> {
+            use std::collections::HashSet;
+            let document = RichSource.load(path)?;
+            let sheet = document.into_sheets().remove(0);
+            Ok(Document::new(vec![
+                sheet
+                    .with_hidden_cols(HashSet::from([3]))
+                    .with_hidden_rows(HashSet::from([3])),
+            ]))
+        }
+    }
+
+    struct MergedHiddenSource;
+
+    impl DocumentSource for MergedHiddenSource {
+        fn load(&self, _: &Path) -> Result<Document, LoadError> {
+            use crate::domain::sheet::MergedRange;
+            use std::collections::HashSet;
+            let sheet = Sheet::new(
+                "IT-01",
+                vec![
+                    vec![
+                        CellValue::Text("見出し".into()),
+                        CellValue::Text("上".into()),
+                    ],
+                    vec![CellValue::Empty, CellValue::Text("下".into())],
+                ],
+            )
+            .with_merges(vec![MergedRange {
+                start_row: 0,
+                start_col: 0,
+                end_row: 1,
+                end_col: 0,
+            }])
+            .with_hidden_rows(HashSet::from([0]));
+            Ok(Document::new(vec![sheet]))
+        }
+    }
+
+    #[test]
+    fn a_merged_anchor_on_a_hidden_row_is_not_hidden_and_reads_the_shown_row() {
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!A1");
+        let items =
+            list_with_context(&MergedHiddenSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert!(!context.hidden, "the region shows on row 2");
+        assert_eq!(context.value, "見出し");
+        assert_eq!(context.row, vec![("B2".to_string(), "下".to_string())]);
+    }
+
+    #[test]
+    fn hidden_columns_leave_the_row_and_a_hidden_anchor_is_flagged() {
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!C2");
+        let items = list_with_context(&HiddenSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert!(!context.hidden);
+        assert_eq!(
+            context.row,
+            vec![("A2".to_string(), "IT-01-05".to_string())],
+            "D2 is hidden and left out"
+        );
+
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!A4");
+        let items = list_with_context(&HiddenSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert!(context.hidden, "row 4 is hidden");
+        assert_eq!(
+            context.value, "2026年8月31日(月)",
+            "the cell itself is still read"
+        );
+        assert!(context.row.is_empty(), "a hidden row shows no siblings");
     }
 
     #[test]

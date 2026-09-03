@@ -159,15 +159,21 @@ fn draw_search(p: &Palette, frame: &mut Frame, area: Rect, search: &SearchView) 
 }
 
 /// `None` when every column is on screen.
+/// `None` when every column that can be shown is on screen (frozen ones included).
 fn visible_range(grid: &GridLayout) -> Option<String> {
-    let visible = grid.visible_cols.len();
-    // frozen columns are on screen too
-    if grid.empty || visible == 0 || grid.frozen_cols + visible >= grid.col_count {
+    let showable = grid.col_count - grid.hidden_cols;
+    let body: Vec<usize> = grid
+        .col_spans
+        .iter()
+        .map(|(col, _)| *col)
+        .filter(|&col| col >= grid.frozen_cols)
+        .collect();
+    if grid.empty || body.is_empty() || grid.col_spans.len() >= showable {
         return None;
     }
-    let first = Anchor::column_label(grid.visible_cols.start as u32);
-    let last = Anchor::column_label((grid.visible_cols.end - 1) as u32);
-    Some(format!("{first}–{last} / {}", grid.col_count))
+    let first = Anchor::column_label(body[0] as u32);
+    let last = Anchor::column_label(body[body.len() - 1] as u32);
+    Some(format!("{first}–{last} / {showable}"))
 }
 
 #[cfg(test)]

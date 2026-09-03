@@ -29,8 +29,7 @@ impl Viewer {
             }
             Event::DragEnd { copy } => {
                 if let (Some((start, end)), true) = (self.selection.take(), copy) {
-                    let rows = start.0.abs_diff(end.0) + 1;
-                    let cols = start.1.abs_diff(end.1) + 1;
+                    let (rows, cols) = visible_extent(self.sheet(), start, end);
                     let text = tsv(self.sheet(), start, end);
                     if text.len() > COPY_LIMIT_BYTES {
                         self.notice = Some(Notice::Copy("Selection too large to copy".to_string()));
@@ -46,12 +45,25 @@ impl Viewer {
 }
 
 /// Full displayed texts; tabs and line breaks inside a cell become spaces.
+/// (rows, cols) of the rectangle that are not hidden.
+fn visible_extent(sheet: &Sheet, a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
+    let (r0, r1) = (a.0.min(b.0), a.0.max(b.0));
+    let (c0, c1) = (a.1.min(b.1), a.1.max(b.1));
+    (
+        (r0..=r1).filter(|&r| !sheet.row_hidden(r)).count(),
+        (c0..=c1).filter(|&c| !sheet.col_hidden(c)).count(),
+    )
+}
+
+/// Hidden rows and columns inside the rectangle are left out.
 fn tsv(sheet: &Sheet, a: (usize, usize), b: (usize, usize)) -> String {
     let (r0, r1) = (a.0.min(b.0), a.0.max(b.0));
     let (c0, c1) = (a.1.min(b.1), a.1.max(b.1));
     (r0..=r1)
+        .filter(|&r| !sheet.row_hidden(r))
         .map(|r| {
             (c0..=c1)
+                .filter(|&c| !sheet.col_hidden(c))
                 .map(|c| {
                     sheet
                         .cell(r, c)
@@ -130,6 +142,46 @@ mod tests {
         assert_eq!(v.notice(), Some("Copied 2×2 cells"));
         v.apply(Event::Move { rows: 1, cols: 0 });
         assert_eq!(v.notice(), None, "the receipt retires on the next input");
+    }
+
+    #[test]
+    fn a_drag_copy_leaves_hidden_rows_and_columns_out() {
+        use std::collections::HashSet;
+        let sheet = Sheet::new(
+            "s",
+            vec![
+                vec![text("項目"), text("単価"), text("数量")],
+                vec![
+                    text("りんご"),
+                    CellValue::Number(120.0),
+                    CellValue::Number(3.0),
+                ],
+                vec![
+                    text("みかん"),
+                    CellValue::Number(80.0),
+                    CellValue::Number(5.0),
+                ],
+            ],
+        )
+        .with_hidden_rows(HashSet::from([1]))
+        .with_hidden_cols(HashSet::from([1]));
+        let mut v = Viewer::from_document(
+            Document::new(vec![sheet]),
+            Vec::new(),
+            None,
+            None,
+            Box::new(NullStore),
+        )
+        .unwrap();
+        v.apply(Event::SelectCell { row: 0, col: 0 });
+        v.apply(Event::DragTo { row: 2, col: 2 });
+        v.apply(Event::DragEnd { copy: true });
+        assert_eq!(v.take_copy_request().unwrap(), "項目\t数量\nみかん\t5");
+        assert_eq!(
+            v.notice(),
+            Some("Copied 2×2 cells"),
+            "counts what was copied"
+        );
     }
 
     #[test]

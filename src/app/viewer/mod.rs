@@ -198,7 +198,10 @@ impl Viewer {
             return Err(DocumentError::EmptyDocument);
         };
         let rest: Vec<Sheet> = sheets.collect();
-        let cursors = vec![(0, 0); 1 + rest.len()];
+        let cursors = std::iter::once(&first)
+            .chain(&rest)
+            .map(|sheet| snap_visible(sheet, (0, 0)))
+            .collect();
         Ok(Self {
             sheets: Sheets { first, rest },
             cursors,
@@ -258,17 +261,19 @@ impl Viewer {
     }
 
     /// (row, col) per unresolved thread.
+    /// Threads on hidden cells are left out: nothing on screen could carry their marker.
     pub fn unresolved_on_active_sheet(&self) -> Vec<(usize, usize)> {
-        let active = self.sheet().name();
+        let active = self.sheet();
         self.comments
             .iter()
             .filter(|t| !t.resolved)
             .filter_map(|t| match &t.anchor {
-                Anchor::Cell { sheet, row, col } if sheet == active => {
+                Anchor::Cell { sheet, row, col } if sheet == active.name() => {
                     Some((*row as usize, *col as usize))
                 }
                 _ => None,
             })
+            .filter(|&(row, col)| !active.cell_hidden(row, col))
             .collect()
     }
 
@@ -318,10 +323,12 @@ impl Viewer {
     }
 
     pub fn workbook_comment_cells(&self) -> Vec<(usize, usize)> {
-        self.sheet()
+        let sheet = self.sheet();
+        sheet
             .workbook_comments()
             .iter()
             .map(|c| (c.row, c.col))
+            .filter(|&(row, col)| !sheet.cell_hidden(row, col))
             .collect()
     }
 
@@ -457,10 +464,11 @@ impl Viewer {
                     .position(|name| name == sheet.name())
                     .and_then(|old| self.cursors.get(old).copied())
                     .unwrap_or((0, 0));
-                (
+                let clamped = (
                     row.min(sheet.row_count().saturating_sub(1)),
                     col.min(sheet.col_count().saturating_sub(1)),
-                )
+                );
+                snap_visible(sheet, clamped)
             })
             .collect();
         let active_name = old_names.get(self.active).cloned().unwrap_or_default();
@@ -484,17 +492,19 @@ impl Viewer {
 
     fn apply_grid(&mut self, event: Event) {
         let (row, col) = self.cursor();
-        let max_row = self.sheet().row_count().saturating_sub(1);
-        let max_col = self.sheet().col_count().saturating_sub(1);
+        let sheet = self.sheet();
+        let max_row = sheet.row_count().saturating_sub(1);
+        let max_col = sheet.col_count().saturating_sub(1);
+        // hidden rows and columns are stepped over, never landed on
         let next = match event {
             Event::Move { rows, cols } => (
-                add_clamped(row, rows, max_row),
-                add_clamped(col, cols, max_col),
+                sheet.step_visible_row(row, rows),
+                sheet.step_visible_col(col, cols),
             ),
-            Event::Top => (0, col),
-            Event::Bottom => (max_row, col),
-            Event::RowStart => (row, 0),
-            Event::RowEnd => (row, max_col),
+            Event::Top => (sheet.nearest_visible_row(0).unwrap_or(0), col),
+            Event::Bottom => (sheet.nearest_visible_row(max_row).unwrap_or(max_row), col),
+            Event::RowStart => (row, sheet.nearest_visible_col(0).unwrap_or(0)),
+            Event::RowEnd => (row, sheet.nearest_visible_col(max_col).unwrap_or(max_col)),
             Event::NextSheet => {
                 self.active = (self.active + 1) % self.sheets.len();
                 return;
@@ -573,6 +583,14 @@ fn add_clamped(value: usize, delta: isize, max: usize) -> usize {
     (value as isize + delta).clamp(0, max as isize) as usize
 }
 
+/// The nearest visible cell; an all-hidden axis keeps the given index.
+fn snap_visible(sheet: &Sheet, (row, col): (usize, usize)) -> (usize, usize) {
+    (
+        sheet.nearest_visible_row(row).unwrap_or(row),
+        sheet.nearest_visible_col(col).unwrap_or(col),
+    )
+}
+
 pub fn run(mut viewer: Viewer, frontend: &mut impl Frontend) -> Result<(), FrontendError> {
     while !viewer.wants_quit() {
         frontend.draw(&viewer)?;
@@ -595,6 +613,67 @@ mod tests {
     };
     use super::*;
     use crate::domain::cell::CellValue;
+
+    fn hidden_grid() -> Viewer {
+        use std::collections::HashSet;
+        let grid = vec![vec![CellValue::Number(1.0); 5]; 5];
+        let sheet = Sheet::new("one", grid)
+            .with_hidden_rows(HashSet::from([0, 2]))
+            .with_hidden_cols(HashSet::from([1, 4]));
+        Viewer::from_document(
+            Document::new(vec![sheet]),
+            vec![
+                thread("one", 2, 0, false),
+                thread("one", 3, 1, false),
+                thread("one", 3, 2, false),
+            ],
+            None,
+            None,
+            Box::new(NullStore),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_cursor_never_lands_on_a_hidden_row_or_column() {
+        let mut v = hidden_grid();
+        assert_eq!(v.cursor(), (1, 0), "opens on the first shown cell");
+        v.apply(Event::Move { rows: 1, cols: 1 });
+        assert_eq!(v.cursor(), (3, 2), "row 2 and column B are stepped over");
+        v.apply(Event::Move { rows: 5, cols: 5 });
+        assert_eq!(v.cursor(), (4, 3), "stops at the last shown cell, not E5");
+        v.apply(Event::Top);
+        assert_eq!(v.cursor(), (1, 3));
+        v.apply(Event::RowEnd);
+        assert_eq!(v.cursor(), (1, 3), "E is hidden, D is the row end");
+        v.apply(Event::RowStart);
+        v.apply(Event::Bottom);
+        assert_eq!(v.cursor(), (4, 0));
+        v.apply(Event::Move { rows: -1, cols: 0 });
+        assert_eq!(v.cursor(), (3, 0));
+    }
+
+    #[test]
+    fn threads_on_hidden_cells_carry_no_marker_and_are_not_counted() {
+        let v = hidden_grid();
+        assert_eq!(v.unresolved_on_active_sheet(), vec![(3, 2)]);
+        assert_eq!(v.unresolved_counts(), vec![1]);
+    }
+
+    #[test]
+    fn a_reload_moves_the_cursor_off_a_row_that_became_hidden() {
+        use std::collections::HashSet;
+        let column = |hidden: HashSet<usize>| {
+            Sheet::new("one", vec![vec![CellValue::Number(1.0)]; 4]).with_hidden_rows(hidden)
+        };
+        let source = SharedSource::new(vec![column(HashSet::new())]);
+        let mut v = viewer_on(&source);
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(v.cursor(), (1, 0));
+        source.write_from_outside(vec![column(HashSet::from([1, 2]))]);
+        v.apply(Event::Tick);
+        assert_eq!(v.cursor(), (3, 0), "the nearest shown row below");
+    }
 
     #[test]
     fn empty_document_is_rejected() {

@@ -146,16 +146,18 @@ fn run_comment(action: CommentAction) -> ExitCode {
                 author: author.as_deref(),
                 sheet: sheet.as_deref(),
             };
-            if json {
-                return match comments::list_with_context(&XlsxSource, &store, &document, &filter) {
-                    Ok(items) => {
-                        print_json(json_comment_store::threads_with_context_to_json(&items))
-                    }
-                    Err(e) => fail(&e),
-                };
-            }
-            match comments::list(&store, &filter) {
-                Ok(threads) => print_stdout(&comment_list::render(&threads)),
+            match comments::list_with_context(&XlsxSource, &store, &document, &filter) {
+                Ok(items) if json => {
+                    print_json(json_comment_store::threads_with_context_to_json(&items))
+                }
+                Ok(items) => {
+                    let threads: Vec<(&_, bool)> = items
+                        .threads
+                        .iter()
+                        .map(|(t, c)| (t, c.as_ref().is_some_and(|c| c.hidden)))
+                        .collect();
+                    print_stdout(&comment_list::render(&threads))
+                }
                 Err(e) => fail(&e),
             }
         }

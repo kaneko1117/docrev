@@ -41,8 +41,10 @@ impl Viewer {
             .collect();
         let mut counts = vec![0; names.len()];
         for thread in self.comments.iter().filter(|t| !t.resolved) {
-            let Anchor::Cell { sheet, .. } = &thread.anchor;
-            if let Some(&i) = index.get(sheet.as_str()) {
+            let Anchor::Cell { sheet, row, col } = &thread.anchor;
+            if let Some(&i) = index.get(sheet.as_str())
+                && !self.sheets.get(i).cell_hidden(*row as usize, *col as usize)
+            {
                 counts[i] += 1;
             }
         }

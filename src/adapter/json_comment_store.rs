@@ -193,6 +193,9 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
     struct Entry {
         #[serde(flatten)]
         thread: ThreadDto,
+        /// Present only when true.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        hidden: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         cell: Option<CellDto>,
     }
@@ -222,6 +225,7 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
             .iter()
             .map(|(thread, context)| Entry {
                 thread: ThreadDto::from_domain(thread),
+                hidden: context.as_ref().is_some_and(|c| c.hidden),
                 cell: context.as_ref().map(|c| CellDto {
                     value: c.value.clone(),
                     raw: c.raw.clone(),
@@ -375,6 +379,7 @@ mod tests {
                     raw: Some("2026-08-31 00:00:00".into()),
                     // Z before AA
                     row: vec![("Z2".into(), "先".into()), ("AA2".into(), "後".into())],
+                    hidden: false,
                 }),
             ),
             (thread("without"), None),
@@ -384,6 +389,7 @@ mod tests {
                     value: String::new(),
                     raw: None,
                     row: Vec::new(),
+                    hidden: true,
                 }),
             ),
         ];
@@ -433,6 +439,11 @@ mod tests {
         assert!(
             third["cell"].get("raw").is_none(),
             "non-date cells carry no raw key"
+        );
+        assert_eq!(third["hidden"], true);
+        assert!(
+            first.get("hidden").is_none() && second.get("hidden").is_none(),
+            "hidden is emitted only when true"
         );
     }
 
