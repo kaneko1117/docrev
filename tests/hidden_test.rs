@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 use docrev::adapter::xlsx_source::XlsxSource;
 use docrev::app::ports::DocumentSource;
@@ -55,4 +56,82 @@ fn a_workbook_without_hidden_parts_reports_none() {
     assert!(!sheet.is_hidden());
     assert!((0..sheet.row_count()).all(|r| !sheet.row_hidden(r)));
     assert!((0..sheet.col_count()).all(|c| !sheet.col_hidden(c)));
+}
+
+fn docrev() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_docrev"))
+}
+
+#[test]
+fn dump_shows_what_excel_shows() {
+    let out = docrev()
+        .args(["dump", fixture("hidden.xlsx").to_str().unwrap()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("│ A  │ B  │ D  │ E  │"), "{text}");
+    assert!(text.contains("│ 1 │ A1 │ B1 │ D1 │ E1 │"), "{text}");
+    assert!(text.contains("│ 4 │ A4 │ B4 │ D4 │ E4 │"), "{text}");
+    assert!(
+        !text.contains("C1") && !text.contains("A3") && !text.contains("A5"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_thread_on_a_hidden_cell_is_reachable_and_marked() {
+    let dir = std::env::temp_dir().join(format!("docrev-hidden-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let document = dir.join("hidden.xlsx");
+    std::fs::copy(fixture("hidden.xlsx"), &document).unwrap();
+    let path = document.to_str().unwrap();
+
+    let add = docrev()
+        .args(["comment", "add", path, "--cell", "表!C3", "--body", "check"])
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let text = docrev().args(["comment", "list", path]).output().unwrap();
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("表!C3 (hidden) [agent] check"), "{text}");
+
+    let json = docrev()
+        .args(["comment", "list", "--json", path])
+        .output()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let entry = &parsed["comments"][0];
+    assert_eq!(entry["hidden"], true);
+    assert_eq!(
+        entry["cell"]["value"], "C3",
+        "the anchored cell is still read"
+    );
+    assert_eq!(
+        entry["cell"]["row"],
+        serde_json::json!({}),
+        "a hidden row shows nothing of its neighbours"
+    );
+
+    let visible = docrev()
+        .args(["comment", "add", path, "--cell", "表!A2", "--body", "row"])
+        .output()
+        .unwrap();
+    assert!(visible.status.success());
+    let json = docrev()
+        .args(["comment", "list", "--json", path])
+        .output()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let entry = &parsed["comments"][1];
+    assert!(entry.get("hidden").is_none());
+    let row = entry["cell"]["row"].as_object().unwrap();
+    let keys: Vec<&String> = row.keys().collect();
+    assert_eq!(keys, vec!["B2", "D2", "E2"], "hidden column C is left out");
+
+    std::fs::remove_dir_all(&dir).ok();
 }

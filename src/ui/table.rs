@@ -15,16 +15,18 @@ const MAX_CELL_WIDTH: usize = 24;
 /// `formulas` shows formula cells as `=…` instead of their results.
 pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> String {
     let mut out = format!("Sheet: {} ({}/{})\n\n", sheet.name(), position + 1, total);
-    let col_count = sheet.col_count();
-    if sheet.row_count() == 0 || col_count == 0 {
+    let rows: Vec<usize> = sheet.visible_rows().collect();
+    let cols: Vec<usize> = sheet.visible_cols().collect();
+    if rows.is_empty() || cols.is_empty() {
         out.push_str("(empty sheet)\n");
         return out;
     }
 
-    let texts: Vec<Vec<Vec<String>>> = (0..sheet.row_count())
-        .map(|r| {
-            (0..col_count)
-                .map(|c| {
+    let texts: Vec<Vec<Vec<String>>> = rows
+        .iter()
+        .map(|&r| {
+            cols.iter()
+                .map(|&c| {
                     if formulas && let Some(formula) = sheet.formula_at(r, c) {
                         return wrap(&sanitize(&format!("={formula}")), MAX_CELL_WIDTH);
                     }
@@ -43,11 +45,13 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
         .collect();
 
     let row_label_width = sheet.row_count().to_string().len();
-    let col_widths: Vec<usize> = (0..col_count)
-        .map(|c| {
+    let col_widths: Vec<usize> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
             let body = texts
                 .iter()
-                .filter_map(|row| row.get(c))
+                .filter_map(|row| row.get(i))
                 .flat_map(|lines| lines.iter())
                 .map(|t| t.width())
                 .max()
@@ -73,7 +77,7 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
 
     out.push('│');
     out.push_str(&format!(" {} ", " ".repeat(row_label_width)));
-    for (c, w) in col_widths.iter().enumerate() {
+    for (&c, w) in cols.iter().zip(&col_widths) {
         out.push('│');
         out.push_str(&format!(" {} ", center(&column_label(c as u32), *w)));
     }
@@ -81,7 +85,7 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
 
     out.push_str(&border('├', '┼', '┤'));
 
-    for (r, row) in texts.iter().enumerate() {
+    for (&r, row) in rows.iter().zip(&texts) {
         let height = row.iter().map(Vec::len).max().unwrap_or(1);
         for sub in 0..height {
             out.push('│');
@@ -90,8 +94,7 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
             } else {
                 out.push_str(&format!(" {} ", " ".repeat(row_label_width)));
             }
-            for (c, lines) in row.iter().enumerate() {
-                let w = col_widths.get(c).copied().unwrap_or(0);
+            for ((&c, lines), &w) in cols.iter().zip(row).zip(&col_widths) {
                 let text = lines.get(sub).map(String::as_str).unwrap_or("");
                 // formulas align left whatever their result type
                 let shows_formula = formulas && sheet.formula_at(r, c).is_some();
@@ -118,6 +121,41 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_rows_and_columns_are_left_out_with_true_labels() {
+        use std::collections::HashSet;
+        let sheet = Sheet::new(
+            "S",
+            vec![
+                vec![
+                    CellValue::Text("a1".into()),
+                    CellValue::Text("b1".into()),
+                    CellValue::Text("c1".into()),
+                ],
+                vec![
+                    CellValue::Text("a2".into()),
+                    CellValue::Text("b2".into()),
+                    CellValue::Text("c2".into()),
+                ],
+                vec![
+                    CellValue::Text("a3".into()),
+                    CellValue::Text("b3".into()),
+                    CellValue::Text("c3".into()),
+                ],
+            ],
+        )
+        .with_hidden_cols(HashSet::from([1]))
+        .with_hidden_rows(HashSet::from([1]));
+        let out = render(&sheet, 0, 1, false);
+        assert!(out.contains("│ A  │ C  │"), "{out}");
+        assert!(out.contains("│ 1 │ a1 │ c1 │"), "{out}");
+        assert!(out.contains("│ 3 │ a3 │ c3 │"), "{out}");
+        assert!(!out.contains("b1") && !out.contains("a2"), "{out}");
+        let all_hidden = Sheet::new("S", vec![vec![CellValue::Number(1.0)]])
+            .with_hidden_rows(HashSet::from([0]));
+        assert!(render(&all_hidden, 0, 1, false).contains("(empty sheet)"));
+    }
 
     #[test]
     fn renders_bordered_table() {

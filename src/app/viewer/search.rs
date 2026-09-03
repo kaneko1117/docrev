@@ -20,22 +20,26 @@ fn matches_in(sheet: &Sheet, query: &str) -> Vec<(usize, usize)> {
     // indexed up front: a per-cell `merge_at` froze merge-heavy sheets;
     // clamped to existing cells so a whole-sheet merge cannot balloon it
     let mut covered = std::collections::HashSet::new();
+    let mut out = Vec::new();
     for m in sheet.merges() {
-        let anchor = m.anchor();
         for r in m.start_row..=m.end_row.min(sheet.row_count().saturating_sub(1)) {
             for c in m.start_col..sheet.row_len(r).min(m.end_col + 1) {
-                if (r, c) != anchor {
-                    covered.insert((r, c));
-                }
+                covered.insert((r, c));
+            }
+        }
+        // a region matches once, at its first shown cell (its anchor may be hidden)
+        if let Some((r, c)) = sheet.shown_cell_of(m.start_row, m.start_col) {
+            let text = sheet.display_cell(r, c).display_text();
+            if !text.is_empty() && contains_folded(&text, &needle) {
+                out.push((r, c));
             }
         }
     }
-    let mut out = Vec::new();
-    for row in 0..sheet.row_count() {
+    for row in sheet.visible_rows() {
         // `row_len`, not `col_count`: one stray value in the last column must
         // not widen every row's scan
         for col in 0..sheet.row_len(row) {
-            if covered.contains(&(row, col)) {
+            if covered.contains(&(row, col)) || sheet.col_hidden(col) {
                 continue;
             }
             let text = sheet.cell(row, col).display_text();
@@ -44,6 +48,7 @@ fn matches_in(sheet: &Sheet, query: &str) -> Vec<(usize, usize)> {
             }
         }
     }
+    out.sort_unstable();
     out
 }
 
@@ -213,6 +218,45 @@ mod tests {
         assert_eq!(matches_in(&sheet, "120"), vec![(1, 1)], "numbers match");
         assert_eq!(matches_in(&sheet, ""), Vec::<(usize, usize)>::new());
         assert_eq!(matches_in(&sheet, "zzz"), Vec::<(usize, usize)>::new());
+    }
+
+    #[test]
+    fn hidden_cells_never_match() {
+        use std::collections::HashSet;
+        let sheet = Sheet::new(
+            "s",
+            vec![
+                vec![text("合計"), text("合計")],
+                vec![text("合計"), text("合計")],
+            ],
+        )
+        .with_hidden_rows(HashSet::from([0]))
+        .with_hidden_cols(HashSet::from([1]));
+        assert_eq!(matches_in(&sheet, "合計"), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn a_merge_whose_anchor_is_hidden_matches_at_its_first_shown_cell() {
+        use std::collections::HashSet;
+        let sheet = Sheet::new(
+            "s",
+            vec![
+                vec![text("合計")],
+                vec![CellValue::Empty],
+                vec![CellValue::Empty],
+            ],
+        )
+        .with_merges(vec![MergedRange {
+            start_row: 0,
+            start_col: 0,
+            end_row: 2,
+            end_col: 0,
+        }])
+        .with_hidden_rows(HashSet::from([0]));
+        assert_eq!(matches_in(&sheet, "合計"), vec![(1, 0)]);
+        let all_hidden =
+            Sheet::new("s", vec![vec![text("合計")]]).with_hidden_rows(HashSet::from([0]));
+        assert!(matches_in(&all_hidden, "合計").is_empty());
     }
 
     #[test]

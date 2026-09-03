@@ -44,10 +44,9 @@ pub(crate) struct Viewport {
 pub(crate) struct GridLayout {
     pub empty: bool,
     pub label_width: usize,
-    /// Scrolling-body columns on screen; frozen columns are not included.
-    pub visible_cols: std::ops::Range<usize>,
     pub frozen_cols: usize,
     pub col_count: usize,
+    pub hidden_cols: usize,
     /// Frozen columns first, then the visible body.
     pub header: Vec<String>,
     /// Index into `header` whose left separator is the freeze boundary.
@@ -103,6 +102,7 @@ struct ColumnPlan {
     body_left: usize,
     last_col: usize,
     widths: Vec<usize>,
+    hidden: Vec<bool>,
     header: Vec<String>,
     header_boundary: Option<usize>,
     col_spans: Vec<(usize, std::ops::Range<usize>)>,
@@ -113,9 +113,21 @@ impl ColumnPlan {
         self.widths.get(col).copied().unwrap_or(DEFAULT_CELL_WIDTH)
     }
 
+    fn is_hidden(&self, col: usize) -> bool {
+        self.hidden.get(col).copied().unwrap_or(false)
+    }
+
     /// The frozen segment, then the scrolled body segment.
     fn segments(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         [(0, self.frozen_cols), (self.body_left, self.last_col)].into_iter()
+    }
+
+    /// Visible columns of `cols`, and the terminal width they span (separators between them included).
+    fn span(&self, cols: std::ops::Range<usize>) -> (usize, usize) {
+        let visible: Vec<usize> = cols.filter(|&c| !self.is_hidden(c)).collect();
+        let width = visible.iter().map(|&c| self.width_of(c)).sum::<usize>()
+            + visible.len().saturating_sub(1);
+        (visible.len(), width)
     }
 }
 
@@ -126,11 +138,22 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
     let widths: Vec<usize> = (0..sheet.col_count())
         .map(|c| display_width(input.col_widths.get(c).copied().flatten()))
         .collect();
+    let hidden: Vec<bool> = (0..sheet.col_count())
+        .map(|c| sheet.col_hidden(c))
+        .collect();
     let width_of = |c: usize| widths.get(c).copied().unwrap_or(DEFAULT_CELL_WIDTH);
+    // a hidden column costs nothing: no cell, no separator
+    let cost_of = |c: usize| {
+        if hidden.get(c).copied().unwrap_or(false) {
+            0
+        } else {
+            width_of(c) + 1
+        }
+    };
 
     // dropped for the frame when they would leave the body no room (separator + one cell)
     let mut frozen_cols = sheet.frozen_cols().min(sheet.col_count().saturating_sub(1));
-    let span_of = |cols: std::ops::Range<usize>| cols.map(|c| width_of(c) + 1).sum::<usize>();
+    let span_of = |cols: std::ops::Range<usize>| cols.map(cost_of).sum::<usize>();
     if frozen_cols > 0 && span_of(0..frozen_cols) + 2 > avail {
         frozen_cols = 0;
     }
@@ -144,7 +167,7 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
             cursor_col,
             sheet.col_count(),
             body_avail,
-            &width_of,
+            &cost_of,
             frozen_cols,
         );
     } else {
@@ -153,23 +176,28 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
             &mut scroll.left,
             sheet.col_count(),
             body_avail,
-            &width_of,
+            &cost_of,
             frozen_cols,
         );
     }
-    let last_col = last_visible_col(scroll.left, sheet.col_count(), body_avail, &width_of);
+    let last_col = last_visible_col(scroll.left, sheet.col_count(), body_avail, &cost_of);
     let body_left = scroll.left;
     let segments = || [(0, frozen_cols), (body_left, last_col)].into_iter();
+    let shown = || {
+        segments()
+            .flat_map(|(start, end)| start..end)
+            .filter(|&c| !hidden[c])
+    };
 
-    let header: Vec<String> = segments()
-        .flat_map(|(start, end)| start..end)
+    let header: Vec<String> = shown()
         .map(|col| center(&Anchor::column_label(col as u32), width_of(col)))
         .collect();
-    let header_boundary = (frozen_cols > 0).then_some(frozen_cols);
+    let frozen_shown = (0..frozen_cols).filter(|&c| !hidden[c]).count();
+    let header_boundary = (frozen_shown > 0).then_some(frozen_shown);
 
     let mut col_spans = Vec::new();
     let mut x = label_width;
-    for col in segments().flat_map(|(start, end)| start..end) {
+    for col in shown() {
         let width = width_of(col) + 1;
         col_spans.push((col, x..x + width));
         x += width;
@@ -181,6 +209,7 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
         body_left,
         last_col,
         widths,
+        hidden,
         header,
         header_boundary,
         col_spans,
@@ -201,21 +230,27 @@ struct RowViewport {
 impl RowBuilder<'_> {
     /// Tallest visible cell, frozen columns included; numbers are single-line; a merge counts on
     /// its anchor row at the merged width.
+    /// 0 for a hidden row.
     fn height_of(&self, row: usize) -> usize {
         let sheet = self.input.sheet;
+        if sheet.row_hidden(row) {
+            return 0;
+        }
         let width_of = |c: usize| self.plan.width_of(c);
         let mut height = 1;
         for (seg_index, (start, end)) in self.plan.segments().enumerate() {
             let mut col = start;
             while col < end {
+                if self.plan.is_hidden(col) {
+                    col += 1;
+                    continue;
+                }
                 if let Some(merge) = sheet.merge_at(row, col) {
                     let segment_end = (merge.end_col + 1).min(end);
                     // a merge that began in the frozen columns draws only in the pinned segment; mirrors `build`
                     let continuation = seg_index == 1 && merge.start_col < self.plan.frozen_cols;
-                    if row == merge.start_row && !continuation {
-                        let span_cols = segment_end - col;
-                        let span_width: usize =
-                            (col..segment_end).map(width_of).sum::<usize>() + (span_cols - 1);
+                    if row == merge_text_row(sheet, merge) && !continuation {
+                        let (_, span_width) = self.plan.span(col..segment_end);
                         let lines = cell_lines(sheet.display_cell(row, col), span_width);
                         height = height.max(lines.len());
                     }
@@ -248,11 +283,12 @@ impl RowBuilder<'_> {
 
         // with a freeze the pinned rows are visible from the top, not from the scroll offset
         let first_visible_row = |merge: &crate::domain::sheet::MergedRange| {
-            if merge.start_row < vp.frozen_rows {
+            let from = if merge.start_row < vp.frozen_rows {
                 merge.start_row
             } else {
                 merge.start_row.max(vp.body_top)
-            }
+            };
+            (from..=merge.end_row).find(|&r| !sheet.row_hidden(r))
         };
 
         let height = self.height_of(row);
@@ -269,14 +305,21 @@ impl RowBuilder<'_> {
             let mut slots = Vec::new();
             for (seg_index, (start, end)) in plan.segments().enumerate() {
                 let mut col = start;
+                let mut first_in_segment = true;
                 while col < end {
-                    let freeze_boundary = plan.frozen_cols > 0 && seg_index == 1 && col == start;
+                    if plan.is_hidden(col) {
+                        col += 1;
+                        continue;
+                    }
+                    let freeze_boundary =
+                        plan.frozen_cols > 0 && seg_index == 1 && first_in_segment;
+                    first_in_segment = false;
                     if let Some(merge) = sheet.merge_at(row, col) {
                         // a merge that began in the frozen columns has drawn its text and marker in
                         // the pinned segment; mirrors `height_of`
                         let continuation = seg_index == 1 && merge.start_col < plan.frozen_cols;
                         let region_marked = !continuation
-                            && row == first_visible_row(merge)
+                            && Some(row) == first_visible_row(merge)
                             && sub == 0
                             && input.markers.iter().any(|(r, c)| merge.contains(*r, *c));
                         let separator = if region_marked {
@@ -285,10 +328,9 @@ impl RowBuilder<'_> {
                             Separator::Gridline
                         };
                         let segment_end = (merge.end_col + 1).min(end);
-                        let span_cols = segment_end - col;
-                        let span_width: usize =
-                            (col..segment_end).map(width_of).sum::<usize>() + (span_cols - 1);
-                        let text = if row == merge.start_row && !continuation {
+                        let (_, span_width) = plan.span(col..segment_end);
+                        let text_row = merge_text_row(sheet, merge);
+                        let text = if row == text_row && !continuation {
                             lines_of
                                 .entry((col, span_width))
                                 .or_insert_with(|| {
@@ -302,7 +344,7 @@ impl RowBuilder<'_> {
                         };
                         let on_cursor = merge.contains(cursor_row, cursor_col);
                         let in_range = (col..segment_end).any(|c| in_selection(row, c));
-                        let font = if row == merge.start_row && !continuation {
+                        let font = if row == text_row && !continuation {
                             visible_color(sheet.text_color_at(row, col), on_cursor || in_range)
                         } else {
                             None
@@ -318,9 +360,9 @@ impl RowBuilder<'_> {
                             note,
                             fill: sheet.display_fill_at(row, col),
                             font,
-                            ruled: row == merge.end_row && last_line,
+                            ruled: row == merge_last_row(sheet, merge) && last_line,
                         });
-                        col += span_cols;
+                        col = segment_end;
                         continue;
                     }
 
@@ -393,9 +435,9 @@ pub(crate) fn grid_layout(
         return GridLayout {
             empty: true,
             label_width: 0,
-            visible_cols: 0..0,
             frozen_cols: 0,
             col_count: 0,
+            hidden_cols: 0,
             header: Vec::new(),
             header_boundary: None,
             col_spans: Vec::new(),
@@ -411,7 +453,9 @@ pub(crate) fn grid_layout(
     // checked before the sum: heights are at least 1, and a hostile ySplit would make the sum walk
     // the whole sheet every frame
     let mut frozen_rows = sheet.frozen_rows().min(sheet.row_count().saturating_sub(1));
-    if frozen_rows >= rows_visible || (0..frozen_rows).map(height_of).sum::<usize>() >= rows_visible
+    let frozen_shown = (0..frozen_rows).filter(|&r| !sheet.row_hidden(r)).count();
+    if frozen_shown >= rows_visible
+        || (0..frozen_rows).map(height_of).sum::<usize>() >= rows_visible
     {
         frozen_rows = 0;
     }
@@ -433,8 +477,10 @@ pub(crate) fn grid_layout(
     };
 
     let mut lines = Vec::with_capacity(rows_visible);
+    // the freeze rule sits under the last shown frozen row
+    let boundary_row = (0..frozen_rows).rev().find(|&r| !sheet.row_hidden(r));
     for row in 0..frozen_rows {
-        lines.extend(rows.build(row, row + 1 == frozen_rows, &vp));
+        lines.extend(rows.build(row, Some(row) == boundary_row, &vp));
     }
     let mut row = vp.body_top;
     while lines.len() < rows_visible && row < sheet.row_count() {
@@ -447,9 +493,9 @@ pub(crate) fn grid_layout(
     GridLayout {
         empty: false,
         label_width: plan.label_width,
-        visible_cols: plan.body_left..plan.last_col,
         frozen_cols: plan.frozen_cols,
         col_count: sheet.col_count(),
+        hidden_cols: plan.hidden.iter().filter(|&&h| h).count(),
         header: plan.header,
         header_boundary: plan.header_boundary,
         col_spans: plan.col_spans,
@@ -506,8 +552,23 @@ pub(crate) fn tab_strip(names: &[&str], active: usize, width: usize) -> TabStrip
     }
 }
 
+/// The row a merge's text is drawn on: its first visible row (the anchor row may be hidden).
+fn merge_text_row(sheet: &Sheet, merge: &crate::domain::sheet::MergedRange) -> usize {
+    (merge.start_row..=merge.end_row)
+        .find(|&r| !sheet.row_hidden(r))
+        .unwrap_or(merge.start_row)
+}
+
+/// The row a merge's bottom gridline is drawn under: its last visible row.
+fn merge_last_row(sheet: &Sheet, merge: &crate::domain::sheet::MergedRange) -> usize {
+    (merge.start_row..=merge.end_row)
+        .rev()
+        .find(|&r| !sheet.row_hidden(r))
+        .unwrap_or(merge.end_row)
+}
+
 /// A cursor row taller than the window scrolls to its first line; `floor` is the first scrollable
-/// row.
+/// row. `top` moves only when the cursor has left the window.
 fn follow_row_wrapped(
     top: &mut usize,
     cursor: usize,
@@ -522,30 +583,36 @@ fn follow_row_wrapped(
         *top = cursor.max(floor);
         return;
     }
-    // heights are at least 1, so jump close before fine-tuning
-    if cursor >= *top + visible {
-        *top = (cursor + 1 - visible).max(floor);
+    let mut span = 0;
+    let shown = (*top..=cursor).all(|r| {
+        span += height_of(r);
+        span <= visible
+    });
+    if shown {
+        return;
     }
-    while *top < cursor {
-        let mut span = 0;
-        let fits = (*top..=cursor).all(|r| {
-            span += height_of(r);
-            span <= visible
-        });
-        if fits {
+    // the highest top that still shows the cursor: accumulate heights upward from it once
+    let mut new_top = cursor;
+    let mut used = height_of(cursor).min(visible);
+    while new_top > floor {
+        let above = height_of(new_top - 1);
+        if used + above > visible {
             break;
         }
-        *top += 1;
+        used += above;
+        new_top -= 1;
     }
+    *top = new_top.max(floor);
 }
 
-/// `floor` is the first scrollable column.
+/// `cost_of` is a column's width plus its separator, 0 when hidden; `floor` is the first
+/// scrollable column.
 fn follow_col(
     left: &mut usize,
     cursor: usize,
     col_count: usize,
     avail: usize,
-    width_of: &impl Fn(usize) -> usize,
+    cost_of: &impl Fn(usize) -> usize,
     floor: usize,
 ) {
     if cursor < *left {
@@ -553,13 +620,13 @@ fn follow_col(
         return;
     }
     while *left < cursor {
-        let span: usize = (*left..=cursor).map(|c| width_of(c) + 1).sum();
+        let span: usize = (*left..=cursor).map(cost_of).sum();
         if span <= avail {
             break;
         }
         *left += 1;
     }
-    scroll_back_col(left, col_count, avail, width_of, floor);
+    scroll_back_col(left, col_count, avail, cost_of, floor);
 }
 
 /// Scrolls back so no blank space is left on the right while columns hide on the left.
@@ -567,11 +634,11 @@ fn scroll_back_col(
     left: &mut usize,
     col_count: usize,
     avail: usize,
-    width_of: &impl Fn(usize) -> usize,
+    cost_of: &impl Fn(usize) -> usize,
     floor: usize,
 ) {
     while *left > floor {
-        let span: usize = (*left - 1..col_count).map(|c| width_of(c) + 1).sum();
+        let span: usize = (*left - 1..col_count).map(cost_of).sum();
         if span > avail {
             break;
         }
@@ -579,21 +646,25 @@ fn scroll_back_col(
     }
 }
 
-/// Always at least one column.
+/// Always at least one shown column.
 fn last_visible_col(
     left: usize,
     col_count: usize,
     avail: usize,
-    width_of: &impl Fn(usize) -> usize,
+    cost_of: &impl Fn(usize) -> usize,
 ) -> usize {
     let mut used = 0;
+    let mut shown = 0;
     let mut col = left;
     while col < col_count {
-        let needed = width_of(col) + 1;
-        if used + needed > avail && col > left {
+        let needed = cost_of(col);
+        if needed > 0 && used + needed > avail && shown > 0 {
             break;
         }
         used += needed;
+        if needed > 0 {
+            shown += 1;
+        }
         col += 1;
     }
     col
@@ -747,8 +818,160 @@ mod tests {
         let mut scroll = Scroll::default();
         let layout = grid_layout(&input, &Viewport { width: 80, rows: 5 }, &mut scroll);
         assert_eq!(layout.col_count, 30);
-        assert_eq!(layout.visible_cols.start, 0);
-        assert!(layout.visible_cols.end < 30, "a wide sheet is clipped");
+        assert_eq!(layout.col_spans[0].0, 0);
+        assert!(layout.col_spans.len() < 30, "a wide sheet is clipped");
+    }
+
+    fn labelled_grid(rows: usize, cols: usize) -> Sheet {
+        let grid: Vec<Vec<CellValue>> = (0..rows)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| CellValue::Text(format!("r{r}c{c}")))
+                    .collect()
+            })
+            .collect();
+        Sheet::new("s", grid)
+    }
+
+    #[test]
+    fn hidden_rows_and_columns_are_skipped_and_labels_keep_their_numbers() {
+        let sheet = labelled_grid(5, 5)
+            .with_hidden_cols(HashSet::from([2]))
+            .with_hidden_rows(HashSet::from([1, 3]));
+        let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 80, 10);
+        let header: Vec<&str> = layout.header.iter().map(|h| h.trim()).collect();
+        assert_eq!(header, vec!["A", "B", "D", "E"]);
+        let cols: Vec<usize> = layout.col_spans.iter().map(|(c, _)| *c).collect();
+        assert_eq!(cols, vec![0, 1, 3, 4]);
+        assert_eq!(layout.col_count, 5);
+        assert_eq!(layout.hidden_cols, 1);
+        let labels: Vec<&str> = layout.lines.iter().map(|l| l.label.trim()).collect();
+        assert_eq!(labels, vec!["1", "3", "5"], "true row numbers survive");
+        assert_eq!(layout.lines[0].slots.len(), 4);
+        assert!(
+            layout.lines[1].slots[2].text.starts_with("r2c3"),
+            "row 3, column D"
+        );
+    }
+
+    #[test]
+    fn a_merge_across_a_hidden_column_spans_only_the_shown_ones() {
+        let sheet = labelled_grid(2, 3)
+            .with_merges(vec![MergedRange {
+                start_row: 0,
+                start_col: 0,
+                end_row: 0,
+                end_col: 2,
+            }])
+            .with_hidden_cols(HashSet::from([1]));
+        let layout = run_layout(&sheet, (1, 0), &HashSet::new(), 80, 4);
+        let merged = &layout.lines[0].slots[0];
+        // two default-width columns plus the separator between them
+        assert_eq!(merged.text.chars().count(), DEFAULT_CELL_WIDTH * 2 + 1);
+        assert!(merged.text.starts_with("r0c0"));
+        assert_eq!(layout.lines[0].slots.len(), 1, "one slot for the region");
+        assert_eq!(layout.lines[1].slots.len(), 2, "A and C below it");
+    }
+
+    #[test]
+    fn a_merge_whose_anchor_row_is_hidden_shows_its_value_on_the_first_shown_row() {
+        let sheet = labelled_grid(4, 1)
+            .with_merges(vec![MergedRange {
+                start_row: 0,
+                start_col: 0,
+                end_row: 2,
+                end_col: 0,
+            }])
+            .with_hidden_rows(HashSet::from([0]));
+        let markers = HashSet::from([(0usize, 0usize)]);
+        let layout = run_layout(&sheet, (3, 0), &markers, 40, 6);
+        assert_eq!(layout.lines[0].label.trim(), "2");
+        assert!(
+            layout.lines[0].slots[0].text.starts_with("r0c0"),
+            "anchor value"
+        );
+        assert!(
+            matches!(layout.lines[0].slots[0].separator, Separator::Marker { .. }),
+            "the marker lands on the first shown row"
+        );
+        assert!(!layout.lines[0].slots[0].ruled);
+        assert!(
+            layout.lines[1].slots[0].ruled,
+            "ruled under the region's last row"
+        );
+        assert_eq!(layout.lines[2].label.trim(), "4");
+    }
+
+    #[test]
+    fn a_hidden_frozen_column_shrinks_the_pinned_area() {
+        let sheet = labelled_grid(2, 6)
+            .with_frozen(0, 2)
+            .with_hidden_cols(HashSet::from([0]));
+        let notes = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (0, 5),
+            markers: &HashSet::new(),
+            notes: &notes,
+            col_widths: &[],
+            selection: None,
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(&input, &Viewport { width: 32, rows: 4 }, &mut scroll);
+        assert_eq!(layout.header_boundary, Some(1), "one pinned column shown");
+        assert_eq!(layout.col_spans[0].0, 1, "B is the pinned one");
+        assert!(layout.lines[0].slots[1].freeze_boundary);
+        assert_eq!(
+            layout.col_spans.last().map(|(c, _)| *c),
+            Some(5),
+            "cursor column shown"
+        );
+    }
+
+    #[test]
+    fn the_view_stays_put_while_the_cursor_moves_inside_the_window() {
+        let ones = |_: usize| 1usize;
+        let mut top = 6;
+        follow_row_wrapped(&mut top, 14, 10, &ones, 0);
+        assert_eq!(top, 6, "cursor inside the window: no scroll");
+        follow_row_wrapped(&mut top, 16, 10, &ones, 0);
+        assert_eq!(top, 7, "cursor below: minimal scroll");
+        follow_row_wrapped(&mut top, 3, 10, &ones, 0);
+        assert_eq!(top, 3, "cursor above: lands on it");
+        // a tall cursor row scrolls to its own first line
+        let tall = |r: usize| if r == 5 { 20 } else { 1 };
+        let mut top = 0;
+        follow_row_wrapped(&mut top, 5, 10, &tall, 0);
+        assert_eq!(top, 5);
+    }
+
+    #[test]
+    fn a_hidden_last_frozen_row_keeps_the_freeze_rule_on_the_shown_one() {
+        let sheet = labelled_grid(20, 1)
+            .with_frozen(2, 0)
+            .with_hidden_rows(HashSet::from([1]));
+        let layout = run_layout(&sheet, (10, 0), &HashSet::new(), 40, 6);
+        assert_eq!(layout.lines[0].label.trim(), "1");
+        assert!(
+            layout.lines[0].freeze_boundary,
+            "the rule moves up to row 1"
+        );
+        assert!(layout.lines[1..].iter().all(|l| !l.freeze_boundary));
+    }
+
+    #[test]
+    fn hidden_rows_between_cursor_and_top_cost_no_lines_and_no_time() {
+        // a filter that hides all but the first and last of many rows
+        let sheet = labelled_grid(30_000, 1).with_hidden_rows((1..29_999).collect());
+        let started = std::time::Instant::now();
+        let layout = run_layout(&sheet, (29_999, 0), &HashSet::new(), 40, 3);
+        let labels: Vec<&str> = layout.lines.iter().map(|l| l.label.trim()).collect();
+        assert_eq!(labels, vec!["1", "30000"], "both shown rows fit");
+        assert!(
+            started.elapsed().as_millis() < 500,
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     fn tall_sheet_frozen(rows: usize, frozen_rows: usize, frozen_cols: usize) -> Sheet {
@@ -804,7 +1027,7 @@ mod tests {
         assert!(line.slots[0].text.starts_with("r0a"), "pinned cell");
         assert!(line.slots[1].freeze_boundary, "boundary on the body side");
         assert!(line.slots[1].text.starts_with("r0d"));
-        assert_eq!(layout.visible_cols, 3..4, "status reports the body range");
+        assert_eq!(layout.col_spans.len(), 2, "one pinned + one body span");
     }
 
     #[test]

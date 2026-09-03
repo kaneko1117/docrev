@@ -119,6 +119,92 @@ impl Sheet {
         self.hidden_cols.contains(&col)
     }
 
+    pub fn cell_hidden(&self, row: usize, col: usize) -> bool {
+        self.row_hidden(row) || self.col_hidden(col)
+    }
+
+    /// Nothing of the cell is on screen: inside a merged region, only when the whole region is
+    /// hidden; the region's anchor may itself sit on a hidden row or column.
+    pub fn anchor_hidden(&self, row: usize, col: usize) -> bool {
+        self.shown_cell_of(row, col).is_none()
+    }
+
+    /// The first shown cell of the merged region around (row, col), or the cell itself when shown.
+    pub fn shown_cell_of(&self, row: usize, col: usize) -> Option<(usize, usize)> {
+        match self.merge_at(row, col) {
+            Some(merge) => {
+                let r = (merge.start_row..=merge.end_row).find(|&r| !self.row_hidden(r))?;
+                let c = (merge.start_col..=merge.end_col).find(|&c| !self.col_hidden(c))?;
+                Some((r, c))
+            }
+            None => (!self.cell_hidden(row, col)).then_some((row, col)),
+        }
+    }
+
+    pub fn visible_rows(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.row_count()).filter(|&r| !self.row_hidden(r))
+    }
+
+    pub fn visible_cols(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.col_count()).filter(|&c| !self.col_hidden(c))
+    }
+
+    /// The nearest visible row at or after `row`, else at or before it; `None` when every row is hidden.
+    pub fn nearest_visible_row(&self, row: usize) -> Option<usize> {
+        let count = self.row_count();
+        (row..count)
+            .find(|&r| !self.row_hidden(r))
+            .or_else(|| (0..row.min(count)).rev().find(|&r| !self.row_hidden(r)))
+    }
+
+    /// Like `nearest_visible_row`, for columns.
+    pub fn nearest_visible_col(&self, col: usize) -> Option<usize> {
+        let count = self.col_count();
+        (col..count)
+            .find(|&c| !self.col_hidden(c))
+            .or_else(|| (0..col.min(count)).rev().find(|&c| !self.col_hidden(c)))
+    }
+
+    /// `steps` visible rows away from `row` (negative = up), stopping at the last one reachable.
+    pub fn step_visible_row(&self, row: usize, steps: isize) -> usize {
+        let mut current = row;
+        let mut remaining = steps.unsigned_abs();
+        let count = self.row_count();
+        while remaining > 0 {
+            let next = if steps < 0 {
+                (0..current).rev().find(|&r| !self.row_hidden(r))
+            } else {
+                (current + 1..count).find(|&r| !self.row_hidden(r))
+            };
+            match next {
+                Some(r) => current = r,
+                None => break,
+            }
+            remaining -= 1;
+        }
+        current
+    }
+
+    /// Like `step_visible_row`, for columns.
+    pub fn step_visible_col(&self, col: usize, steps: isize) -> usize {
+        let mut current = col;
+        let mut remaining = steps.unsigned_abs();
+        let count = self.col_count();
+        while remaining > 0 {
+            let next = if steps < 0 {
+                (0..current).rev().find(|&c| !self.col_hidden(c))
+            } else {
+                (current + 1..count).find(|&c| !self.col_hidden(c))
+            };
+            match next {
+                Some(c) => current = c,
+                None => break,
+            }
+            remaining -= 1;
+        }
+        current
+    }
+
     pub fn with_fills(mut self, fills: HashMap<(usize, usize), Rgb>) -> Self {
         self.fills = fills;
         self
@@ -292,6 +378,58 @@ mod tests {
         assert!(sheet.is_hidden());
         assert!(sheet.row_hidden(1) && !sheet.row_hidden(0));
         assert!(sheet.col_hidden(2) && !sheet.col_hidden(1));
+    }
+
+    #[test]
+    fn visible_navigation_skips_hidden_rows_and_cols() {
+        let sheet = Sheet::new("s", vec![vec![CellValue::Number(1.0); 6]; 6])
+            .with_hidden_rows(HashSet::from([1, 2, 5]))
+            .with_hidden_cols(HashSet::from([0, 3]));
+        assert_eq!(sheet.visible_rows().collect::<Vec<_>>(), vec![0, 3, 4]);
+        assert_eq!(sheet.visible_cols().collect::<Vec<_>>(), vec![1, 2, 4, 5]);
+        assert_eq!(sheet.nearest_visible_row(1), Some(3));
+        assert_eq!(sheet.nearest_visible_row(5), Some(4), "falls back upward");
+        assert_eq!(sheet.nearest_visible_col(0), Some(1));
+        assert_eq!(sheet.step_visible_row(0, 1), 3);
+        assert_eq!(sheet.step_visible_row(0, 2), 4);
+        assert_eq!(sheet.step_visible_row(0, 9), 4, "stops at the last visible");
+        assert_eq!(sheet.step_visible_row(4, -1), 3);
+        assert_eq!(sheet.step_visible_row(3, -1), 0);
+        assert_eq!(sheet.step_visible_row(0, -1), 0);
+        assert_eq!(sheet.step_visible_col(2, 1), 4);
+        assert_eq!(sheet.step_visible_col(4, -1), 2);
+        let all_hidden =
+            Sheet::new("s", vec![vec![CellValue::Empty]]).with_hidden_rows(HashSet::from([0]));
+        assert_eq!(all_hidden.nearest_visible_row(0), None);
+        assert!(sheet.cell_hidden(1, 1) && sheet.cell_hidden(0, 0) && !sheet.cell_hidden(0, 1));
+    }
+
+    #[test]
+    fn a_merged_region_is_hidden_only_when_none_of_it_shows() {
+        let merge = |sr, sc, er, ec| MergedRange {
+            start_row: sr,
+            start_col: sc,
+            end_row: er,
+            end_col: ec,
+        };
+        let sheet = Sheet::new("s", vec![vec![CellValue::Number(1.0); 4]; 4])
+            .with_merges(vec![
+                merge(0, 0, 2, 0),
+                merge(0, 2, 0, 3),
+                merge(3, 2, 3, 3),
+            ])
+            .with_hidden_rows(HashSet::from([0, 3]))
+            .with_hidden_cols(HashSet::from([2]));
+        // anchor row hidden, region shows on row 1
+        assert!(!sheet.anchor_hidden(0, 0));
+        assert_eq!(sheet.shown_cell_of(0, 0), Some((1, 0)));
+        // anchor row hidden and the whole region is on that row
+        assert!(sheet.anchor_hidden(0, 2));
+        // region on a hidden row, whatever its columns
+        assert!(sheet.anchor_hidden(3, 3));
+        // plain cells
+        assert!(sheet.anchor_hidden(1, 2) && !sheet.anchor_hidden(1, 1));
+        assert_eq!(sheet.shown_cell_of(1, 1), Some((1, 1)));
     }
 
     #[test]
