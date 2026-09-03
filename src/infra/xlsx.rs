@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use calamine::{Data, Range, Reader, Xlsx, open_workbook};
+use calamine::{Data, Range, Reader, SheetVisible, Xlsx, open_workbook};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -19,6 +19,8 @@ pub enum ReadError {
 
 pub struct RawSheet {
     pub name: String,
+    /// `hidden` or `veryHidden` in the workbook.
+    pub hidden: bool,
     pub cells: Range<Data>,
     pub merges: Vec<((u32, u32), (u32, u32))>,
     /// Without the leading `=`; shared formulas already expanded per cell.
@@ -36,9 +38,13 @@ pub fn read_workbook(path: &Path) -> Result<RawWorkbook, ReadError> {
         path: path.display().to_string(),
         source,
     })?;
-    let names = workbook.sheet_names().to_owned();
-    let mut sheets = Vec::with_capacity(names.len());
-    for name in names {
+    let metadata: Vec<(String, bool)> = workbook
+        .sheets_metadata()
+        .iter()
+        .map(|s| (s.name.clone(), s.visible != SheetVisible::Visible))
+        .collect();
+    let mut sheets = Vec::with_capacity(metadata.len());
+    for (name, hidden) in metadata {
         let cells = workbook
             .worksheet_range(&name)
             .map_err(|source| ReadError::Sheet {
@@ -65,6 +71,7 @@ pub fn read_workbook(path: &Path) -> Result<RawWorkbook, ReadError> {
             .unwrap_or_default();
         sheets.push(RawSheet {
             name,
+            hidden,
             cells,
             merges,
             formulas,

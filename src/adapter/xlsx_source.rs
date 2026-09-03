@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use calamine::{Data, ExcelDateTime, ExcelDateTimeType, Range};
@@ -24,7 +24,8 @@ impl DocumentSource for XlsxSource {
         let is_1904 = raw.is_1904;
         let raw = raw.sheets;
         let meta = xlsx_meta::read_meta(path);
-        let (widths, styles, frozen) = (meta.widths, meta.styles, meta.frozen);
+        let (cols, hidden_rows, styles, frozen) =
+            (meta.cols, meta.hidden_rows, meta.styles, meta.frozen);
         let mut workbook_comments = xlsx_meta::workbook_comments(path).unwrap_or_default();
         // parse each format once per workbook
         let formats: Vec<Option<NumberFormat>> = styles
@@ -35,7 +36,11 @@ impl DocumentSource for XlsxSource {
         let sheets = raw
             .into_iter()
             .map(|raw_sheet| {
-                let cols = widths.get(&raw_sheet.name);
+                let cols = cols.get(&raw_sheet.name);
+                let hidden_rows: HashSet<usize> = hidden_rows
+                    .get(&raw_sheet.name)
+                    .map(|rows| rows.iter().map(|&r| r as usize).collect())
+                    .unwrap_or_default();
                 let cells = styles.sheets.get(&raw_sheet.name);
                 let native = workbook_comments
                     .remove(&raw_sheet.name)
@@ -68,11 +73,14 @@ impl DocumentSource for XlsxSource {
                 .with_merges(merges)
                 .with_frozen(frozen_rows, frozen_cols)
                 .with_formulas(formulas)
-                .with_workbook_comments(native.into_iter().map(to_workbook_comment).collect());
+                .with_workbook_comments(native.into_iter().map(to_workbook_comment).collect())
+                .with_hidden(raw_sheet.hidden)
+                .with_hidden_rows(hidden_rows);
                 match cols {
                     Some(cols) => {
                         let expanded = expand_widths(cols, sheet.col_count());
-                        sheet.with_col_widths(expanded)
+                        let hidden = hidden_cols(cols, sheet.col_count());
+                        sheet.with_col_widths(expanded).with_hidden_cols(hidden)
                     }
                     None => sheet,
                 }
@@ -114,20 +122,32 @@ fn to_workbook_comment(raw: xlsx_meta::RawWorkbookComment) -> WorkbookComment {
 }
 
 /// One entry per 0-based column, values as the file states them.
-fn expand_widths(cols: &[xlsx_meta::ColumnWidth], col_count: usize) -> Vec<Option<f64>> {
+fn expand_widths(cols: &[xlsx_meta::ColumnRange], col_count: usize) -> Vec<Option<f64>> {
     let mut widths = vec![None; col_count];
     for col in cols {
         // NaN/inf (reachable via parse()) must not overwrite an earlier valid width
-        if !col.width.is_finite() {
+        let Some(width) = col.width.filter(|w| w.is_finite()) else {
             continue;
-        }
-        let from = col.min.saturating_sub(1) as usize;
-        let to = (col.max as usize).min(col_count);
-        for slot in widths.iter_mut().take(to).skip(from) {
-            *slot = Some(col.width);
+        };
+        for index in column_indexes(col, col_count) {
+            widths[index] = Some(width);
         }
     }
     widths
+}
+
+/// 0-based columns marked hidden, within the used range.
+fn hidden_cols(cols: &[xlsx_meta::ColumnRange], col_count: usize) -> HashSet<usize> {
+    cols.iter()
+        .filter(|col| col.hidden)
+        .flat_map(|col| column_indexes(col, col_count))
+        .collect()
+}
+
+fn column_indexes(col: &xlsx_meta::ColumnRange, col_count: usize) -> std::ops::Range<usize> {
+    let from = col.min.saturating_sub(1) as usize;
+    let to = (col.max as usize).min(col_count);
+    from..to.max(from)
 }
 
 /// Pads with `Empty` up to the used range's offset so (0, 0) stays A1.
@@ -306,26 +326,35 @@ fn to_parts(dt: &ExcelDateTime) -> DateTimeParts {
 mod tests {
     use super::*;
 
+    fn col(min: u32, max: u32, width: Option<f64>, hidden: bool) -> xlsx_meta::ColumnRange {
+        xlsx_meta::ColumnRange {
+            min,
+            max,
+            width,
+            hidden,
+        }
+    }
+
     #[test]
     fn widths_pass_through_raw_and_non_finite_ones_are_absent() {
         let cols = vec![
-            xlsx_meta::ColumnWidth {
-                min: 1,
-                max: 1,
-                width: 10.0,
-            },
-            xlsx_meta::ColumnWidth {
-                min: 1,
-                max: 1,
-                width: f64::NAN,
-            },
-            xlsx_meta::ColumnWidth {
-                min: 3,
-                max: 3,
-                width: 18.5,
-            },
+            col(1, 1, Some(10.0), false),
+            col(1, 1, Some(f64::NAN), false),
+            col(3, 3, Some(18.5), true),
+            col(2, 2, None, true),
         ];
         assert_eq!(expand_widths(&cols, 3), vec![Some(10.0), None, Some(18.5)]);
+    }
+
+    #[test]
+    fn hidden_columns_expand_their_range_and_stop_at_the_used_range() {
+        let cols = vec![col(2, 3, Some(9.0), true), col(5, 16384, None, true)];
+        let hidden = hidden_cols(&cols, 6);
+        assert_eq!(hidden, HashSet::from([1, 2, 4, 5]));
+        assert!(
+            hidden_cols(&cols, 1).is_empty(),
+            "range past the used range"
+        );
     }
 
     #[test]

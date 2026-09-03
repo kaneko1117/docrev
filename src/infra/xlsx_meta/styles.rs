@@ -254,7 +254,12 @@ pub(super) fn parse_cell_styles(
                     .find(|a| a.key.as_ref() == b"r")
                     .and_then(|a| attr_value(&a, reader.decoder()).parse::<u32>().ok())
                     .and_then(|r| r.checked_sub(1));
-                row = Some(explicit.unwrap_or_else(|| row.map_or(0, |r| r + 1)));
+                // a row past u32::MAX cannot exist; stop rather than wrap to 0
+                let Some(current) = explicit.or_else(|| row.map_or(Some(0), |r| r.checked_add(1)))
+                else {
+                    break;
+                };
+                row = Some(current);
                 next_col = 0;
             }
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"c" => {
