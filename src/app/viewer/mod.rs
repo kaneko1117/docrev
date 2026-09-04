@@ -139,6 +139,18 @@ impl Sheets {
     fn len(&self) -> usize {
         1 + self.rest.len()
     }
+
+    /// Indices of the sheets that are not hidden; never empty (see `Document::new`).
+    fn shown(&self) -> Vec<usize> {
+        let shown: Vec<usize> = (0..self.len())
+            .filter(|&i| !self.get(i).is_hidden())
+            .collect();
+        if shown.is_empty() { vec![0] } else { shown }
+    }
+
+    fn first_shown(&self) -> usize {
+        self.shown()[0]
+    }
 }
 
 pub struct Viewer {
@@ -202,10 +214,12 @@ impl Viewer {
             .chain(&rest)
             .map(|sheet| snap_visible(sheet, (0, 0)))
             .collect();
+        let sheets = Sheets { first, rest };
+        let active = sheets.first_shown();
         Ok(Self {
-            sheets: Sheets { first, rest },
+            sheets,
             cursors,
-            active: 0,
+            active,
             quit: false,
             comments,
             notice,
@@ -289,6 +303,11 @@ impl Viewer {
 
     pub fn sheet_count(&self) -> usize {
         self.sheets.len()
+    }
+
+    /// Sheet indices in the tab strip and picker: the ones the workbook does not hide.
+    pub fn shown_sheets(&self) -> Vec<usize> {
+        self.sheets.shown()
     }
 
     pub fn active(&self) -> usize {
@@ -441,6 +460,11 @@ impl Viewer {
     /// Active sheet and cursors carry over by sheet name, clamped; a document
     /// with no sheets keeps the old view.
     fn replace_document(&mut self, document: Document) {
+        // the picker's highlight follows its sheet by name across the reload
+        let picked = self.picker_state().and_then(|state| {
+            let index = *state.candidates.get(state.selected)?;
+            Some(self.sheets.get(index).name().to_string())
+        });
         let mut incoming = document.into_sheets().into_iter();
         let Some(first) = incoming.next() else {
             self.doc_stale = Some(format!(
@@ -471,21 +495,22 @@ impl Viewer {
                 snap_visible(sheet, clamped)
             })
             .collect();
+        // by name; a sheet that became hidden hands over to the first shown one
         let active_name = old_names.get(self.active).cloned().unwrap_or_default();
         self.active = (0..new.len())
-            .position(|i| new.get(i).name() == active_name)
-            .unwrap_or(0);
+            .position(|i| new.get(i).name() == active_name && !new.get(i).is_hidden())
+            .unwrap_or_else(|| new.first_shown());
         self.sheets = new;
         self.cursors = cursors;
         self.selection = None;
         self.doc_stale = None;
-        self.refresh_mode_after_reload();
+        self.refresh_mode_after_reload(picked.as_deref());
     }
 
-    fn refresh_mode_after_reload(&mut self) {
+    fn refresh_mode_after_reload(&mut self, picked: Option<&str>) {
         match &self.mode {
             Mode::Search { .. } => self.refresh_search(),
-            Mode::SheetPicker { .. } => self.clamp_picker_selection(),
+            Mode::SheetPicker { .. } => self.reseat_picker_selection(picked),
             Mode::Grid | Mode::Editing { .. } | Mode::Notes { .. } => {}
         }
     }
@@ -506,17 +531,18 @@ impl Viewer {
             Event::RowStart => (row, sheet.nearest_visible_col(0).unwrap_or(0)),
             Event::RowEnd => (row, sheet.nearest_visible_col(max_col).unwrap_or(max_col)),
             Event::NextSheet => {
-                self.active = (self.active + 1) % self.sheets.len();
+                self.active = self.neighbour_sheet(1);
                 return;
             }
             Event::PrevSheet => {
-                self.active = (self.active + self.sheets.len() - 1) % self.sheets.len();
+                self.active = self.neighbour_sheet(-1);
                 return;
             }
             Event::OpenSheetPicker => {
+                let shown = self.sheets.shown();
                 self.mode = Mode::SheetPicker {
                     query: String::new(),
-                    selected: self.active,
+                    selected: shown.iter().position(|&i| i == self.active).unwrap_or(0),
                 };
                 return;
             }
@@ -576,6 +602,16 @@ impl Viewer {
         if let Some(cursor) = self.cursors.get_mut(self.active) {
             *cursor = next;
         }
+    }
+}
+
+impl Viewer {
+    /// The shown sheet `step` tabs away, wrapping around.
+    fn neighbour_sheet(&self, step: isize) -> usize {
+        let shown = self.sheets.shown();
+        let position = shown.iter().position(|&i| i == self.active).unwrap_or(0);
+        let len = shown.len() as isize;
+        shown[((position as isize + step).rem_euclid(len)) as usize]
     }
 }
 
@@ -658,6 +694,61 @@ mod tests {
         let v = hidden_grid();
         assert_eq!(v.unresolved_on_active_sheet(), vec![(3, 2)]);
         assert_eq!(v.unresolved_counts(), vec![1]);
+    }
+
+    fn three_sheets(hidden: &[usize]) -> Vec<Sheet> {
+        ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                Sheet::new(*name, vec![vec![CellValue::Number(1.0)]])
+                    .with_hidden(hidden.contains(&i))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hidden_sheets_are_skipped_by_tabs_and_refused_by_clicks() {
+        let mut v = Viewer::from_document(
+            Document::new(three_sheets(&[0, 2])),
+            Vec::new(),
+            None,
+            None,
+            Box::new(NullStore),
+        )
+        .unwrap();
+        assert_eq!(v.active(), 1, "opens on the first shown sheet");
+        assert_eq!(v.shown_sheets(), vec![1]);
+        v.apply(Event::NextSheet);
+        assert_eq!(v.active(), 1, "the only shown sheet wraps onto itself");
+        v.apply(Event::SelectSheet(2));
+        assert_eq!(v.active(), 1, "a hidden sheet cannot be selected");
+
+        let mut v = Viewer::from_document(
+            Document::new(three_sheets(&[1])),
+            Vec::new(),
+            None,
+            None,
+            Box::new(NullStore),
+        )
+        .unwrap();
+        v.apply(Event::NextSheet);
+        assert_eq!(v.active(), 2, "b is stepped over");
+        v.apply(Event::NextSheet);
+        assert_eq!(v.active(), 0, "wraps");
+        v.apply(Event::PrevSheet);
+        assert_eq!(v.active(), 2);
+    }
+
+    #[test]
+    fn a_reload_that_hides_the_active_sheet_moves_to_the_first_shown_one() {
+        let source = SharedSource::new(three_sheets(&[]));
+        let mut v = viewer_on(&source);
+        v.apply(Event::NextSheet);
+        assert_eq!(v.active(), 1);
+        source.write_from_outside(three_sheets(&[1]));
+        v.apply(Event::Tick);
+        assert_eq!(v.active(), 0);
     }
 
     #[test]

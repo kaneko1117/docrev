@@ -127,10 +127,11 @@ nothing changes for it until a new kind actually ships.
   is still an error, as for every `comment` command. A merged anchor's
   `value` is its region's value, and the region's cells never repeat in
   `row`. `row` shows what a person sees: columns the workbook hides are
-  left out, and a hidden row has an empty `row`. A thread whose anchor the
-  workbook hides (a hidden row or column) carries a top-level
-  `"hidden": true`; the key is absent otherwise, and absent when `cell` is,
-  so its presence identifies threads a person cannot reach in the viewer.
+  left out, and a hidden row or a hidden sheet has an empty `row`. A thread
+  whose anchor the workbook hides (a hidden row, column or sheet) carries a
+  top-level `"hidden": true`; the key is absent otherwise, and absent when
+  `cell` is, so its presence identifies threads a person cannot reach in the
+  viewer. A merged region counts as shown while any of it is.
   The anchored cell's own `value` is always present. Never redirect this
   output onto the sidecar itself — the shell truncates the file before the
   command reads it.

@@ -18,7 +18,7 @@ impl Viewer {
             }
             Event::SelectSheet(index) => {
                 self.selection = None;
-                if index < self.sheets.len() {
+                if index < self.sheets.len() && !self.sheets.get(index).is_hidden() {
                     self.active = index;
                 }
             }

@@ -17,11 +17,10 @@ impl Viewer {
         };
         let needle = fold(query);
         let candidates = self
-            .sheet_names()
-            .iter()
-            .enumerate()
-            .filter(|(_, name)| contains_folded(name, &needle))
-            .map(|(i, _)| i)
+            .sheets
+            .shown()
+            .into_iter()
+            .filter(|&i| contains_folded(self.sheets.get(i).name(), &needle))
             .collect();
         Some(PickerState {
             query,
@@ -51,13 +50,20 @@ impl Viewer {
         counts
     }
 
-    pub(super) fn clamp_picker_selection(&mut self) {
-        let count = match self.picker_state() {
-            Some(state) => state.candidates.len(),
-            None => return,
+    /// After a reload: the highlight stays on `picked` if still listed, else on the active sheet,
+    /// else clamps.
+    pub(super) fn reseat_picker_selection(&mut self, picked: Option<&str>) {
+        let Some(state) = self.picker_state() else {
+            return;
         };
+        let position_of = |index: usize| state.candidates.iter().position(|&i| i == index);
+        let reseated = picked
+            .and_then(|name| (0..self.sheets.len()).find(|&i| self.sheets.get(i).name() == name))
+            .and_then(position_of)
+            .or_else(|| position_of(self.active))
+            .unwrap_or(state.selected.min(state.candidates.len().saturating_sub(1)));
         if let Mode::SheetPicker { selected, .. } = &mut self.mode {
-            *selected = (*selected).min(count.saturating_sub(1));
+            *selected = reseated;
         }
     }
 
@@ -208,6 +214,81 @@ mod tests {
         v.apply(Event::Submit);
         assert!(matches!(v.mode(), Mode::SheetPicker { .. }));
         assert_eq!(v.active(), 0);
+    }
+
+    #[test]
+    fn the_picker_lists_only_shown_sheets_and_opens_on_the_active_one() {
+        use crate::domain::cell::CellValue;
+        use crate::domain::document::Document;
+        use crate::domain::sheet::Sheet;
+        let sheets: Vec<Sheet> = ["a", "hidden", "c"]
+            .iter()
+            .map(|name| {
+                Sheet::new(*name, vec![vec![CellValue::Number(1.0)]]).with_hidden(*name == "hidden")
+            })
+            .collect();
+        let mut v = Viewer::from_document(
+            Document::new(sheets),
+            Vec::new(),
+            None,
+            None,
+            Box::new(NullStore),
+        )
+        .unwrap();
+        v.apply(Event::NextSheet);
+        assert_eq!(v.active(), 2);
+        v.apply(Event::OpenSheetPicker);
+        let state = v.picker_state().unwrap();
+        assert_eq!(state.candidates, vec![0, 2]);
+        assert_eq!(
+            state.selected, 1,
+            "the active sheet, by its position among the shown"
+        );
+        v.apply(Event::Move { rows: -1, cols: 0 });
+        v.apply(Event::Submit);
+        assert_eq!(v.active(), 0);
+    }
+
+    #[test]
+    fn a_reload_that_hides_the_highlighted_sheet_moves_the_highlight_to_the_active_one() {
+        use super::super::test_support::{SharedSource, viewer_on};
+        use crate::domain::cell::CellValue;
+        use crate::domain::sheet::Sheet;
+        let sheets = |hidden: &str| -> Vec<Sheet> {
+            ["a", "b", "c"]
+                .iter()
+                .map(|n| {
+                    Sheet::new(*n, vec![vec![CellValue::Number(1.0)]]).with_hidden(*n == hidden)
+                })
+                .collect()
+        };
+        let source = SharedSource::new(sheets(""));
+        let mut v = viewer_on(&source);
+        v.apply(Event::OpenSheetPicker);
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(
+            v.picker_state().unwrap().candidates[v.picker_state().unwrap().selected],
+            1
+        );
+
+        // the highlighted sheet b disappears: the highlight goes to the active sheet a, not to c
+        source.write_from_outside(sheets("b"));
+        v.apply(Event::Tick);
+        let state = v.picker_state().unwrap();
+        assert_eq!(state.candidates, vec![0, 2]);
+        assert_eq!(state.selected, 0);
+        v.apply(Event::Submit);
+        assert_eq!(v.active(), 0);
+
+        // a highlighted sheet that survives keeps the highlight
+        let mut v = viewer_on(&source);
+        v.apply(Event::OpenSheetPicker);
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        source.write_from_outside(sheets("a"));
+        v.apply(Event::Tick);
+        let state = v.picker_state().unwrap();
+        assert_eq!(state.candidates, vec![1, 2]);
+        assert_eq!(state.selected, 1, "c stays highlighted");
     }
 
     #[test]

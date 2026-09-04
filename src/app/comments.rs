@@ -25,7 +25,7 @@ pub struct CellContext {
     /// (A1 ref, displayed text) in column order; hidden columns are left out, and a hidden row
     /// has none.
     pub row: Vec<(String, String)>,
-    /// The anchored cell is on a hidden row or column.
+    /// Nothing of the anchored cell is on screen: a hidden row, column or sheet.
     pub hidden: bool,
 }
 
@@ -103,7 +103,7 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
     };
     // a merged anchor may sit on a hidden row while its region shows further down: the row a
     // person sees is the region's first shown one
-    let shown = sheet.shown_cell_of(row, col);
+    let shown = sheet.shown_cell_of(row, col).filter(|_| !sheet.is_hidden());
     let hidden = shown.is_none();
     let sibling_row = shown.map_or(row, |(r, _)| r);
     let visible_len = if hidden {
@@ -432,6 +432,30 @@ mod tests {
         assert!(!context.hidden, "the region shows on row 2");
         assert_eq!(context.value, "見出し");
         assert_eq!(context.row, vec![("B2".to_string(), "下".to_string())]);
+    }
+
+    struct HiddenSheetSource;
+
+    impl DocumentSource for HiddenSheetSource {
+        fn load(&self, path: &Path) -> Result<Document, LoadError> {
+            let sheet = RichSource.load(path)?.into_sheets().remove(0);
+            Ok(Document::new(vec![
+                sheet.with_hidden(true),
+                Sheet::new("shown", vec![vec![CellValue::Number(1.0)]]),
+            ]))
+        }
+    }
+
+    #[test]
+    fn a_thread_on_a_hidden_sheet_is_flagged_but_still_reads_its_cell() {
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!C2");
+        let items =
+            list_with_context(&HiddenSheetSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert!(context.hidden);
+        assert_eq!(context.value, "ロックの旨が表示される");
+        assert!(context.row.is_empty(), "nothing of a hidden sheet is seen");
     }
 
     #[test]

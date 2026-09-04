@@ -201,7 +201,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
@@ -242,7 +242,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上", "経費", "集計"],
+            tabs: vec![(0, "売上"), (1, "経費"), (2, "集計")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -271,7 +271,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -298,7 +298,7 @@ mod tests {
             names.iter().map(|n| (n.as_str(), 0, false)).collect();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: names.iter().map(String::as_str).collect(),
+            tabs: names.iter().map(String::as_str).enumerate().collect(),
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -327,7 +327,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -358,7 +358,7 @@ mod tests {
         for (w, h) in [(1, 1), (5, 3), (10, 4), (24, 5), (40, 6)] {
             let view = GridView {
                 sheet: &sheet,
-                sheet_names: vec!["売上", "経費"],
+                tabs: vec![(0, "売上"), (1, "経費")],
                 active: 0,
                 cursor: (0, 0),
                 markers: HashSet::new(),

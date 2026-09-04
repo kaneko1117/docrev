@@ -32,7 +32,7 @@ enum Command {
     Dump {
         /// Path to the document (.xlsx)
         file: PathBuf,
-        /// Sheet name to print (defaults to the first sheet)
+        /// Sheet name to print (defaults to the first sheet the workbook shows; a hidden sheet can be named)
         #[arg(long)]
         sheet: Option<String>,
         /// Show formulas instead of their results (like Excel's Ctrl+`)

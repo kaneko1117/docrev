@@ -192,7 +192,7 @@ mod tests {
         let thread = sample_thread();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::from([(1, 1)]),
@@ -222,7 +222,7 @@ mod tests {
         for height in [10u16, 12, 24] {
             let view = GridView {
                 sheet: &sheet,
-                sheet_names: vec!["売上"],
+                tabs: vec![(0, "売上")],
                 active: 0,
                 cursor: (1, 1),
                 markers: HashSet::from([(1, 1)]),
@@ -255,7 +255,7 @@ mod tests {
         let thread = sample_thread();
         let mut view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::from([(1, 1)]),
@@ -293,7 +293,7 @@ mod tests {
     fn composing_view<'a>(sheet: &'a Sheet, buffer: &'a str) -> GridView<'a> {
         GridView {
             sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
@@ -396,7 +396,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
