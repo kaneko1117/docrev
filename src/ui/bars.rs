@@ -67,7 +67,13 @@ pub(crate) fn draw_tabs(
     area: Rect,
     view: &GridView,
 ) -> (TabSpans, Option<u16>, Option<u16>) {
-    let strip = layout::tab_strip(&view.sheet_names, view.active, area.width as usize);
+    let names: Vec<&str> = view.tabs.iter().map(|(_, name)| *name).collect();
+    let active_tab = view
+        .tabs
+        .iter()
+        .position(|(i, _)| *i == view.active)
+        .unwrap_or(0);
+    let strip = layout::tab_strip(&names, active_tab, area.width as usize);
     let mut spans = Vec::with_capacity(strip.tabs.len() + 2);
     let mut tab_spans = Vec::with_capacity(strip.tabs.len());
     let mut x = area.x;
@@ -76,14 +82,15 @@ pub(crate) fn draw_tabs(
         x += 1;
         x - 1
     });
-    for (i, label) in &strip.tabs {
-        let style = if *i == view.active {
+    for (tab, label) in &strip.tabs {
+        let sheet = view.tabs.get(*tab).map_or(*tab, |(i, _)| *i);
+        let style = if sheet == view.active {
             canvas(p).add_modifier(Modifier::BOLD)
         } else {
             chrome(p)
         };
         let width = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
-        tab_spans.push((*i, x..x + width));
+        tab_spans.push((sheet, x..x + width));
         x += width;
         spans.push(Span::styled(label.clone(), style));
     }
@@ -191,7 +198,7 @@ mod tests {
         let sheet = Sheet::new("wide", vec![vec![CellValue::Text("x".into()); 30]]);
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["wide"],
+            tabs: vec![(0, "wide")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -234,7 +241,7 @@ mod tests {
         .with_formulas(HashMap::from([((0, 0), "SUM(B1:C1)".to_string())]));
         let mut view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["s"],
+            tabs: vec![(0, "s")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -276,7 +283,7 @@ mod tests {
             .with_formulas(HashMap::from([((0, 0), long)]));
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["s"],
+            tabs: vec![(0, "s")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -313,7 +320,7 @@ mod tests {
         }]);
         let mut view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
@@ -341,7 +348,7 @@ mod tests {
         let sheet = sheet_3x3();
         let mut view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -377,7 +384,7 @@ mod tests {
     #[test]
     fn hidden_sheet_tabs_are_signalled() {
         let sheet = sheet_3x3();
-        let names = vec![
+        let names = [
             "とても長い名前のシート1",
             "2月度実績データ",
             "3月度実績データ",
@@ -386,7 +393,7 @@ mod tests {
         ];
         let mut view = GridView {
             sheet: &sheet,
-            sheet_names: names.clone(),
+            tabs: names.iter().copied().enumerate().collect(),
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),

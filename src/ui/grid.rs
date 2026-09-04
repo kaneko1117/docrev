@@ -27,7 +27,8 @@ pub const CHROME_ROWS: u16 = 4;
 
 pub struct GridView<'a> {
     pub sheet: &'a Sheet,
-    pub sheet_names: Vec<&'a str>,
+    /// (sheet index, name) of the sheets in the tab strip.
+    pub tabs: Vec<(usize, &'a str)>,
     pub active: usize,
     pub cursor: (usize, usize),
     /// Cells with an unresolved thread.
@@ -274,7 +275,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上", "経費"],
+            tabs: vec![(0, "売上"), (1, "経費")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
@@ -310,7 +311,7 @@ mod tests {
         .with_text_colors(HashMap::from([((0, 0), TextColor::Named(NamedColor::Red))]));
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["書式"],
+            tabs: vec![(0, "書式")],
             active: 0,
             cursor: (0, 1),
             markers: HashSet::new(),
@@ -389,7 +390,7 @@ mod tests {
         ]));
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["フォント"],
+            tabs: vec![(0, "フォント")],
             active: 0,
             cursor: (0, 2),
             markers: HashSet::new(),
@@ -456,7 +457,7 @@ mod tests {
         .with_fills(HashMap::from([((0, 1), green)]));
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["塗り"],
+            tabs: vec![(0, "塗り")],
             active: 0,
             cursor: (0, 2),
             markers: HashSet::new(),
@@ -508,7 +509,7 @@ mod tests {
         let sheet = Sheet::new("big", rows);
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["big"],
+            tabs: vec![(0, "big")],
             active: 0,
             cursor: (50, 0),
             markers: HashSet::new(),
@@ -534,7 +535,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -571,7 +572,7 @@ mod tests {
         let sheet = Sheet::new("empty", vec![]);
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["empty"],
+            tabs: vec![(0, "empty")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -607,7 +608,7 @@ mod tests {
         let sheet = wrap_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["WR"],
+            tabs: vec![(0, "WR")],
             active: 0,
             cursor: (2, 1),
             markers: HashSet::new(),
@@ -631,7 +632,7 @@ mod tests {
         let sheet = wrap_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["WR"],
+            tabs: vec![(0, "WR")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -664,7 +665,7 @@ mod tests {
         let sheet = wrap_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["WR"],
+            tabs: vec![(0, "WR")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -702,7 +703,7 @@ mod tests {
         );
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["W"],
+            tabs: vec![(0, "W")],
             active: 0,
             cursor: (0, 2),
             markers: HashSet::new(),
@@ -756,7 +757,7 @@ mod tests {
         let sheet = merged_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["M"],
+            tabs: vec![(0, "M")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
@@ -780,7 +781,7 @@ mod tests {
         let sheet = merged_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["M"],
+            tabs: vec![(0, "M")],
             active: 0,
             cursor: (0, 2), // C1, inside A1:C1
             markers: HashSet::new(),
@@ -820,7 +821,7 @@ mod tests {
         let sheet = merged_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["M"],
+            tabs: vec![(0, "M")],
             active: 0,
             cursor: (1, 2),
             markers: HashSet::new(),
@@ -854,7 +855,7 @@ mod tests {
         let sheet = merged_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["M"],
+            tabs: vec![(0, "M")],
             active: 0,
             cursor: (2, 2),
             markers: HashSet::from([(0, 1)]), // B1, interior of A1:C1
@@ -898,7 +899,7 @@ mod tests {
         }]);
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["M"],
+            tabs: vec![(0, "M")],
             active: 0,
             cursor: (0, 1),
             markers: HashSet::new(),
@@ -933,7 +934,7 @@ mod tests {
         let sheet = sheet_3x3();
         let mut view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (1, 1),
             markers: HashSet::new(),
@@ -989,7 +990,7 @@ mod tests {
         let sheet = frozen_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["凍結"],
+            tabs: vec![(0, "凍結")],
             active: 0,
             cursor: (50, 2),
             markers: HashSet::new(),
@@ -1024,7 +1025,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上", "経費"],
+            tabs: vec![(0, "売上"), (1, "経費")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::new(),
@@ -1056,7 +1057,7 @@ mod tests {
         let sheet = frozen_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["凍結"],
+            tabs: vec![(0, "凍結")],
             active: 0,
             cursor: (50, 2),
             markers: HashSet::new(),
@@ -1086,7 +1087,7 @@ mod tests {
         let sheet = frozen_sheet();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["凍結"],
+            tabs: vec![(0, "凍結")],
             active: 0,
             cursor: (50, 2),
             markers: HashSet::new(),
@@ -1125,7 +1126,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (2, 2),
             markers: HashSet::new(),
@@ -1169,7 +1170,7 @@ mod tests {
         let sheet = sheet_3x3();
         let view = GridView {
             sheet: &sheet,
-            sheet_names: vec!["売上"],
+            tabs: vec![(0, "売上")],
             active: 0,
             cursor: (0, 0),
             markers: HashSet::from([(1, 1)]),

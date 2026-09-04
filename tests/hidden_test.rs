@@ -135,3 +135,77 @@ fn a_thread_on_a_hidden_cell_is_reachable_and_marked() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn dump_of(file: &str, sheet: Option<&str>) -> String {
+    let path = fixture(file);
+    let mut args = vec!["dump", path.to_str().unwrap()];
+    if let Some(name) = sheet {
+        args.extend(["--sheet", name]);
+    }
+    let out = docrev().args(&args).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn dump_starts_on_the_first_shown_sheet_and_can_still_name_a_hidden_one() {
+    let text = dump_of("hidden_first.xlsx", None);
+    assert!(text.starts_with("Sheet: 本体 (2/2)"), "{text}");
+    assert!(text.contains("second"), "{text}");
+    let text = dump_of("hidden.xlsx", Some("作業用"));
+    assert!(text.contains("scratch"), "{text}");
+}
+
+#[test]
+fn a_workbook_that_hides_every_sheet_still_opens() {
+    let text = dump_of("all_hidden.xlsx", None);
+    assert!(text.starts_with("Sheet: a (1/2)"), "{text}");
+    let document = XlsxSource.load(&fixture("all_hidden.xlsx")).unwrap();
+    assert!(document.sheets().iter().all(|s| !s.is_hidden()));
+}
+
+#[test]
+fn a_thread_on_a_hidden_sheet_is_reachable_and_marked() {
+    let dir = std::env::temp_dir().join(format!("docrev-hidden-sheet-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let document = dir.join("hidden.xlsx");
+    std::fs::copy(fixture("hidden.xlsx"), &document).unwrap();
+    let path = document.to_str().unwrap();
+
+    let add = docrev()
+        .args([
+            "comment",
+            "add",
+            path,
+            "--cell",
+            "作業用!A1",
+            "--body",
+            "scratch?",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let text = docrev().args(["comment", "list", path]).output().unwrap();
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("作業用!A1 (hidden) [agent] scratch?"),
+        "{text}"
+    );
+    let json = docrev()
+        .args(["comment", "list", "--json", path])
+        .output()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(parsed["comments"][0]["hidden"], true);
+    assert_eq!(parsed["comments"][0]["cell"]["value"], "scratch");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

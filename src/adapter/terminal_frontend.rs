@@ -150,7 +150,7 @@ impl Frontend for TerminalFrontend {
             PickerView {
                 query: state.query.to_string(),
                 selected: state.selected,
-                total: viewer.sheet_count(),
+                total: viewer.shown_sheets().len(),
                 items: state
                     .candidates
                     .iter()
@@ -196,9 +196,14 @@ impl Frontend for TerminalFrontend {
             Mode::Search { .. } => InputMode::Search,
             Mode::Notes { .. } => InputMode::Notes,
         };
+        let names = viewer.sheet_names();
         let view = GridView {
             sheet: viewer.sheet(),
-            sheet_names: viewer.sheet_names(),
+            tabs: viewer
+                .shown_sheets()
+                .into_iter()
+                .filter_map(|i| Some((i, *names.get(i)?)))
+                .collect(),
             active: viewer.active(),
             cursor: viewer.cursor(),
             markers: viewer.unresolved_on_active_sheet().into_iter().collect(),

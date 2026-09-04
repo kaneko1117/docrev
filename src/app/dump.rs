@@ -13,7 +13,7 @@ pub struct DumpView {
     pub total: usize,
 }
 
-/// First sheet when `sheet_name` is `None`.
+/// The first shown sheet when `sheet_name` is `None`; a name may pick a hidden one.
 pub fn dump(
     source: &impl DocumentSource,
     path: &Path,
@@ -31,7 +31,7 @@ pub fn dump(
                 name: name.to_string(),
                 available: document.sheet_names().map(str::to_string).collect(),
             })?,
-        None => 0,
+        None => document.first_shown().unwrap_or(0),
     };
     let sheet = document
         .into_sheets()
@@ -70,6 +70,22 @@ mod tests {
         assert_eq!(view.sheet.name(), "one");
         assert_eq!(view.position, 0);
         assert_eq!(view.total, 2);
+    }
+
+    #[test]
+    fn defaults_to_the_first_shown_sheet_and_names_reach_hidden_ones() {
+        use crate::domain::cell::CellValue;
+        use crate::domain::sheet::Sheet;
+        let document = Document::new(vec![
+            Sheet::new("scratch", vec![vec![CellValue::Empty]]).with_hidden(true),
+            Sheet::new("main", vec![vec![CellValue::Empty]]),
+        ]);
+        let source = FakeSource(Ok(document));
+        let view = dump(&source, Path::new("x.xlsx"), None).unwrap();
+        assert_eq!(view.sheet.name(), "main");
+        assert_eq!(view.position, 1);
+        let view = dump(&source, Path::new("x.xlsx"), Some("scratch")).unwrap();
+        assert_eq!(view.sheet.name(), "scratch");
     }
 
     #[test]
