@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/kaneko1117/docrev/compare/v0.3.1...v0.4.0) - 2026-09-04
+
+### Added
+
+- keep hidden sheets out of the tab strip and picker
+- skip hidden rows and columns everywhere Excel does
+- read hidden rows, columns and sheets into the domain model
+- wire date and time cells through the number-format engine
+- inherit date and time formats in the number-format engine
+- reload the document when it changes on disk
+
+### Changed
+
+- move the number-format engine out of domain
+- read xlsx metadata in one archive pass
+- replace string-wrapped errors with typed variants
+
+### Documentation
+
+- state the domain criterion by whose contract a thing is
+- ship the docrev-review agent skill in-repo
+
+### Fixed
+
+- count a merge crossing the column freeze at its pinned width
+- honor in-cell line breaks instead of flattening them to ⏎
+
 ## [0.3.1](https://github.com/kaneko1117/docrev/compare/v0.3.0...v0.3.1) - 2026-08-23
 
 ### Documentation
