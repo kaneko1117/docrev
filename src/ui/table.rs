@@ -4,7 +4,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::sheet::Sheet;
 
-use super::text::{cell_lines, cell_text, center, clip, pad_left, pad_right, sanitize, wrap};
+use super::text::{Placement, cell_lines, cell_text, center, clip, sanitize, wrap};
 
 fn column_label(index: u32) -> String {
     Anchor::column_label(index)
@@ -22,23 +22,32 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
         return out;
     }
 
-    let texts: Vec<Vec<Vec<String>>> = rows
+    let cells: Vec<Vec<(Placement, Vec<String>)>> = rows
         .iter()
         .map(|&r| {
             cols.iter()
                 .map(|&c| {
+                    // formulas align left whatever their result type
                     if formulas && let Some(formula) = sheet.formula_at(r, c) {
-                        return wrap(&sanitize(&format!("={formula}")), MAX_CELL_WIDTH);
+                        let placement = Placement::resolve(None, false, MAX_CELL_WIDTH);
+                        let lines = wrap(&sanitize(&format!("={formula}")), MAX_CELL_WIDTH);
+                        return (placement, lines);
                     }
                     let cell = sheet.cell(r, c);
-                    if matches!(
+                    let numeric = matches!(
                         cell,
                         CellValue::Number(_) | CellValue::FormattedNumber { .. }
-                    ) {
-                        vec![clip(&cell_text(cell), MAX_CELL_WIDTH)]
+                    );
+                    // the dump draws no merges, so the cell's own alignment is enough
+                    let placement =
+                        Placement::resolve(sheet.alignment_at(r, c), numeric, MAX_CELL_WIDTH);
+                    let width = placement.text_width(MAX_CELL_WIDTH);
+                    let lines = if numeric {
+                        vec![clip(&cell_text(cell), width)]
                     } else {
-                        cell_lines(cell, MAX_CELL_WIDTH)
-                    }
+                        cell_lines(cell, width)
+                    };
+                    (placement, lines)
                 })
                 .collect()
         })
@@ -49,11 +58,18 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
         .iter()
         .enumerate()
         .map(|(i, &c)| {
-            let body = texts
+            let body = cells
                 .iter()
                 .filter_map(|row| row.get(i))
-                .flat_map(|lines| lines.iter())
-                .map(|t| t.width())
+                .flat_map(|(placement, lines)| {
+                    lines.iter().map(|t| {
+                        if t.is_empty() {
+                            0
+                        } else {
+                            placement.indent + t.width()
+                        }
+                    })
+                })
                 .max()
                 .unwrap_or(0);
             column_label(c as u32).width().max(body)
@@ -85,8 +101,8 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
 
     out.push_str(&border('├', '┼', '┤'));
 
-    for (&r, row) in rows.iter().zip(&texts) {
-        let height = row.iter().map(Vec::len).max().unwrap_or(1);
+    for (&r, row) in rows.iter().zip(&cells) {
+        let height = row.iter().map(|(_, lines)| lines.len()).max().unwrap_or(1);
         for sub in 0..height {
             out.push('│');
             if sub == 0 {
@@ -94,21 +110,14 @@ pub fn render(sheet: &Sheet, position: usize, total: usize, formulas: bool) -> S
             } else {
                 out.push_str(&format!(" {} ", " ".repeat(row_label_width)));
             }
-            for ((&c, lines), &w) in cols.iter().zip(row).zip(&col_widths) {
-                let text = lines.get(sub).map(String::as_str).unwrap_or("");
-                // formulas align left whatever their result type
-                let shows_formula = formulas && sheet.formula_at(r, c).is_some();
-                let aligned = if !shows_formula
-                    && matches!(
-                        sheet.cell(r, c),
-                        CellValue::Number(_) | CellValue::FormattedNumber { .. }
-                    ) {
-                    pad_left(text, w)
-                } else {
-                    pad_right(text, w)
-                };
+            for ((placement, lines), &w) in row.iter().zip(&col_widths) {
+                let text = sub
+                    .checked_sub(placement.offset(lines.len(), height))
+                    .and_then(|i| lines.get(i))
+                    .map(String::as_str)
+                    .unwrap_or("");
                 out.push('│');
-                out.push_str(&format!(" {aligned} "));
+                out.push_str(&format!(" {} ", placement.line(text, w)));
             }
             out.push_str("│\n");
         }
@@ -155,6 +164,83 @@ mod tests {
         let all_hidden = Sheet::new("S", vec![vec![CellValue::Number(1.0)]])
             .with_hidden_rows(HashSet::from([0]));
         assert!(render(&all_hidden, 0, 1, false).contains("(empty sheet)"));
+    }
+
+    #[test]
+    fn alignment_shows_in_the_dump() {
+        use crate::domain::sheet::{Alignment, Horizontal, Vertical};
+        use std::collections::HashMap;
+        let sheet = Sheet::new(
+            "S",
+            vec![
+                vec![CellValue::Text("hd".into()), CellValue::Text("x".into())],
+                vec![CellValue::Text("item".into()), CellValue::Number(7.0)],
+                vec![
+                    CellValue::Text("a b c d".into()),
+                    CellValue::Text("low".into()),
+                ],
+            ],
+        )
+        .with_alignments(HashMap::from([
+            (
+                (0, 0),
+                Alignment {
+                    horizontal: Some(Horizontal::Center),
+                    ..Alignment::default()
+                },
+            ),
+            (
+                (0, 1),
+                Alignment {
+                    horizontal: Some(Horizontal::Right),
+                    ..Alignment::default()
+                },
+            ),
+            (
+                (1, 0),
+                Alignment {
+                    indent: 1,
+                    ..Alignment::default()
+                },
+            ),
+            (
+                (1, 1),
+                Alignment {
+                    horizontal: Some(Horizontal::Left),
+                    ..Alignment::default()
+                },
+            ),
+            (
+                (2, 1),
+                Alignment {
+                    vertical: Some(Vertical::Bottom),
+                    ..Alignment::default()
+                },
+            ),
+        ]));
+        let out = render(&sheet, 0, 1, false);
+        assert!(out.contains("│ 1 │   hd    │   x │"), "{out}");
+        assert!(out.contains("│ 2 │   item  │ 7   │"), "{out}");
+        assert!(out.contains("│ 3 │ a b c d │ low │"), "{out}");
+    }
+
+    #[test]
+    fn an_indented_empty_cell_does_not_widen_its_column() {
+        use crate::domain::sheet::Alignment;
+        use std::collections::HashMap;
+        let sheet = Sheet::new(
+            "S",
+            vec![vec![CellValue::Text("a".into()), CellValue::Empty]],
+        )
+        .with_alignments(HashMap::from([(
+            (0, 1),
+            Alignment {
+                indent: 3,
+                ..Alignment::default()
+            },
+        )]));
+        let out = render(&sheet, 0, 1, false);
+        assert!(out.contains("│ 1 │ a │   │"), "{out}");
     }
 
     #[test]

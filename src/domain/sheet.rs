@@ -30,6 +30,28 @@ pub enum TextColor {
     Literal(Rgb),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Horizontal {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vertical {
+    Top,
+    Center,
+    Bottom,
+}
+
+/// `None` leaves the choice to the value type; `indent` is in levels, not cells.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Alignment {
+    pub horizontal: Option<Horizontal>,
+    pub vertical: Option<Vertical>,
+    pub indent: u8,
+}
+
 /// Inclusive; the value lives at the top-left anchor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergedRange {
@@ -67,6 +89,7 @@ pub struct Sheet {
     /// Keyed by (row, col).
     fills: HashMap<(usize, usize), Rgb>,
     text_colors: HashMap<(usize, usize), TextColor>,
+    alignments: HashMap<(usize, usize), Alignment>,
     /// (rows, cols) pinned while scrolling.
     frozen: (usize, usize),
     /// By (row, col), without the leading `=`.
@@ -92,6 +115,7 @@ impl Sheet {
             merges: Vec::new(),
             fills: HashMap::new(),
             text_colors: HashMap::new(),
+            alignments: HashMap::new(),
             frozen: (0, 0),
             formulas: HashMap::new(),
             workbook_comments: Vec::new(),
@@ -228,6 +252,11 @@ impl Sheet {
         self
     }
 
+    pub fn with_alignments(mut self, alignments: HashMap<(usize, usize), Alignment>) -> Self {
+        self.alignments = alignments;
+        self
+    }
+
     /// Fractional character counts as the file states them; the ui rounds.
     pub fn with_col_widths(mut self, widths: Vec<Option<f64>>) -> Self {
         self.col_widths = widths;
@@ -360,6 +389,20 @@ impl Sheet {
             None => (row, col),
         };
         self.text_colors.get(&(row, col)).copied()
+    }
+
+    /// The cell's own alignment; merges are not resolved.
+    pub fn alignment_at(&self, row: usize, col: usize) -> Option<Alignment> {
+        self.alignments.get(&(row, col)).copied()
+    }
+
+    /// Inside a merged region, the anchor's alignment.
+    pub fn display_alignment_at(&self, row: usize, col: usize) -> Option<Alignment> {
+        let (row, col) = match self.merge_at(row, col) {
+            Some(merge) => merge.anchor(),
+            None => (row, col),
+        };
+        self.alignment_at(row, col)
     }
 
     pub fn merge_at(&self, row: usize, col: usize) -> Option<&MergedRange> {

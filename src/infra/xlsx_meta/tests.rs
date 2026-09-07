@@ -1,4 +1,4 @@
-use super::styles::{builtin_format, parse_cell_styles, parse_styles};
+use super::styles::{CellAlignment, builtin_format, parse_cell_styles, parse_styles};
 use super::theme::{apply_tint, default_palette, parse_hex_rgb, parse_theme_palette};
 use super::worksheet::{
     RowAttrs, SheetFormat, parse_cols, parse_pane, parse_rows, parse_sheet_format,
@@ -186,6 +186,34 @@ fn styles_resolve_custom_and_builtin_ids() {
 }
 
 #[test]
+fn styles_carry_alignment_from_cell_xfs_only() {
+    let styles = r#"<styleSheet>
+        <cellStyleXfs count="1"><xf numFmtId="0"><alignment horizontal="right"/></xf></cellStyleXfs>
+        <cellXfs count="4">
+            <xf numFmtId="0"/>
+            <xf numFmtId="0" applyAlignment="1"><alignment horizontal="center" vertical="top" indent="2"/></xf>
+            <xf numFmtId="0"><alignment/></xf>
+            <xf numFmtId="0"><alignment wrapText="1"/></xf>
+        </cellXfs>
+        <dxfs count="1"><dxf><alignment horizontal="left"/></dxf></dxfs>
+    </styleSheet>"#;
+    let styles = parse_styles(styles, &default_palette()).unwrap();
+    assert_eq!(styles.len(), 4);
+    assert_eq!(styles[0].alignment, None, "no alignment element");
+    assert_eq!(
+        styles[1].alignment,
+        Some(CellAlignment {
+            horizontal: Some("center".into()),
+            vertical: Some("top".into()),
+            indent: 2,
+        })
+    );
+    assert!(!styles[1].is_plain(), "alignment alone makes a cell styled");
+    assert_eq!(styles[2].alignment, None, "an empty element states nothing");
+    assert_eq!(styles[3].alignment, None, "wrapText alone is not read");
+}
+
+#[test]
 fn styles_ignore_cell_style_xfs_and_dxfs() {
     let styles = r#"<styleSheet>
         <dxfs count="1">
@@ -352,6 +380,7 @@ fn percent_style() -> Vec<CellStyle> {
             format: Some("0%".to_string()),
             fill: None,
             font: None,
+            alignment: None,
         },
     ]
 }
