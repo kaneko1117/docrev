@@ -70,8 +70,8 @@ pub(super) fn render_datetime(section: &Section, parts: &DateTimeParts) -> Strin
                 out.push_str(text);
                 continue;
             }
-            // parse rejects digits beside date tokens
-            Token::Number | Token::General => continue,
+            // parse rejects digits, fractions and text beside date tokens
+            Token::Number | Token::General | Token::Fraction | Token::Text => continue,
             Token::Date(date) => date,
         };
         match date {
