@@ -6,6 +6,7 @@ use std::path::Path;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use quick_xml::events::attributes::Attribute;
+use quick_xml::events::{BytesRef, BytesText};
 
 use super::MetaError;
 
@@ -41,6 +42,28 @@ pub(super) fn attr_value(attr: &Attribute, decoder: quick_xml::Decoder) -> Strin
     attr.decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
         .map(|v| v.into_owned())
         .unwrap_or_default()
+}
+
+/// A text node arrives in pieces: plain text and each `&…;` reference as its own event.
+pub(super) fn text_piece(text: &BytesText) -> Result<String, MetaError> {
+    text.xml_content(quick_xml::XmlVersion::Implicit1_0)
+        .map(|t| t.into_owned())
+        .map_err(|e| MetaError(e.to_string()))
+}
+
+/// `&#x30;` and the predefined entities; an unknown entity is kept verbatim.
+pub(super) fn reference_piece(reference: &BytesRef) -> Result<String, MetaError> {
+    if let Some(ch) = reference
+        .resolve_char_ref()
+        .map_err(|e| MetaError(e.to_string()))?
+    {
+        return Ok(ch.to_string());
+    }
+    let name = reference.decode().map_err(|e| MetaError(e.to_string()))?;
+    let raw = format!("&{name};");
+    Ok(quick_xml::escape::unescape(&raw)
+        .map(|t| t.into_owned())
+        .unwrap_or(raw))
 }
 
 /// `<sheet name="売上" r:id="rId1"/>` → (name, rId).

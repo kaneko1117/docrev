@@ -1,3 +1,4 @@
+use super::comments::{parse_legacy_comments, parse_threaded_comments};
 use super::styles::{CellAlignment, builtin_format, parse_cell_styles, parse_styles};
 use super::theme::{apply_tint, default_palette, parse_hex_rgb, parse_theme_palette};
 use super::worksheet::{
@@ -565,4 +566,25 @@ fn out_of_range_style_indices_are_ignored() {
     </sheetData></worksheet>"#;
     let cells = parse_cell_styles(sheet, &percent_style()).unwrap().styled;
     assert!(cells.is_empty());
+}
+
+#[test]
+fn comment_text_keeps_entity_references_together() {
+    let legacy = r#"<comments><authors><author>A &amp; B</author></authors><commentList>
+        <comment ref="B2" authorId="0"><text><r><t>say &quot;hi&quot; &#x1F600; &lt;3</t></r></text></comment>
+    </commentList></comments>"#;
+    let notes = parse_legacy_comments(legacy).unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].author, "A & B");
+    assert_eq!(notes[0].body, "say \"hi\" 😀 <3");
+
+    let threaded = r#"<ThreadedComments>
+        <threadedComment ref="B2" id="{1}" personId="{p}"><text>a &amp; b</text></threadedComment>
+        <threadedComment ref="B2" id="{2}" parentId="{1}" personId="{p}"><text>&quot;ok&quot;</text></threadedComment>
+    </ThreadedComments>"#;
+    let persons = HashMap::from([("{p}".to_string(), "P".to_string())]);
+    let roots = parse_threaded_comments(threaded, &persons).unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].body, "a & b");
+    assert_eq!(roots[0].replies[0].1, "\"ok\"");
 }
