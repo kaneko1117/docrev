@@ -186,6 +186,45 @@ fn styles_resolve_custom_and_builtin_ids() {
 }
 
 #[test]
+fn fonts_carry_emphasis_and_the_default_font_stays_plain() {
+    let styles = r#"<styleSheet>
+        <fonts count="4">
+            <font><b/><sz val="11"/><color theme="1"/></font>
+            <font><b/><i/><strike/><u/><color rgb="FFFF0000"/></font>
+            <font><b val="0"/><i val="false"/><strike val="1"/></font>
+            <font/>
+        </fonts>
+        <cellXfs count="4">
+            <xf numFmtId="0" fontId="0"/>
+            <xf numFmtId="0" fontId="1"/>
+            <xf numFmtId="0" fontId="2"/>
+            <xf numFmtId="0" fontId="3"/>
+        </cellXfs>
+    </styleSheet>"#;
+    let styles = parse_styles(styles, &default_palette()).unwrap();
+    let flags = |s: &CellStyle| (s.bold, s.italic, s.strike);
+    assert_eq!(
+        flags(&styles[0]),
+        (false, false, false),
+        "font 0 is not inherited"
+    );
+    assert!(styles[0].is_plain());
+    assert_eq!(flags(&styles[1]), (true, true, true));
+    assert_eq!(
+        styles[1].font,
+        Some((255, 0, 0)),
+        "color still read alongside"
+    );
+    assert_eq!(
+        flags(&styles[2]),
+        (false, false, true),
+        "explicit off values"
+    );
+    assert!(!styles[2].is_plain(), "emphasis alone makes a cell styled");
+    assert_eq!(flags(&styles[3]), (false, false, false));
+}
+
+#[test]
 fn styles_carry_alignment_from_cell_xfs_only() {
     let styles = r#"<styleSheet>
         <cellStyleXfs count="1"><xf numFmtId="0"><alignment horizontal="right"/></xf></cellStyleXfs>
@@ -381,6 +420,9 @@ fn percent_style() -> Vec<CellStyle> {
             fill: None,
             font: None,
             alignment: None,
+            bold: false,
+            italic: false,
+            strike: false,
         },
     ]
 }

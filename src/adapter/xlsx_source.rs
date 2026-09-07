@@ -7,7 +7,9 @@ use crate::app::error::LoadError;
 use crate::app::ports::DocumentSource;
 use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
-use crate::domain::sheet::{Alignment, Horizontal, MergedRange, Rgb, Sheet, TextColor, Vertical};
+use crate::domain::sheet::{
+    Alignment, Emphasis, Horizontal, MergedRange, Rgb, Sheet, TextColor, Vertical,
+};
 use crate::domain::workbook_comment::{WorkbookComment, WorkbookReply};
 use crate::infra::datetime::{DateTimeKind, DateTimeParts};
 use crate::infra::number_format::NumberFormat;
@@ -202,21 +204,27 @@ fn to_sheet(
         }
         rows.push(row);
     }
-    let (fills, text_colors, alignments) = match cells {
+    let styling = match cells {
         Some(cells) => apply_styles(&mut rows, cells, styles, formats, &date_parts, is_1904),
-        None => (HashMap::new(), HashMap::new(), HashMap::new()),
+        None => Styling::default(),
     };
     Sheet::new(name, rows)
-        .with_fills(fills)
-        .with_text_colors(text_colors)
-        .with_alignments(alignments)
+        .with_fills(styling.fills)
+        .with_text_colors(styling.text_colors)
+        .with_alignments(styling.alignments)
+        .with_emphases(styling.emphases)
 }
 
-type Fills = HashMap<(usize, usize), Rgb>;
-type TextColors = HashMap<(usize, usize), TextColor>;
-type Alignments = HashMap<(usize, usize), Alignment>;
+/// Per-cell styling keyed by 0-based (row, col).
+#[derive(Default)]
+struct Styling {
+    fills: HashMap<(usize, usize), Rgb>,
+    text_colors: HashMap<(usize, usize), TextColor>,
+    alignments: HashMap<(usize, usize), Alignment>,
+    emphases: HashMap<(usize, usize), Emphasis>,
+}
 
-/// An unsupported date format keeps the fallback text; fills, colors and alignment are collected for empty cells too.
+/// An unsupported date format keeps the fallback text; styling is collected for empty cells too.
 fn apply_styles(
     rows: &mut [Vec<CellValue>],
     cells: &HashMap<(u32, u32), usize>,
@@ -224,20 +232,26 @@ fn apply_styles(
     formats: &[Option<NumberFormat>],
     date_parts: &HashMap<(usize, usize), DateTimeParts>,
     is_1904: bool,
-) -> (Fills, TextColors, Alignments) {
-    let mut fills = HashMap::new();
-    let mut text_colors = HashMap::new();
-    let mut alignments = HashMap::new();
+) -> Styling {
+    let mut styling = Styling::default();
     for (&(row, col), &idx) in cells {
         let (row, col) = (row as usize, col as usize);
         let Some(style) = styles.get(idx) else {
             continue;
         };
         if let Some((r, g, b)) = style.fill {
-            fills.insert((row, col), Rgb { r, g, b });
+            styling.fills.insert((row, col), Rgb { r, g, b });
         }
         if let Some(alignment) = style.alignment.as_ref().and_then(to_alignment) {
-            alignments.insert((row, col), alignment);
+            styling.alignments.insert((row, col), alignment);
+        }
+        let emphasis = Emphasis {
+            bold: style.bold,
+            italic: style.italic,
+            strike: style.strike,
+        };
+        if !emphasis.is_plain() {
+            styling.emphases.insert((row, col), emphasis);
         }
         // a `[Red]` code colors nothing unless the format rendered a value
         let mut named = None;
@@ -282,10 +296,10 @@ fn apply_styles(
             .map(TextColor::Named)
             .or(literal.map(TextColor::Literal))
         {
-            text_colors.insert((row, col), color);
+            styling.text_colors.insert((row, col), color);
         }
     }
-    (fills, text_colors, alignments)
+    styling
 }
 
 /// `None` when nothing the ui honors is set: `general`, `fill`, `justify`, `distributed` and
@@ -397,6 +411,43 @@ mod tests {
     }
 
     #[test]
+    fn emphasis_is_collected_only_where_something_is_set() {
+        let mut rows = vec![vec![
+            CellValue::Text("a".into()),
+            CellValue::Text("b".into()),
+        ]];
+        let styles = vec![
+            xlsx_meta::CellStyle {
+                bold: true,
+                strike: true,
+                ..Default::default()
+            },
+            xlsx_meta::CellStyle {
+                fill: Some((1, 2, 3)),
+                ..Default::default()
+            },
+        ];
+        let cells = [((0u32, 0u32), 0usize), ((0, 1), 1)].into();
+        let styling = apply_styles(
+            &mut rows,
+            &cells,
+            &styles,
+            &[None, None],
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(
+            styling.emphases.get(&(0, 0)),
+            Some(&Emphasis {
+                bold: true,
+                italic: false,
+                strike: true,
+            })
+        );
+        assert_eq!(styling.emphases.get(&(0, 1)), None);
+    }
+
+    #[test]
     fn alignment_keywords_map_to_the_domain_and_general_is_nothing() {
         let raw = |h: Option<&str>, v: Option<&str>, indent| xlsx_meta::CellAlignment {
             horizontal: h.map(str::to_string),
@@ -463,24 +514,36 @@ mod tests {
                 fill: Some((255, 255, 0)),
                 font: None,
                 alignment: None,
+                bold: false,
+                italic: false,
+                strike: false,
             },
             xlsx_meta::CellStyle {
                 format: Some("#,##0;[Red]▲#,##0".into()),
                 fill: None,
                 font: Some((0, 0, 255)),
                 alignment: None,
+                bold: false,
+                italic: false,
+                strike: false,
             },
             xlsx_meta::CellStyle {
                 format: Some("General".into()),
                 fill: None,
                 font: Some((255, 255, 255)),
                 alignment: None,
+                bold: false,
+                italic: false,
+                strike: false,
             },
             xlsx_meta::CellStyle {
                 format: None,
                 fill: Some((0, 128, 0)),
                 font: Some((0, 0, 0)),
                 alignment: None,
+                bold: false,
+                italic: false,
+                strike: false,
             },
         ];
         let formats: Vec<Option<NumberFormat>> = styles
@@ -497,8 +560,9 @@ mod tests {
             ((8, 25), 0), // outside the grid: must not panic
         ]
         .into();
-        let (fills, text_colors, _) =
-            apply_styles(&mut rows, &cells, &styles, &formats, &HashMap::new(), false);
+        let Styling {
+            fills, text_colors, ..
+        } = apply_styles(&mut rows, &cells, &styles, &formats, &HashMap::new(), false);
         assert_eq!(
             rows[0][0],
             CellValue::FormattedNumber {
@@ -602,18 +666,27 @@ mod tests {
                 fill: None,
                 font: None,
                 alignment: None,
+                bold: false,
+                italic: false,
+                strike: false,
             },
             xlsx_meta::CellStyle {
                 format: Some("mm:ss.00".into()),
                 fill: None,
                 font: None,
                 alignment: None,
+                bold: false,
+                italic: false,
+                strike: false,
             },
             xlsx_meta::CellStyle {
                 format: Some("0.00".into()),
                 fill: None,
                 font: None,
                 alignment: None,
+                bold: false,
+                italic: false,
+                strike: false,
             },
         ];
         let formats: Vec<Option<NumberFormat>> = styles
@@ -663,6 +736,9 @@ mod tests {
             fill: None,
             font: None,
             alignment: None,
+            bold: false,
+            italic: false,
+            strike: false,
         }];
         let formats: Vec<Option<NumberFormat>> = styles
             .iter()
@@ -698,6 +774,9 @@ mod tests {
             fill: None,
             font: None,
             alignment: None,
+            bold: false,
+            italic: false,
+            strike: false,
         }];
         let formats: Vec<Option<NumberFormat>> = styles
             .iter()

@@ -52,6 +52,20 @@ pub struct Alignment {
     pub indent: u8,
 }
 
+/// Font emphasis the author set on the cell; underline is not carried.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Emphasis {
+    pub bold: bool,
+    pub italic: bool,
+    pub strike: bool,
+}
+
+impl Emphasis {
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Inclusive; the value lives at the top-left anchor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergedRange {
@@ -90,6 +104,7 @@ pub struct Sheet {
     fills: HashMap<(usize, usize), Rgb>,
     text_colors: HashMap<(usize, usize), TextColor>,
     alignments: HashMap<(usize, usize), Alignment>,
+    emphases: HashMap<(usize, usize), Emphasis>,
     /// (rows, cols) pinned while scrolling.
     frozen: (usize, usize),
     /// By (row, col), without the leading `=`.
@@ -116,6 +131,7 @@ impl Sheet {
             fills: HashMap::new(),
             text_colors: HashMap::new(),
             alignments: HashMap::new(),
+            emphases: HashMap::new(),
             frozen: (0, 0),
             formulas: HashMap::new(),
             workbook_comments: Vec::new(),
@@ -255,6 +271,20 @@ impl Sheet {
     pub fn with_alignments(mut self, alignments: HashMap<(usize, usize), Alignment>) -> Self {
         self.alignments = alignments;
         self
+    }
+
+    pub fn with_emphases(mut self, emphases: HashMap<(usize, usize), Emphasis>) -> Self {
+        self.emphases = emphases;
+        self
+    }
+
+    /// Inside a merged region, the anchor's emphasis; plain when none was set.
+    pub fn display_emphasis_at(&self, row: usize, col: usize) -> Emphasis {
+        let (row, col) = match self.merge_at(row, col) {
+            Some(merge) => merge.anchor(),
+            None => (row, col),
+        };
+        self.emphases.get(&(row, col)).copied().unwrap_or_default()
     }
 
     /// Fractional character counts as the file states them; the ui rounds.
