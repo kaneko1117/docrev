@@ -6,7 +6,13 @@ fn bin() -> Command {
 }
 
 fn temp_document() -> PathBuf {
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.xlsx");
+    temp_copy_of("basic.xlsx")
+}
+
+fn temp_copy_of(fixture: &str) -> PathBuf {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(fixture);
     // unique per test, not per process: under `cargo test` all tests share
     // one process and a pid-based name makes them race on the same file
     let dest = std::env::temp_dir().join(format!("docrev-cli-{}.xlsx", uuid::Uuid::new_v4()));
@@ -103,6 +109,33 @@ fn full_agent_loop() {
     let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(listed["comments"].as_array().unwrap().len(), 0);
 
+    cleanup(&doc);
+}
+
+#[test]
+fn a_formatted_number_lists_its_stored_value() {
+    let doc = temp_copy_of("formats.xlsx");
+    let out = bin()
+        .args(["comment", "add"])
+        .arg(&doc)
+        .args(["--cell", "書式!A1", "--body", "check", "--author", "agent"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = bin()
+        .args(["comment", "list"])
+        .arg(&doc)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let cell = &listed["comments"][0]["cell"];
+    assert_eq!(cell["value"], "15%");
+    assert_eq!(cell["raw"], serde_json::json!(0.15));
     cleanup(&doc);
 }
 

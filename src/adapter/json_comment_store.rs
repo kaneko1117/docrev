@@ -202,10 +202,32 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
     #[derive(Serialize)]
     struct CellDto {
         value: String,
-        /// Present only on date/time cells.
+        /// Present only where a format produced the display.
         #[serde(skip_serializing_if = "Option::is_none")]
-        raw: Option<String>,
+        raw: Option<RawDto>,
         row: RowDto,
+    }
+    /// A string for dates and times, a number for formatted numbers.
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    enum RawDto {
+        Text(String),
+        Integer(i64),
+        Float(f64),
+    }
+    impl RawDto {
+        fn from_domain(raw: &comments::RawValue) -> Self {
+            match raw {
+                comments::RawValue::DateTime(text) => RawDto::Text(text.clone()),
+                // an integral value prints as one; `as i64` is exact below 2^63
+                comments::RawValue::Number(n)
+                    if n.fract() == 0.0 && n.abs() < 9_223_372_036_854_775_808.0 =>
+                {
+                    RawDto::Integer(*n as i64)
+                }
+                comments::RawValue::Number(n) => RawDto::Float(*n),
+            }
+        }
     }
     /// Insertion-ordered object; `serde_json::Map` would sort AA1 before Z1.
     struct RowDto(Vec<(String, String)>);
@@ -228,7 +250,7 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
                 hidden: context.as_ref().is_some_and(|c| c.hidden),
                 cell: context.as_ref().map(|c| CellDto {
                     value: c.value.clone(),
-                    raw: c.raw.clone(),
+                    raw: c.raw.as_ref().map(RawDto::from_domain),
                     row: RowDto(c.row.clone()),
                 }),
             })
@@ -376,7 +398,7 @@ mod tests {
                 thread("with"),
                 Some(comments::CellContext {
                     value: "ロック表示".into(),
-                    raw: Some("2026-08-31 00:00:00".into()),
+                    raw: Some(comments::RawValue::DateTime("2026-08-31 00:00:00".into())),
                     // Z before AA
                     row: vec![("Z2".into(), "先".into()), ("AA2".into(), "後".into())],
                     hidden: false,
@@ -390,6 +412,33 @@ mod tests {
                     raw: None,
                     row: Vec::new(),
                     hidden: true,
+                }),
+            ),
+            (
+                thread("scaled"),
+                Some(comments::CellContext {
+                    value: "1,234千円".into(),
+                    raw: Some(comments::RawValue::Number(1_234_000.0)),
+                    row: Vec::new(),
+                    hidden: false,
+                }),
+            ),
+            (
+                thread("percent"),
+                Some(comments::CellContext {
+                    value: "15%".into(),
+                    raw: Some(comments::RawValue::Number(0.15)),
+                    row: Vec::new(),
+                    hidden: false,
+                }),
+            ),
+            (
+                thread("huge"),
+                Some(comments::CellContext {
+                    value: "▲9,007,199,254,740,992".into(),
+                    raw: Some(comments::RawValue::Number(-9_007_199_254_740_992.0)),
+                    row: Vec::new(),
+                    hidden: false,
                 }),
             ),
         ];
@@ -438,7 +487,23 @@ mod tests {
         );
         assert!(
             third["cell"].get("raw").is_none(),
-            "non-date cells carry no raw key"
+            "plain cells carry no raw key"
+        );
+        let scaled = &parsed["comments"][3];
+        assert_eq!(scaled["cell"]["value"], "1,234千円");
+        assert_eq!(
+            scaled["cell"]["raw"],
+            serde_json::json!(1_234_000),
+            "a formatted number's stored value is a JSON number, integral without a fraction"
+        );
+        assert!(json.contains("\"raw\": 1234000,"), "{json}");
+        assert_eq!(
+            parsed["comments"][4]["cell"]["raw"],
+            serde_json::json!(0.15)
+        );
+        assert!(
+            json.contains("\"raw\": -9007199254740992,"),
+            "integral values past 2^53 still print as integers:\n{json}"
         );
         assert_eq!(third["hidden"], true);
         assert!(

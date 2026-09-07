@@ -16,12 +16,21 @@ pub struct Filter<'a> {
     pub sheet: Option<&'a str>,
 }
 
+/// The machine-readable value behind a formatted display.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawValue {
+    /// `YYYY-MM-DD HH:MM:SS`, a bare time, or elapsed time, as the cell states it.
+    DateTime(String),
+    /// The stored number a number format rendered.
+    Number(f64),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CellContext {
     /// A merged anchor shows its region's text.
     pub value: String,
-    /// `None` for every cell kind but date/time.
-    pub raw: Option<String>,
+    /// `None` unless a format produced the display.
+    pub raw: Option<RawValue>,
     /// (A1 ref, displayed text) in column order; hidden columns are left out, and a hidden row
     /// has none.
     pub row: Vec<(String, String)>,
@@ -92,7 +101,11 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
     let display = sheet.display_cell(row, col);
     let value = display.display_text();
     let raw = match display {
-        CellValue::DateTime { raw, .. } => Some(raw.clone()),
+        CellValue::DateTime { raw, .. } => Some(RawValue::DateTime(raw.clone())),
+        // a hostile file can carry NaN or inf, which JSON cannot hold
+        CellValue::FormattedNumber { value, .. } if value.is_finite() => {
+            Some(RawValue::Number(*value))
+        }
         _ => None,
     };
     // hoisted: a per-column merge lookup scans the merge list each time
@@ -334,10 +347,20 @@ mod tests {
                         CellValue::Empty,
                         CellValue::Text("隣".into()),
                     ],
-                    vec![CellValue::DateTime {
-                        text: "2026年8月31日(月)".into(),
-                        raw: "2026-08-31 00:00:00".into(),
-                    }],
+                    vec![
+                        CellValue::DateTime {
+                            text: "2026年8月31日(月)".into(),
+                            raw: "2026-08-31 00:00:00".into(),
+                        },
+                        CellValue::FormattedNumber {
+                            value: 1_234_000.0,
+                            text: "1,234千円".into(),
+                        },
+                        CellValue::FormattedNumber {
+                            value: f64::NAN,
+                            text: "NaN%".into(),
+                        },
+                    ],
                 ],
             )
             .with_merges(vec![MergedRange {
@@ -508,13 +531,50 @@ mod tests {
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
         let context = items.threads[0].1.as_ref().unwrap();
         assert_eq!(context.value, "2026年8月31日(月)");
-        assert_eq!(context.raw.as_deref(), Some("2026-08-31 00:00:00"));
+        assert_eq!(
+            context.raw,
+            Some(RawValue::DateTime("2026-08-31 00:00:00".into()))
+        );
 
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!C2");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
         let context = items.threads[0].1.as_ref().unwrap();
-        assert_eq!(context.raw, None, "non-date cells carry no raw");
+        assert_eq!(context.raw, None, "plain cells carry no raw");
+    }
+
+    #[test]
+    fn a_formatted_number_anchor_carries_its_stored_value() {
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!B4");
+        let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert_eq!(context.value, "1,234千円");
+        assert_eq!(context.raw, Some(RawValue::Number(1_234_000.0)));
+        assert_eq!(
+            context.row,
+            vec![
+                ("A4".into(), "2026年8月31日(月)".into()),
+                ("C4".into(), "NaN%".into()),
+            ],
+            "siblings keep their displayed text"
+        );
+
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!D2");
+        let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert_eq!(context.value, "3");
+        assert_eq!(
+            context.raw, None,
+            "a plain number already is its raw rendering"
+        );
+
+        let mut store = MemoryStore::default();
+        thread_at(&mut store, "IT-01!C4");
+        let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
+        let context = items.threads[0].1.as_ref().unwrap();
+        assert_eq!(context.raw, None, "a non-finite value has no JSON form");
     }
 
     #[test]

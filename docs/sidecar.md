@@ -111,15 +111,20 @@ nothing changes for it until a new kind actually ships.
   **derived, output-only** addition: each thread carries a `cell` object with
   the anchored cell's displayed text and its row's other non-empty cells
   (`"cell": {"value": "...", "row": {"A2": "...", "D2": "..."}}`; `row` keys
-  come in column order and the object may be empty). When the anchored cell
-  holds a date or time, `cell` also carries `"raw"` — the machine-readable
-  value behind the formatted display: `"2026-08-31 00:00:00"` for
-  date-bearing cells, `"13:05:00"` for time-only cells (never a fictional
-  epoch date), and elapsed `"36:00:00"` for `[h]`-style durations. The rare
-  cell an xlsx stores as ISO 8601 text (`t="d"`) passes that string through
-  verbatim (`"2026-08-31T13:05:00"`-shaped). `raw` is
-  absent on every other cell kind, so its presence also identifies date
-  cells. It is computed from the
+  come in column order and the object may be empty). When a number format
+  produced the anchored cell's display, `cell` also carries `"raw"` — the
+  machine-readable value behind it. For a date or time cell it is a string:
+  `"2026-08-31 00:00:00"` for date-bearing cells, `"13:05:00"` for time-only
+  cells (never a fictional epoch date), and elapsed `"36:00:00"` for
+  `[h]`-style durations; the rare cell an xlsx stores as ISO 8601 text
+  (`t="d"`) passes that string through verbatim
+  (`"2026-08-31T13:05:00"`-shaped). For a formatted number cell it is a JSON
+  number, the value the workbook stores: `{"value": "1,234千円", "raw":
+  1234000}`, `{"value": "15%", "raw": 0.15}`; an integral value within the
+  64-bit integer range has no fractional part. `raw` is absent on every
+  other cell kind (plain numbers and text already show their raw rendering
+  in `value`) and on a formatted number that is not finite, so its JSON type
+  tells dates from numbers and it is never `null`. It is computed from the
   workbook at list time and is **never stored in the sidecar**; writers must
   ignore a `cell` key on input. When the workbook cannot be read (corrupt
   file) or the sheet was renamed, `cell` is omitted for the affected threads
