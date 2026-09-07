@@ -376,13 +376,21 @@ fn apply_styles(
                 // calamine does not know the ja builtin ids (27-36): those
                 // date cells arrive as plain numbers
                 CellValue::Number(value) if format.is_date() => {
-                    if let Some(parts) = serial_parts(*value, is_1904) {
-                        let formatted = format.format_datetime(&parts);
+                    if let Some(parts) = serial_parts(*value, is_1904)
+                        && let Some(formatted) = format.format_datetime(&parts)
+                    {
                         named = formatted.color;
                         *cell = CellValue::DateTime {
                             text: formatted.text,
                             raw: parts.fallback_text(),
                         };
+                    }
+                }
+                // a text-only format turns the number into text, left-aligned as in Excel
+                CellValue::Number(value) if format.is_text_only() => {
+                    if let Some(formatted) = format.format_number_as_text(*value) {
+                        named = formatted.color;
+                        *cell = CellValue::Text(formatted.text);
                     }
                 }
                 CellValue::Number(value) => {
@@ -393,9 +401,16 @@ fn apply_styles(
                         text: formatted.text,
                     };
                 }
+                CellValue::Text(text) => {
+                    if let Some(formatted) = format.format_text(text) {
+                        named = formatted.color;
+                        *text = formatted.text;
+                    }
+                }
                 CellValue::DateTime { text, .. } => {
-                    if let Some(parts) = date_parts.get(&(row, col)) {
-                        let formatted = format.format_datetime(parts);
+                    if let Some(parts) = date_parts.get(&(row, col))
+                        && let Some(formatted) = format.format_datetime(parts)
+                    {
                         named = formatted.color;
                         *text = formatted.text;
                     }
@@ -578,6 +593,87 @@ mod tests {
             col(2, 2, None, true),
         ];
         assert_eq!(expand_widths(&cols, 3), vec![Some(10.0), None, Some(18.5)]);
+    }
+
+    #[test]
+    fn text_formats_compose_text_cells_and_turn_numbers_into_text() {
+        let mut rows = vec![vec![
+            CellValue::Number(42.0),
+            CellValue::Text("田中".into()),
+            CellValue::Text("x".into()),
+        ]];
+        let styles = vec![
+            xlsx_meta::CellStyle {
+                format: Some("@".into()),
+                ..Default::default()
+            },
+            xlsx_meta::CellStyle {
+                format: Some("@\"様\"".into()),
+                ..Default::default()
+            },
+            xlsx_meta::CellStyle {
+                format: Some("#,##0".into()),
+                ..Default::default()
+            },
+        ];
+        let formats: Vec<Option<NumberFormat>> = styles
+            .iter()
+            .map(|s| s.format.as_deref().map(NumberFormat::parse))
+            .collect();
+        let cells = [((0u32, 0u32), 0usize), ((0, 1), 1), ((0, 2), 2)].into();
+        apply_styles(&mut rows, &cells, &styles, &formats, &HashMap::new(), false);
+        assert_eq!(rows[0][0], CellValue::Text("42".into()), "text-only format");
+        assert_eq!(rows[0][1], CellValue::Text("田中様".into()));
+        assert_eq!(
+            rows[0][2],
+            CellValue::Text("x".into()),
+            "no text section: unchanged"
+        );
+
+        use crate::domain::sheet::NamedColor;
+        let fallback = "2026-08-31 00:00:00".to_string();
+        let mut rows = vec![vec![
+            CellValue::Number(42.0),
+            CellValue::DateTime {
+                text: fallback.clone(),
+                raw: fallback.clone(),
+            },
+        ]];
+        let styles = vec![
+            xlsx_meta::CellStyle {
+                format: Some("[Red]@\"様\"".into()),
+                ..Default::default()
+            },
+            xlsx_meta::CellStyle {
+                format: Some("mm:ss.0;@".into()),
+                ..Default::default()
+            },
+        ];
+        let formats: Vec<Option<NumberFormat>> = styles
+            .iter()
+            .map(|s| s.format.as_deref().map(NumberFormat::parse))
+            .collect();
+        let cells = [((0u32, 0u32), 0usize), ((0, 1), 1)].into();
+        let serial = ExcelDateTime::new(46265.0, ExcelDateTimeType::DateTime, false);
+        let date_parts = HashMap::from([((0usize, 1usize), to_parts(&serial))]);
+        let styling = apply_styles(&mut rows, &cells, &styles, &formats, &date_parts, false);
+        assert_eq!(
+            rows[0][0],
+            CellValue::Text("42様".into()),
+            "literals apply to numbers too"
+        );
+        assert_eq!(
+            styling.text_colors.get(&(0, 0)),
+            Some(&TextColor::Named(NamedColor::Red))
+        );
+        assert_eq!(
+            rows[0][1],
+            CellValue::DateTime {
+                text: fallback.clone(),
+                raw: fallback,
+            },
+            "a date format outside the subset keeps the fallback text"
+        );
     }
 
     #[test]

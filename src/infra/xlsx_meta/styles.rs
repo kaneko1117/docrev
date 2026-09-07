@@ -419,7 +419,7 @@ fn parse_indexed_palette(xml: &str) -> Result<Vec<(u8, u8, u8)>, MetaError> {
     })
 }
 
-/// Built-in ids (ECMA-376 §18.8.30) with ja-JP renderings for the locale-dependent ones; scientific (11, 48) and text (49) stay `None`.
+/// Built-in ids (ECMA-376 §18.8.30) with ja-JP renderings for the locale-dependent ones.
 pub(super) fn builtin_format(id: u32) -> Option<&'static str> {
     Some(match id {
         1 => "0",
@@ -428,6 +428,9 @@ pub(super) fn builtin_format(id: u32) -> Option<&'static str> {
         4 => "#,##0.00",
         9 => "0%",
         10 => "0.00%",
+        11 => "0.00E+00",
+        12 => "# ?/?",
+        13 => "# ??/??",
         14 => "yyyy/m/d",
         15 => "d-mmm-yy",
         16 => "d-mmm",
@@ -457,6 +460,8 @@ pub(super) fn builtin_format(id: u32) -> Option<&'static str> {
         44 => r#"_-"$"* #,##0.00_-;-"$"* #,##0.00_-;_-"$"* "-"??_-;_-@_-"#,
         45 => "mm:ss",
         46 => "[h]:mm:ss",
+        48 => "##0.0E+0",
+        49 => "@",
         // 47 (`mm:ss.0`): fractional seconds degrade to the fallback anyway
         _ => return None,
     })

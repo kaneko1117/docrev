@@ -115,23 +115,184 @@ fn double_percent_compounds() {
 #[test]
 fn unsupported_codes_fall_back_to_general() {
     for code in [
-        "0.00E+00",      // scientific
-        "# ?/?",         // fractions
-        "[>=1000]0;0",   // conditions
         "mm:ss.00",      // fractional seconds mix digits into a date
         "0.0\"日\"yyyy", // digits and date parts in one section
         "[DBNum1]yyyy",  // kanji numerals
-        "@",             // text section
-        "0;0;0;@",       // has an unsupported 4th... first three are fine
+        "0.0 ?/?",       // decimals next to a fraction
+        "E+00",          // an exponent with no mantissa
+        "@0",            // text composed with digits
     ] {
         let format = NumberFormat::parse(code);
-        if code == "0;0;0;@" {
-            assert!(!format.is_general(), "{code}");
-            continue;
-        }
         assert!(format.is_general(), "{code} should fall back");
         assert_eq!(format.format(1.5).text, "1.5");
     }
+}
+
+#[test]
+fn an_unsupported_section_degrades_alone() {
+    let code = "[DBNum1]0;\"neg\"0";
+    assert_eq!(
+        fmt(code, 5.0),
+        "5",
+        "the raw value stands in for the first section"
+    );
+    assert_eq!(fmt(code, -5.0), "neg5", "the second section still works");
+    assert!(!NumberFormat::parse(code).is_general());
+}
+
+#[test]
+fn conditional_sections_pick_by_comparison_and_keep_the_sign() {
+    let code = "[>=1000]#,##0,\"千\";0";
+    assert_eq!(fmt(code, 1500.0), "2千");
+    assert_eq!(fmt(code, 5.0), "5");
+    assert_eq!(fmt(code, -5.0), "-5", "no sign dropping with conditions");
+    assert_eq!(
+        fmt("[>=1000]#,##0\"千\";0", 1500.0),
+        "1,500千",
+        "no scaling comma"
+    );
+    let two = "[<0]\"neg \"0;[>=100]\"big \"0;\"mid \"0";
+    assert_eq!(
+        fmt(two, -5.0),
+        "-neg 5",
+        "the sign leads, as with currency literals"
+    );
+    assert_eq!(fmt(two, 250.0), "big 250");
+    assert_eq!(fmt(two, 50.0), "mid 50");
+    assert_eq!(fmt("[<>0]0;\"zero\"", 0.0), "zero");
+    assert_eq!(fmt("[=5]\"five\";0", 5.0), "five");
+    assert_eq!(
+        fmt("[<=1]0", 7.0),
+        "7",
+        "no otherwise section: the raw value"
+    );
+    let colored = NumberFormat::parse("[Red][<0]0;0");
+    assert_eq!(colored.format(-3.0).color, Some(NamedColor::Red));
+    assert_eq!(colored.format(3.0).color, None);
+    assert_eq!(
+        fmt("[DBNum1][>=1000]0;0", -5.0),
+        "-5",
+        "a degraded conditional section still keeps the code conditional"
+    );
+    assert_eq!(
+        fmt("[DBNum1][>=1000]0;0", 1500.0),
+        "1500",
+        "raw value for the degraded one"
+    );
+}
+
+#[test]
+fn scientific_notation() {
+    assert_eq!(fmt("0.00E+00", 12345.0), "1.23E+04");
+    assert_eq!(fmt("0.00E+00", -12345.0), "-1.23E+04");
+    assert_eq!(fmt("0.00E+00", 0.00012), "1.20E-04");
+    assert_eq!(fmt("0.00E+00", 0.0), "0.00E+00");
+    assert_eq!(
+        fmt("0.00E-00", 12345.0),
+        "1.23E04",
+        "E- writes only a negative sign"
+    );
+    assert_eq!(fmt("0.00E-00", 0.5), "5.00E-01");
+    assert_eq!(
+        fmt("##0.0E+0", 12345.0),
+        "12.3E+3",
+        "engineering steps of three"
+    );
+    assert_eq!(fmt("##0.0E+0", 0.0123), "12.3E-3");
+    assert_eq!(
+        fmt("0.0E+0", 9.99),
+        "1.0E+1",
+        "rounding carries into the exponent"
+    );
+    assert_eq!(fmt("0E+0", 7.0), "7E+0");
+    assert_eq!(
+        fmt("0.00e+00", 12345.0),
+        "1.23e+04",
+        "the letter keeps its case"
+    );
+    assert_eq!(
+        fmt("#,##0.0E+0", 1234.5),
+        "1,234.5E+0",
+        "grouping commas are not digits"
+    );
+}
+
+#[test]
+fn fractions() {
+    assert_eq!(fmt("# ?/?", 0.5), "1/2");
+    assert_eq!(fmt("# ?/?", 1.5), "1 1/2");
+    assert_eq!(fmt("# ?/?", 3.0), "3", "a whole number drops the fraction");
+    assert_eq!(fmt("# ?/?", 0.0), "0");
+    assert_eq!(fmt("# ?/?", 0.333), "1/3");
+    assert_eq!(fmt("# ??/??", 0.3125), "5/16");
+    assert_eq!(
+        fmt("# ?/?", 0.3125),
+        "1/3",
+        "one digit: the closest of 1..9"
+    );
+    assert_eq!(
+        fmt("# ?/8", 0.3),
+        "2/8",
+        "a fixed denominator is not reduced"
+    );
+    assert_eq!(fmt("# ?/8", 2.0), "2");
+    assert_eq!(fmt("?/?", 1.5), "3/2", "no whole placeholder: improper");
+    assert_eq!(fmt("?/?", 2.0), "2/1");
+    assert_eq!(fmt("?/?", 0.0), "0/1");
+    assert_eq!(fmt("# ?/?", -1.25), "-1 1/4");
+    assert_eq!(fmt("0 0/0", 0.999), "1", "rounding up folds into the whole");
+    assert_eq!(
+        fmt("0 ?/?", 0.5),
+        "0 1/2",
+        "a forced whole digit shows the zero"
+    );
+    assert_eq!(
+        fmt("#,##0 ?/?", 1234.5),
+        "1,234 1/2",
+        "the whole keeps its grouping"
+    );
+    assert_eq!(fmt("00 ?/?", 1.5), "01 1/2");
+    assert_eq!(
+        fmt("?/8", 2.0),
+        "16/8",
+        "a fixed denominator stays improper"
+    );
+    assert_eq!(fmt("# ?/?", 1e20), "100000000000000000000");
+    assert_eq!(fmt("?/?", 1e20), "100000000000000000000/1");
+    assert_eq!(
+        fmt("#,##0.00", 0.5),
+        "0.50",
+        "a decimal point is not a fraction"
+    );
+}
+
+#[test]
+fn text_sections_compose_text_and_turn_numbers_into_text() {
+    let plain = NumberFormat::parse("@");
+    assert!(!plain.is_general());
+    assert!(plain.is_text_only());
+    assert_eq!(plain.format_text("abc").map(|f| f.text), Some("abc".into()));
+    assert_eq!(plain.format(42.0).text, "42");
+    let styled = NumberFormat::parse("[Blue]@\"様\"");
+    let formatted = styled.format_text("田中").unwrap();
+    assert_eq!(formatted.text, "田中様");
+    assert_eq!(formatted.color, Some(NamedColor::Blue));
+    let mixed = NumberFormat::parse("#,##0;@");
+    assert!(!mixed.is_text_only());
+    assert_eq!(mixed.format_text("x").map(|f| f.text), Some("x".into()));
+    assert_eq!(
+        mixed.format(-1234.0).text,
+        "-1,234",
+        "one numeric section keeps the sign"
+    );
+    assert_eq!(NumberFormat::parse("#,##0").format_text("x"), None);
+    assert_eq!(
+        NumberFormat::parse("0;0;0;@")
+            .format_text("x")
+            .map(|f| f.text),
+        Some("x".into()),
+        "the fourth section is the text one"
+    );
 }
 
 #[test]
@@ -213,7 +374,10 @@ fn duration(serial: f64) -> DateTimeParts {
 }
 
 fn fmt_dt(code: &str, parts: DateTimeParts) -> String {
-    NumberFormat::parse(code).format_datetime(&parts).text
+    NumberFormat::parse(code)
+        .format_datetime(&parts)
+        .map(|f| f.text)
+        .unwrap_or_else(|| "<unsupported>".into())
 }
 
 #[test]
@@ -315,18 +479,23 @@ fn a_date_format_on_a_bare_number_shows_the_raw_value() {
 fn a_numeric_format_on_a_date_cell_paints_the_serial() {
     let numeric = NumberFormat::parse("0.00");
     assert!(!numeric.is_date());
-    assert_eq!(numeric.format_datetime(&duration(1.5)).text, "1.50");
+    assert_eq!(fmt_dt("0.00", duration(1.5)), "1.50");
     let general = NumberFormat::parse("General");
     assert!(!general.is_date());
-    assert_eq!(general.format_datetime(&duration(1.5)).text, "1.5");
+    assert_eq!(fmt_dt("General", duration(1.5)), "1.5");
+    assert_eq!(
+        fmt_dt("mm:ss.0;@", duration(1.5)),
+        "<unsupported>",
+        "a degraded first section hands the date back to the caller"
+    );
 }
 
 #[test]
 fn date_formats_carry_colors_too() {
     let colored = NumberFormat::parse("[赤]yyyy/m/d");
     assert_eq!(
-        colored.format_datetime(&date(2026, 8, 31)).color,
-        Some(NamedColor::Red)
+        colored.format_datetime(&date(2026, 8, 31)).map(|f| f.color),
+        Some(Some(NamedColor::Red))
     );
 }
 
@@ -357,8 +526,8 @@ fn negative_durations_keep_their_minutes_and_seconds() {
 }
 
 #[test]
-fn a_trailing_text_section_is_ignored() {
+fn a_trailing_text_section_does_not_touch_numbers_or_dates() {
     assert_eq!(fmt_dt("yyyy/m/d;@", date(2026, 8, 31)), "2026/8/31");
     assert_eq!(fmt("#,##0;@", 1234.0), "1,234");
-    assert!(NumberFormat::parse("@").is_general(), "text-only stays out");
+    assert!(NumberFormat::parse("yyyy/m/d;@").is_date());
 }

@@ -1,6 +1,6 @@
 use crate::domain::sheet::NamedColor;
 
-use super::{DateToken, Section, Token};
+use super::{CondOp, Condition, DateToken, Exponent, Fraction, Section, Token};
 
 enum Tag {
     Color(NamedColor),
@@ -8,13 +8,50 @@ enum Tag {
     StripOnly,
     /// `[$¥-411]`: the symbol becomes a literal.
     Currency(String),
+    Condition(Condition),
     Unsupported,
+}
+
+/// `>=1000`, `<0`, `=5`, `<>0`.
+fn parse_condition(tag: &str) -> Option<Condition> {
+    let (op, rest) = if let Some(rest) = tag.strip_prefix("<>") {
+        (CondOp::Ne, rest)
+    } else if let Some(rest) = tag.strip_prefix("<=") {
+        (CondOp::Le, rest)
+    } else if let Some(rest) = tag.strip_prefix(">=") {
+        (CondOp::Ge, rest)
+    } else if let Some(rest) = tag.strip_prefix('<') {
+        (CondOp::Lt, rest)
+    } else if let Some(rest) = tag.strip_prefix('>') {
+        (CondOp::Gt, rest)
+    } else {
+        (CondOp::Eq, tag.strip_prefix('=')?)
+    };
+    let value: f64 = rest.trim().parse().ok()?;
+    value.is_finite().then_some(Condition { op, value })
+}
+
+/// The condition of a section, whether or not the rest of it parses.
+pub(super) fn leading_condition(code: &str) -> Option<Condition> {
+    let mut rest = code;
+    while let Some(start) = rest.find('[') {
+        let after = &rest[start + 1..];
+        let end = after.find(']')?;
+        if let Some(condition) = parse_condition(after[..end].trim()) {
+            return Some(condition);
+        }
+        rest = &after[end + 1..];
+    }
+    None
 }
 
 fn classify_tag(tag: &str) -> Tag {
     if let Some(rest) = tag.strip_prefix('$') {
         let symbol = rest.split('-').next().unwrap_or("");
         return Tag::Currency(symbol.to_string());
+    }
+    if let Some(condition) = parse_condition(tag.trim()) {
+        return Tag::Condition(condition);
     }
     let lowered = tag.to_ascii_lowercase();
     // [Color 5] etc.
@@ -46,9 +83,70 @@ fn end_cluster(in_number: &mut bool, number_done: &mut bool, scale: &mut u32, pe
     }
 }
 
+/// Stands in for the `?/?` part once `extract_fraction` has lifted it out of the code.
+const FRACTION_MARK: char = '\u{1}';
+
+fn is_placeholder(c: char) -> bool {
+    matches!(c, '0' | '#' | '?')
+}
+
+/// `# ?/?` → the fraction spec and the code with the `?/?` part replaced by `FRACTION_MARK`.
+/// `None` when the code has no placeholder run on both sides of a `/` outside quotes.
+fn extract_fraction(code: &str) -> Option<(Fraction, String)> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut in_quote = false;
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '"' => in_quote = !in_quote,
+            '/' if !in_quote => {
+                let start = chars[..i]
+                    .iter()
+                    .rposition(|c| !is_placeholder(*c))
+                    .map_or(0, |p| p + 1);
+                let after = &chars[i + 1..];
+                let end = after
+                    .iter()
+                    .position(|c| !is_placeholder(*c) && !c.is_ascii_digit())
+                    .unwrap_or(after.len());
+                let numerator = &chars[start..i];
+                let denominator = &after[..end];
+                if numerator.is_empty() || denominator.is_empty() {
+                    return None;
+                }
+                let fixed: String = denominator.iter().collect();
+                // `0` is a placeholder first: `0/0` is a one-digit denominator, not zero
+                let fraction = if denominator.iter().all(|c| is_placeholder(*c)) {
+                    Fraction {
+                        digits: denominator.len().min(3),
+                        denominator: None,
+                    }
+                } else if denominator.iter().all(char::is_ascii_digit) {
+                    let denominator = fixed.parse::<u64>().ok().filter(|d| *d > 0)?;
+                    Fraction {
+                        digits: fixed.len(),
+                        denominator: Some(denominator),
+                    }
+                } else {
+                    return None;
+                };
+                let mut rest: String = chars[..start].iter().collect();
+                rest.push(FRACTION_MARK);
+                rest.extend(after[end..].iter());
+                return Some((fraction, rest));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `None`: outside the subset.
 pub(super) fn parse_section(code: &str) -> Option<Section> {
     let mut section = Section::default();
+    let (fraction, code) = match extract_fraction(code) {
+        Some((fraction, code)) => (Some(fraction), code),
+        None => (None, code.to_string()),
+    };
     let mut tokens = Vec::new();
     let mut literal = String::new();
     let mut chars = code.chars().peekable();
@@ -87,6 +185,7 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
                 }
                 match classify_tag(&tag) {
                     Tag::Color(color) => section.color = Some(color),
+                    Tag::Condition(condition) => section.condition = Some(condition),
                     Tag::StripOnly => {}
                     Tag::Currency(symbol) => {
                         end_cluster(
@@ -166,9 +265,24 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
                     if c == '0' {
                         section.forced_frac = section.max_frac;
                     }
-                } else if c == '0' {
-                    section.min_int += 1;
+                } else {
+                    section.int_places += 1;
+                    if c == '0' {
+                        section.min_int += 1;
+                    }
                 }
+            }
+            FRACTION_MARK => {
+                end_cluster(
+                    &mut in_number,
+                    &mut number_done,
+                    &mut section.scale,
+                    &mut pending_commas,
+                );
+                flush(&mut literal, &mut tokens);
+                tokens.push(Token::Fraction);
+                section.fraction = fraction;
+                section.has_number = true;
             }
             '.' if !in_frac
                 && !number_done
@@ -193,9 +307,43 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
                 );
                 literal.push('%');
             }
-            'E' | 'e' if matches!(chars.peek(), Some('+') | Some('-')) => return None,
-            '/' if section.has_number => return None, // fractions
-            '@' => return None,                       // text composition
+            'E' | 'e' if matches!(chars.peek(), Some('+') | Some('-')) => {
+                // the mantissa must come first; `E+` with nothing before it is a literal E
+                if !in_number || in_frac && section.max_frac == 0 {
+                    return None;
+                }
+                let plus = chars.next() == Some('+');
+                let mut digits = 0;
+                while chars.peek() == Some(&'0') {
+                    chars.next();
+                    digits += 1;
+                }
+                if digits == 0 {
+                    return None;
+                }
+                section.exponent = Some(Exponent {
+                    letter: c,
+                    plus,
+                    digits,
+                });
+                end_cluster(
+                    &mut in_number,
+                    &mut number_done,
+                    &mut section.scale,
+                    &mut pending_commas,
+                );
+            }
+            '@' => {
+                end_cluster(
+                    &mut in_number,
+                    &mut number_done,
+                    &mut section.scale,
+                    &mut pending_commas,
+                );
+                flush(&mut literal, &mut tokens);
+                tokens.push(Token::Text);
+                section.has_text = true;
+            }
             'y' | 'Y' | 'm' | 'M' | 'd' | 'D' | 'h' | 'H' | 's' | 'S' | 'g' | 'G' | 'e' | 'E' => {
                 // `General` must lex whole before its letters read as era codes
                 if c.eq_ignore_ascii_case(&'g') {
@@ -331,6 +479,14 @@ pub(super) fn parse_section(code: &str) -> Option<Section> {
     section.scale += pending_commas;
     // digits and date parts in one section are outside the subset
     if section.has_date && section.has_number {
+        return None;
+    }
+    // text composes with literals only
+    if section.has_text && (section.has_number || section.has_date || section.has_general) {
+        return None;
+    }
+    // a fraction takes the whole number; decimals or an exponent next to it make no sense
+    if section.fraction.is_some() && (section.max_frac > 0 || section.exponent.is_some()) {
         return None;
     }
     // `General` composes with nothing

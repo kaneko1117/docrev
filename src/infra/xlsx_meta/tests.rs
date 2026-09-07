@@ -527,8 +527,9 @@ fn date_builtins_resolve_to_their_japanese_renderings() {
     assert_eq!(builtin_format(28), Some("[$-411]ggge\"年\"m\"月\"d\"日\""));
     assert_eq!(builtin_format(46), Some("[h]:mm:ss"));
     assert_eq!(builtin_format(47), None, "fractional seconds stay out");
-    assert_eq!(builtin_format(48), None, "scientific stays unresolved");
-    assert_eq!(builtin_format(49), None, "text format must stay unresolved");
+    assert_eq!(builtin_format(11), Some("0.00E+00"));
+    assert_eq!(builtin_format(48), Some("##0.0E+0"));
+    assert_eq!(builtin_format(49), Some("@"));
 }
 
 fn percent_style() -> Vec<CellStyle> {
