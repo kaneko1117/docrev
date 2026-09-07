@@ -18,6 +18,7 @@ fn reads_format_codes_from_the_workbook() {
     let sheet = styles.sheets.get("書式").expect("sheet with styles");
     let code_of = |pos: (u32, u32)| {
         sheet
+            .styled
             .get(&pos)
             .and_then(|&i| styles.styles[i].format.as_deref())
     };

@@ -4,13 +4,14 @@ use quick_xml::events::Event;
 use super::MetaError;
 use super::archive::attr_value;
 
-/// 1-based inclusive column range; width in characters.
+/// 1-based inclusive column range; width in characters; `style` indexes `cellXfs`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnRange {
     pub min: u32,
     pub max: u32,
     pub width: Option<f64>,
     pub hidden: bool,
+    pub style: Option<usize>,
 }
 
 /// (rows, cols) of the first frozen `<pane>`; non-frozen splits are in twips, not cells, and are ignored.
@@ -54,6 +55,7 @@ pub(super) fn parse_cols(xml: &str) -> Result<Vec<ColumnRange>, MetaError> {
                 let mut max = None;
                 let mut width = None;
                 let mut hidden = false;
+                let mut style = None;
                 for attr in e.attributes().flatten() {
                     let value = attr_value(&attr, reader.decoder());
                     match attr.key.as_ref() {
@@ -61,17 +63,19 @@ pub(super) fn parse_cols(xml: &str) -> Result<Vec<ColumnRange>, MetaError> {
                         b"max" => max = value.parse().ok(),
                         b"width" => width = value.parse().ok(),
                         b"hidden" => hidden = is_true(&value),
+                        b"style" => style = value.parse().ok().filter(|&s| s != 0),
                         _ => {}
                     }
                 }
                 if let (Some(min), Some(max)) = (min, max)
-                    && (width.is_some() || hidden)
+                    && (width.is_some() || hidden || style.is_some())
                 {
                     out.push(ColumnRange {
                         min,
                         max,
                         width,
                         hidden,
+                        style,
                     });
                 }
             }
@@ -84,12 +88,14 @@ pub(super) fn parse_cols(xml: &str) -> Result<Vec<ColumnRange>, MetaError> {
     Ok(out)
 }
 
-/// 0-based; `height` is set only for `customHeight` rows, in points.
+/// 0-based; `height` is set only for `customHeight` rows, in points; `style` indexes `cellXfs`
+/// and is set only for `customFormat` rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowAttrs {
     pub index: u32,
     pub hidden: bool,
     pub height: Option<f64>,
+    pub style: Option<usize>,
 }
 
 /// Character width and points, each only when the file states a positive finite value.
@@ -149,6 +155,8 @@ pub(super) fn parse_rows(xml: &str) -> Result<Vec<RowAttrs>, MetaError> {
                 let mut hidden = false;
                 let mut height = None;
                 let mut custom = false;
+                let mut style = None;
+                let mut custom_format = false;
                 for attr in e.attributes().flatten() {
                     let value = attr_value(&attr, reader.decoder());
                     match attr.key.as_ref() {
@@ -156,6 +164,8 @@ pub(super) fn parse_rows(xml: &str) -> Result<Vec<RowAttrs>, MetaError> {
                         b"hidden" => hidden = is_true(&value),
                         b"ht" => height = positive(&value),
                         b"customHeight" => custom = is_true(&value),
+                        b"s" => style = value.parse().ok().filter(|&s| s != 0),
+                        b"customFormat" => custom_format = is_true(&value),
                         _ => {}
                     }
                 }
@@ -166,11 +176,13 @@ pub(super) fn parse_rows(xml: &str) -> Result<Vec<RowAttrs>, MetaError> {
                 };
                 row = Some(current);
                 let height = height.filter(|_| custom);
-                if hidden || height.is_some() {
+                let style = style.filter(|_| custom_format);
+                if hidden || height.is_some() || style.is_some() {
                     out.push(RowAttrs {
                         index: current,
                         hidden,
                         height,
+                        style,
                     });
                 }
             }

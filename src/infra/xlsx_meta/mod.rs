@@ -14,7 +14,7 @@ mod theme;
 mod worksheet;
 
 pub use comments::{RawWorkbookComment, workbook_comments};
-pub use styles::{CellAlignment, CellStyle, WorkbookStyles};
+pub use styles::{CellAlignment, CellStyle, SheetCells, WorkbookStyles};
 pub use worksheet::{ColumnRange, RowAttrs, SheetFormat};
 
 use archive::{entry_path, open_archive, parse_rel_targets, parse_sheet_ids, read_entry};

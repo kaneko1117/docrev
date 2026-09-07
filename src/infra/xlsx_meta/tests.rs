@@ -4,6 +4,7 @@ use super::worksheet::{
     RowAttrs, SheetFormat, parse_cols, parse_pane, parse_rows, parse_sheet_format,
 };
 use super::*;
+use std::collections::HashSet;
 
 fn formats_of(styles: &[CellStyle]) -> Vec<Option<&str>> {
     styles.iter().map(|s| s.format.as_deref()).collect()
@@ -91,6 +92,77 @@ fn hidden_rows_are_zero_based_and_follow_sequential_rows() {
 }
 
 #[test]
+fn row_and_column_default_styles_are_read() {
+    let xml = r#"<worksheet><cols>
+        <col min="2" max="3" style="4"/>
+        <col min="5" max="5" style="0"/>
+    </cols><sheetData>
+        <row r="1" s="2" customFormat="1"/>
+        <row r="2" s="2"/>
+        <row r="3" s="0" customFormat="1"/>
+    </sheetData></worksheet>"#;
+    let cols = parse_cols(xml).unwrap();
+    assert_eq!(cols.len(), 1, "style 0 says nothing");
+    assert_eq!((cols[0].min, cols[0].max, cols[0].style), (2, 3, Some(4)));
+    let rows = parse_rows(xml).unwrap();
+    assert_eq!(
+        rows,
+        vec![RowAttrs {
+            index: 0,
+            hidden: false,
+            height: None,
+            style: Some(2),
+        }],
+        "a row style counts only with customFormat"
+    );
+}
+
+#[test]
+fn indexed_and_auto_colors_resolve_through_the_legacy_palette() {
+    let styles = r#"<styleSheet>
+        <fonts count="3">
+            <font><color indexed="10"/></font>
+            <font><color indexed="64"/></font>
+            <font><color auto="1"/></font>
+        </fonts>
+        <fills count="3">
+            <fill><patternFill patternType="solid"><fgColor indexed="13"/></patternFill></fill>
+            <fill><patternFill patternType="solid"><fgColor rgb="FF00FF00" indexed="13"/></patternFill></fill>
+            <fill><patternFill patternType="solid"><fgColor indexed="99"/></patternFill></fill>
+        </fills>
+        <cellXfs count="3">
+            <xf numFmtId="0" fontId="0" fillId="0"/>
+            <xf numFmtId="0" fontId="1" fillId="1"/>
+            <xf numFmtId="0" fontId="2" fillId="2"/>
+        </cellXfs>
+    </styleSheet>"#;
+    let styles = parse_styles(styles, &default_palette()).unwrap();
+    assert_eq!(
+        styles[0].fill,
+        Some((0xFF, 0xFF, 0x00)),
+        "indexed 13 is yellow"
+    );
+    assert_eq!(styles[0].font, None, "font 0 is never inherited");
+    assert_eq!(styles[1].fill, Some((0, 0xFF, 0)), "rgb beats indexed");
+    assert_eq!(styles[1].font, None, "64 is the system foreground");
+    assert_eq!(styles[2].fill, None, "past the palette");
+    assert_eq!(styles[2].font, None, "auto is no color");
+}
+
+#[test]
+fn a_custom_indexed_palette_overrides_the_default() {
+    let styles = r#"<styleSheet>
+        <fills count="1">
+            <fill><patternFill patternType="solid"><fgColor indexed="1"/></patternFill></fill>
+        </fills>
+        <cellXfs count="1"><xf numFmtId="0" fillId="0"/></cellXfs>
+        <colors><indexedColors><rgbColor rgb="00112233"/><rgbColor rgb="00ABCDEF"/></indexedColors></colors>
+    </styleSheet>"#;
+    let styles = parse_styles(styles, &default_palette()).unwrap();
+    assert_eq!(styles[0].fill, Some((0xAB, 0xCD, 0xEF)));
+}
+
+#[test]
 fn row_heights_count_only_custom_positive_ones() {
     let xml = r#"<worksheet><sheetData>
         <row r="1" ht="60" customHeight="1"><c r="A1"/></row>
@@ -104,6 +176,7 @@ fn row_heights_count_only_custom_positive_ones() {
         index,
         hidden,
         height,
+        style: None,
     };
     assert_eq!(
         parse_rows(xml).unwrap(),
@@ -160,6 +233,7 @@ fn a_row_counter_at_u32_max_stops_instead_of_wrapping() {
     assert!(
         parse_cell_styles(styled, &percent_style())
             .unwrap()
+            .styled
             .is_empty()
     );
 }
@@ -437,11 +511,34 @@ fn cell_styles_keep_only_cells_with_a_visible_style() {
             <c r="D1" s="1"><v>0.25</v></c>
         </row>
     </sheetData></worksheet>"#;
-    let cells = parse_cell_styles(sheet, &percent_style()).unwrap();
+    let cells = parse_cell_styles(sheet, &percent_style()).unwrap().styled;
     assert_eq!(cells.get(&(0, 0)), Some(&1));
     assert_eq!(cells.get(&(0, 3)), Some(&1));
     assert!(!cells.contains_key(&(0, 1)), "plain style is dropped");
     assert!(!cells.contains_key(&(0, 2)), "no style at all");
+}
+
+#[test]
+fn blank_cells_are_kept_apart_from_styled_ones() {
+    let sheet = r#"<worksheet><sheetData>
+        <row r="1">
+            <c r="A1" s="1"/>
+            <c r="B1" s="0"/>
+            <c r="C1"/>
+            <c r="D1" s="1"><v>1</v></c>
+            <c r="E1"><v>2</v></c>
+        </row>
+    </sheetData></worksheet>"#;
+    let cells = parse_cell_styles(sheet, &percent_style()).unwrap();
+    assert_eq!(
+        cells.blank,
+        HashSet::from([(0, 0), (0, 1), (0, 2)]),
+        "every childless <c/>, whatever its style"
+    );
+    assert_eq!(
+        cells.styled.keys().copied().collect::<HashSet<_>>(),
+        HashSet::from([(0, 0), (0, 3)])
+    );
 }
 
 #[test]
@@ -451,7 +548,7 @@ fn cells_without_references_take_sequential_positions() {
         <row r="5"><c s="1"><v>4</v></c></row>
         <row><c r="B6" s="1"/><c s="1"/></row>
     </sheetData></worksheet>"#;
-    let cells = parse_cell_styles(sheet, &percent_style()).unwrap();
+    let cells = parse_cell_styles(sheet, &percent_style()).unwrap().styled;
     let positions: Vec<(u32, u32)> = {
         let mut p: Vec<_> = cells.keys().copied().collect();
         p.sort_unstable();
@@ -466,6 +563,6 @@ fn out_of_range_style_indices_are_ignored() {
     let sheet = r#"<worksheet><sheetData>
         <row r="1"><c r="A1" s="7"><v>1</v></c></row>
     </sheetData></worksheet>"#;
-    let cells = parse_cell_styles(sheet, &percent_style()).unwrap();
+    let cells = parse_cell_styles(sheet, &percent_style()).unwrap().styled;
     assert!(cells.is_empty());
 }
