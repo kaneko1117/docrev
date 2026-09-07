@@ -333,6 +333,8 @@ impl RowBuilder<'_> {
         let height = self.height_of(row);
         // computed once per row: per sub-line would be quadratic in the row height
         let mut lines_of: HashMap<(usize, usize), Vec<String>> = HashMap::new();
+        // (text row, last row) per merge anchor: scanning the merge per sub-line is quadratic too
+        let mut rows_of: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
         let mut out = Vec::with_capacity(height);
         for sub in 0..height {
             let last_line = sub + 1 == height;
@@ -368,7 +370,10 @@ impl RowBuilder<'_> {
                         };
                         let segment_end = (merge.end_col + 1).min(end);
                         let (_, span_width) = plan.span(col..segment_end);
-                        let text_row = merge_text_row(sheet, merge);
+                        let (text_row, last_row) =
+                            *rows_of.entry(merge.anchor()).or_insert_with(|| {
+                                (merge_text_row(sheet, merge), merge_last_row(sheet, merge))
+                            });
                         // merges keep the left default whatever the value type
                         let placement = Placement::resolve(
                             sheet.display_alignment_at(row, col),
@@ -408,7 +413,7 @@ impl RowBuilder<'_> {
                             fill: sheet.display_fill_at(row, col),
                             font,
                             emphasis: sheet.display_emphasis_at(row, col),
-                            ruled: row == merge_last_row(sheet, merge) && last_line,
+                            ruled: row == last_row && last_line,
                         });
                         col = segment_end;
                         continue;
@@ -599,30 +604,39 @@ pub(crate) fn tab_strip(names: &[&str], active: usize, width: usize) -> TabStrip
     }
 }
 
-/// The row a merge's text is drawn on: its first visible row (the anchor row may be hidden),
-/// or the last or middle one when the anchor is aligned to the bottom or center.
+/// Rows of a merge the grid can build: the shown ones within the sheet's rows, since a merge may
+/// run past the last data row.
+fn merge_rows<'a>(
+    sheet: &'a Sheet,
+    merge: &crate::domain::sheet::MergedRange,
+) -> impl DoubleEndedIterator<Item = usize> + Clone + 'a {
+    let end = merge.end_row.min(sheet.row_count().saturating_sub(1));
+    (merge.start_row..=end).filter(move |&r| !sheet.row_hidden(r))
+}
+
+/// The row a merge's text is drawn on: its first shown row (the anchor row may be hidden), or the
+/// last or middle one when the anchor is aligned to the bottom or center.
 fn merge_text_row(sheet: &Sheet, merge: &crate::domain::sheet::MergedRange) -> usize {
     let (anchor_row, anchor_col) = merge.anchor();
     let vertical = sheet
         .alignment_at(anchor_row, anchor_col)
         .and_then(|a| a.vertical);
-    let mut visible = (merge.start_row..=merge.end_row).filter(|&r| !sheet.row_hidden(r));
+    let mut rows = merge_rows(sheet, merge);
     let chosen = match vertical {
-        Some(Vertical::Bottom) => visible.next_back(),
+        Some(Vertical::Bottom) => rows.next_back(),
         Some(Vertical::Center) => {
-            let rows: Vec<usize> = visible.collect();
-            rows.get((rows.len().saturating_sub(1)) / 2).copied()
+            let count = rows.clone().count();
+            rows.nth(count.saturating_sub(1) / 2)
         }
-        _ => visible.next(),
+        _ => rows.next(),
     };
     chosen.unwrap_or(merge.start_row)
 }
 
-/// The row a merge's bottom gridline is drawn under: its last visible row.
+/// The row a merge's bottom gridline is drawn under: its last shown row.
 fn merge_last_row(sheet: &Sheet, merge: &crate::domain::sheet::MergedRange) -> usize {
-    (merge.start_row..=merge.end_row)
-        .rev()
-        .find(|&r| !sheet.row_hidden(r))
+    merge_rows(sheet, merge)
+        .next_back()
         .unwrap_or(merge.end_row)
 }
 
@@ -934,6 +948,59 @@ mod tests {
         assert_eq!(build(Vertical::Top), vec!["T", "", ""]);
         assert_eq!(build(Vertical::Center), vec!["", "T", ""]);
         assert_eq!(build(Vertical::Bottom), vec!["", "", "T"]);
+    }
+
+    #[test]
+    fn a_merge_running_past_the_last_data_row_keeps_its_text_on_a_built_row() {
+        use crate::domain::sheet::{Alignment, Vertical};
+        let build = |vertical: Vertical, rows: usize| {
+            let mut data = vec![vec![
+                CellValue::Text("Footer".into()),
+                CellValue::Text("x".into()),
+            ]];
+            data.extend((1..rows).map(|_| vec![CellValue::Empty, CellValue::Text("y".into())]));
+            let sheet = Sheet::new("s", data)
+                .with_merges(vec![MergedRange {
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 1_048_575,
+                    end_col: 0,
+                }])
+                .with_alignments(HashMap::from([(
+                    (0, 0),
+                    Alignment {
+                        vertical: Some(vertical),
+                        ..Alignment::default()
+                    },
+                )]));
+            let layout = run_layout(&sheet, (0, 1), &HashSet::new(), 30, 8);
+            layout
+                .lines
+                .iter()
+                .map(|l| (l.slots[0].text.trim().to_string(), l.slots[0].ruled))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            build(Vertical::Bottom, 1),
+            vec![("Footer".into(), true)],
+            "the only data row shows the text and closes the merge"
+        );
+        assert_eq!(
+            build(Vertical::Bottom, 3),
+            vec![
+                ("".into(), false),
+                ("".into(), false),
+                ("Footer".into(), true)
+            ]
+        );
+        assert_eq!(
+            build(Vertical::Center, 3),
+            vec![
+                ("".into(), false),
+                ("Footer".into(), false),
+                ("".into(), true)
+            ]
+        );
     }
 
     #[test]
