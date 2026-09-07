@@ -7,7 +7,7 @@ use crate::app::error::LoadError;
 use crate::app::ports::DocumentSource;
 use crate::domain::cell::CellValue;
 use crate::domain::document::Document;
-use crate::domain::sheet::{MergedRange, Rgb, Sheet, TextColor};
+use crate::domain::sheet::{Alignment, Horizontal, MergedRange, Rgb, Sheet, TextColor, Vertical};
 use crate::domain::workbook_comment::{WorkbookComment, WorkbookReply};
 use crate::infra::datetime::{DateTimeKind, DateTimeParts};
 use crate::infra::number_format::NumberFormat;
@@ -202,19 +202,21 @@ fn to_sheet(
         }
         rows.push(row);
     }
-    let (fills, text_colors) = match cells {
+    let (fills, text_colors, alignments) = match cells {
         Some(cells) => apply_styles(&mut rows, cells, styles, formats, &date_parts, is_1904),
-        None => (HashMap::new(), HashMap::new()),
+        None => (HashMap::new(), HashMap::new(), HashMap::new()),
     };
     Sheet::new(name, rows)
         .with_fills(fills)
         .with_text_colors(text_colors)
+        .with_alignments(alignments)
 }
 
 type Fills = HashMap<(usize, usize), Rgb>;
 type TextColors = HashMap<(usize, usize), TextColor>;
+type Alignments = HashMap<(usize, usize), Alignment>;
 
-/// An unsupported date format keeps the fallback text; fills and colors are collected for empty cells too.
+/// An unsupported date format keeps the fallback text; fills, colors and alignment are collected for empty cells too.
 fn apply_styles(
     rows: &mut [Vec<CellValue>],
     cells: &HashMap<(u32, u32), usize>,
@@ -222,9 +224,10 @@ fn apply_styles(
     formats: &[Option<NumberFormat>],
     date_parts: &HashMap<(usize, usize), DateTimeParts>,
     is_1904: bool,
-) -> (Fills, TextColors) {
+) -> (Fills, TextColors, Alignments) {
     let mut fills = HashMap::new();
     let mut text_colors = HashMap::new();
+    let mut alignments = HashMap::new();
     for (&(row, col), &idx) in cells {
         let (row, col) = (row as usize, col as usize);
         let Some(style) = styles.get(idx) else {
@@ -232,6 +235,9 @@ fn apply_styles(
         };
         if let Some((r, g, b)) = style.fill {
             fills.insert((row, col), Rgb { r, g, b });
+        }
+        if let Some(alignment) = style.alignment.as_ref().and_then(to_alignment) {
+            alignments.insert((row, col), alignment);
         }
         // a `[Red]` code colors nothing unless the format rendered a value
         let mut named = None;
@@ -279,7 +285,31 @@ fn apply_styles(
             text_colors.insert((row, col), color);
         }
     }
-    (fills, text_colors)
+    (fills, text_colors, alignments)
+}
+
+/// `None` when nothing the ui honors is set: `general`, `fill`, `justify`, `distributed` and
+/// `centerContinuous` leave the value type in charge.
+fn to_alignment(raw: &xlsx_meta::CellAlignment) -> Option<Alignment> {
+    let horizontal = match raw.horizontal.as_deref() {
+        Some("left") => Some(Horizontal::Left),
+        Some("center") => Some(Horizontal::Center),
+        Some("right") => Some(Horizontal::Right),
+        _ => None,
+    };
+    let vertical = match raw.vertical.as_deref() {
+        Some("top") => Some(Vertical::Top),
+        Some("center") => Some(Vertical::Center),
+        Some("bottom") => Some(Vertical::Bottom),
+        _ => None,
+    };
+    let indent = raw.indent.min(u8::MAX as u32) as u8;
+    let alignment = Alignment {
+        horizontal,
+        vertical,
+        indent,
+    };
+    (alignment != Alignment::default()).then_some(alignment)
 }
 
 /// `Data::DateTime` is the caller's job.
@@ -367,6 +397,32 @@ mod tests {
     }
 
     #[test]
+    fn alignment_keywords_map_to_the_domain_and_general_is_nothing() {
+        let raw = |h: Option<&str>, v: Option<&str>, indent| xlsx_meta::CellAlignment {
+            horizontal: h.map(str::to_string),
+            vertical: v.map(str::to_string),
+            indent,
+        };
+        assert_eq!(
+            to_alignment(&raw(Some("center"), Some("bottom"), 1)),
+            Some(Alignment {
+                horizontal: Some(Horizontal::Center),
+                vertical: Some(Vertical::Bottom),
+                indent: 1,
+            })
+        );
+        assert_eq!(to_alignment(&raw(Some("general"), None, 0)), None);
+        assert_eq!(
+            to_alignment(&raw(Some("distributed"), Some("justify"), 0)),
+            None
+        );
+        assert_eq!(
+            to_alignment(&raw(None, None, 300)).map(|a| a.indent),
+            Some(u8::MAX)
+        );
+    }
+
+    #[test]
     fn heights_land_on_their_row_and_stop_at_the_used_range() {
         let row = |index, height| xlsx_meta::RowAttrs {
             index,
@@ -406,21 +462,25 @@ mod tests {
                 format: Some("0%".into()),
                 fill: Some((255, 255, 0)),
                 font: None,
+                alignment: None,
             },
             xlsx_meta::CellStyle {
                 format: Some("#,##0;[Red]▲#,##0".into()),
                 fill: None,
                 font: Some((0, 0, 255)),
+                alignment: None,
             },
             xlsx_meta::CellStyle {
                 format: Some("General".into()),
                 fill: None,
                 font: Some((255, 255, 255)),
+                alignment: None,
             },
             xlsx_meta::CellStyle {
                 format: None,
                 fill: Some((0, 128, 0)),
                 font: Some((0, 0, 0)),
+                alignment: None,
             },
         ];
         let formats: Vec<Option<NumberFormat>> = styles
@@ -437,7 +497,7 @@ mod tests {
             ((8, 25), 0), // outside the grid: must not panic
         ]
         .into();
-        let (fills, text_colors) =
+        let (fills, text_colors, _) =
             apply_styles(&mut rows, &cells, &styles, &formats, &HashMap::new(), false);
         assert_eq!(
             rows[0][0],
@@ -541,16 +601,19 @@ mod tests {
                 format: Some("yyyy\"年\"m\"月\"d\"日\"(aaa)".into()),
                 fill: None,
                 font: None,
+                alignment: None,
             },
             xlsx_meta::CellStyle {
                 format: Some("mm:ss.00".into()),
                 fill: None,
                 font: None,
+                alignment: None,
             },
             xlsx_meta::CellStyle {
                 format: Some("0.00".into()),
                 fill: None,
                 font: None,
+                alignment: None,
             },
         ];
         let formats: Vec<Option<NumberFormat>> = styles
@@ -599,6 +662,7 @@ mod tests {
             format: Some("[$-411]ggge\"年\"m\"月\"d\"日\"".into()),
             fill: None,
             font: None,
+            alignment: None,
         }];
         let formats: Vec<Option<NumberFormat>> = styles
             .iter()
@@ -633,6 +697,7 @@ mod tests {
             format: Some("General;[Red]-General".into()),
             fill: None,
             font: None,
+            alignment: None,
         }];
         let formats: Vec<Option<NumberFormat>> = styles
             .iter()

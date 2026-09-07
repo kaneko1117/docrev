@@ -15,11 +15,23 @@ pub struct CellStyle {
     pub format: Option<String>,
     pub fill: Option<(u8, u8, u8)>,
     pub font: Option<(u8, u8, u8)>,
+    pub alignment: Option<CellAlignment>,
+}
+
+/// `<alignment>` attributes as written; `horizontal` and `vertical` are the file's keywords.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct CellAlignment {
+    pub horizontal: Option<String>,
+    pub vertical: Option<String>,
+    pub indent: u32,
 }
 
 impl CellStyle {
     pub(super) fn is_plain(&self) -> bool {
-        self.format.is_none() && self.fill.is_none() && self.font.is_none()
+        self.format.is_none()
+            && self.fill.is_none()
+            && self.font.is_none()
+            && self.alignment.is_none()
     }
 }
 
@@ -39,12 +51,13 @@ pub(super) fn parse_styles(
     let mut custom: HashMap<u32, String> = HashMap::new();
     let mut fills: Vec<Option<(u8, u8, u8)>> = Vec::new();
     let mut fonts: Vec<Option<(u8, u8, u8)>> = Vec::new();
-    let mut xfs: Vec<(u32, usize, usize)> = Vec::new();
+    let mut xfs: Vec<(u32, usize, usize, Option<CellAlignment>)> = Vec::new();
     // the same elements also appear under <dxfs> and <cellStyleXfs>, which cells never reference
     let mut in_num_fmts = false;
     let mut in_fills = false;
     let mut in_fonts = false;
     let mut in_cell_xfs = false;
+    let mut in_xf = false;
     let mut fill_depth = 0u32;
     let mut solid = false;
     let mut fill_color: Option<(u8, u8, u8)> = None;
@@ -126,7 +139,25 @@ pub(super) fn parse_styles(
                                 _ => {}
                             }
                         }
-                        xfs.push((num_fmt, fill_id, font_id));
+                        xfs.push((num_fmt, fill_id, font_id, None));
+                        in_xf = !empty;
+                    }
+                    b"alignment" if in_xf => {
+                        let mut alignment: CellAlignment = CellAlignment::default();
+                        for attr in e.attributes().flatten() {
+                            let value = attr_value(&attr, reader.decoder());
+                            match attr.key.as_ref() {
+                                b"horizontal" => alignment.horizontal = Some(value),
+                                b"vertical" => alignment.vertical = Some(value),
+                                b"indent" => alignment.indent = value.parse().unwrap_or(0),
+                                _ => {}
+                            }
+                        }
+                        if alignment != CellAlignment::default()
+                            && let Some(xf) = xfs.last_mut()
+                        {
+                            xf.3 = Some(alignment);
+                        }
                     }
                     _ => {}
                 }
@@ -136,6 +167,7 @@ pub(super) fn parse_styles(
                 b"fills" => in_fills = false,
                 b"fonts" => in_fonts = false,
                 b"cellXfs" => in_cell_xfs = false,
+                b"xf" => in_xf = false,
                 b"fill" if in_fills && fill_depth > 0 => {
                     fill_depth -= 1;
                     fills.push(if solid { fill_color } else { None });
@@ -152,7 +184,7 @@ pub(super) fn parse_styles(
     }
     Ok(xfs
         .into_iter()
-        .map(|(num_fmt, fill_id, font_id)| CellStyle {
+        .map(|(num_fmt, fill_id, font_id, alignment)| CellStyle {
             format: match custom.get(&num_fmt) {
                 Some(code) => Some(code.clone()),
                 None => builtin_format(num_fmt).map(str::to_string),
@@ -164,6 +196,7 @@ pub(super) fn parse_styles(
             } else {
                 fonts.get(font_id).copied().flatten()
             },
+            alignment,
         })
         .collect())
 }

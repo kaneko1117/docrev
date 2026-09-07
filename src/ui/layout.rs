@@ -3,9 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::domain::anchor::Anchor;
-use crate::domain::sheet::{Rgb, Sheet, TextColor};
+use crate::domain::sheet::{Rgb, Sheet, TextColor, Vertical};
 
-use super::text::{cell_lines, cell_text, center, clip, pad_left, pad_right};
+use super::text::{Placement, cell_lines, cell_text, center, pad_left};
 
 pub const DEFAULT_CELL_WIDTH: usize = 12;
 /// Excel's own default row height, in points.
@@ -274,7 +274,15 @@ impl RowBuilder<'_> {
                     let continuation = seg_index == 1 && merge.start_col < self.plan.frozen_cols;
                     if row == merge_text_row(sheet, merge) && !continuation {
                         let (_, span_width) = self.plan.span(col..segment_end);
-                        let lines = cell_lines(sheet.display_cell(row, col), span_width);
+                        let placement = Placement::resolve(
+                            sheet.display_alignment_at(row, col),
+                            false,
+                            span_width,
+                        );
+                        let lines = cell_lines(
+                            sheet.display_cell(row, col),
+                            placement.text_width(span_width),
+                        );
                         height = height.max(lines.len());
                     }
                     col = segment_end;
@@ -282,7 +290,13 @@ impl RowBuilder<'_> {
                 }
                 let cell = sheet.cell(row, col);
                 if !cell.is_number() && !cell.is_datetime() && !cell.is_empty() {
-                    height = height.max(cell_lines(cell, width_of(col)).len());
+                    let placement = Placement::resolve(
+                        sheet.display_alignment_at(row, col),
+                        false,
+                        width_of(col),
+                    );
+                    let width = placement.text_width(width_of(col));
+                    height = height.max(cell_lines(cell, width).len());
                 }
                 col += 1;
             }
@@ -353,13 +367,21 @@ impl RowBuilder<'_> {
                         let segment_end = (merge.end_col + 1).min(end);
                         let (_, span_width) = plan.span(col..segment_end);
                         let text_row = merge_text_row(sheet, merge);
+                        // merges keep the left default whatever the value type
+                        let placement = Placement::resolve(
+                            sheet.display_alignment_at(row, col),
+                            false,
+                            span_width,
+                        );
                         let text = if row == text_row && !continuation {
-                            lines_of
-                                .entry((col, span_width))
-                                .or_insert_with(|| {
-                                    cell_lines(sheet.display_cell(row, col), span_width)
-                                })
-                                .get(sub)
+                            let lines = lines_of.entry((col, span_width)).or_insert_with(|| {
+                                cell_lines(
+                                    sheet.display_cell(row, col),
+                                    placement.text_width(span_width),
+                                )
+                            });
+                            sub.checked_sub(placement.offset(lines.len(), height))
+                                .and_then(|i| lines.get(i))
                                 .cloned()
                                 .unwrap_or_default()
                         } else {
@@ -377,7 +399,7 @@ impl RowBuilder<'_> {
                         slots.push(Slot {
                             separator,
                             freeze_boundary,
-                            text: pad_right(&clip(&text, span_width), span_width),
+                            text: placement.line(&text, span_width),
                             cursor: on_cursor,
                             selected: in_range,
                             note,
@@ -402,26 +424,24 @@ impl RowBuilder<'_> {
                     let on_cursor = (row, col) == input.cursor;
                     let in_range = in_selection(row, col);
 
-                    let line_text = if is_number {
-                        if sub == 0 {
-                            cell_text(cell)
+                    let placement = Placement::resolve(
+                        sheet.display_alignment_at(row, col),
+                        is_number,
+                        own_width,
+                    );
+                    let lines = lines_of.entry((col, own_width)).or_insert_with(|| {
+                        if is_number {
+                            vec![cell_text(cell)]
                         } else {
-                            String::new()
+                            cell_lines(cell, placement.text_width(own_width))
                         }
-                    } else {
-                        lines_of
-                            .entry((col, own_width))
-                            .or_insert_with(|| cell_lines(cell, own_width))
-                            .get(sub)
-                            .cloned()
-                            .unwrap_or_default()
-                    };
-                    let clipped = clip(&line_text, own_width);
-                    let aligned = if is_number {
-                        pad_left(&clipped, own_width)
-                    } else {
-                        pad_right(&clipped, own_width)
-                    };
+                    });
+                    let line_text = sub
+                        .checked_sub(placement.offset(lines.len(), height))
+                        .and_then(|i| lines.get(i))
+                        .cloned()
+                        .unwrap_or_default();
+                    let aligned = placement.line(&line_text, own_width);
                     slots.push(Slot {
                         separator,
                         freeze_boundary,
@@ -575,11 +595,23 @@ pub(crate) fn tab_strip(names: &[&str], active: usize, width: usize) -> TabStrip
     }
 }
 
-/// The row a merge's text is drawn on: its first visible row (the anchor row may be hidden).
+/// The row a merge's text is drawn on: its first visible row (the anchor row may be hidden),
+/// or the last or middle one when the anchor is aligned to the bottom or center.
 fn merge_text_row(sheet: &Sheet, merge: &crate::domain::sheet::MergedRange) -> usize {
-    (merge.start_row..=merge.end_row)
-        .find(|&r| !sheet.row_hidden(r))
-        .unwrap_or(merge.start_row)
+    let (anchor_row, anchor_col) = merge.anchor();
+    let vertical = sheet
+        .alignment_at(anchor_row, anchor_col)
+        .and_then(|a| a.vertical);
+    let mut visible = (merge.start_row..=merge.end_row).filter(|&r| !sheet.row_hidden(r));
+    let chosen = match vertical {
+        Some(Vertical::Bottom) => visible.next_back(),
+        Some(Vertical::Center) => {
+            let rows: Vec<usize> = visible.collect();
+            rows.get((rows.len().saturating_sub(1)) / 2).copied()
+        }
+        _ => visible.next(),
+    };
+    chosen.unwrap_or(merge.start_row)
 }
 
 /// The row a merge's bottom gridline is drawn under: its last visible row.
@@ -716,6 +748,229 @@ mod tests {
         );
         assert_eq!(display_width(Some(20.0), Some(8.43)), 20, "own width wins");
         assert_eq!(display_width(None, Some(f64::NAN)), DEFAULT_CELL_WIDTH);
+    }
+
+    #[test]
+    fn explicit_alignment_beats_the_value_type_and_general_keeps_it() {
+        use crate::domain::sheet::{Alignment, Horizontal};
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![
+                CellValue::Text("hd".into()),
+                CellValue::Text("r".into()),
+                CellValue::Number(7.0),
+                CellValue::Text("g".into()),
+            ]],
+        )
+        .with_alignments(HashMap::from([
+            (
+                (0, 0),
+                Alignment {
+                    horizontal: Some(Horizontal::Center),
+                    ..Alignment::default()
+                },
+            ),
+            (
+                (0, 1),
+                Alignment {
+                    horizontal: Some(Horizontal::Right),
+                    ..Alignment::default()
+                },
+            ),
+            (
+                (0, 2),
+                Alignment {
+                    horizontal: Some(Horizontal::Left),
+                    ..Alignment::default()
+                },
+            ),
+        ]))
+        .with_col_widths(vec![Some(6.0); 4]);
+        let sheet_widths = [Some(6.0); 4];
+        let notes = HashSet::new();
+        let markers = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (0, 0),
+            markers: &markers,
+            notes: &notes,
+            col_widths: &sheet_widths,
+            selection: None,
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(&input, &Viewport { width: 40, rows: 3 }, &mut scroll);
+        let texts: Vec<&str> = layout.lines[0]
+            .slots
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["  hd  ", "     r", "7     ", "g     "]);
+    }
+
+    #[test]
+    fn indent_shifts_left_text_and_wraps_in_the_remaining_width() {
+        use crate::domain::sheet::Alignment;
+        let sheet = Sheet::new("s", vec![vec![CellValue::Text("abcdefgh".into())]])
+            .with_alignments(HashMap::from([(
+                (0, 0),
+                Alignment {
+                    indent: 1,
+                    ..Alignment::default()
+                },
+            )]))
+            .with_col_widths(vec![Some(6.0)]);
+        let widths = [Some(6.0)];
+        let notes = HashSet::new();
+        let markers = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (0, 0),
+            markers: &markers,
+            notes: &notes,
+            col_widths: &widths,
+            selection: None,
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(&input, &Viewport { width: 20, rows: 4 }, &mut scroll);
+        let texts: Vec<&str> = layout
+            .lines
+            .iter()
+            .map(|l| l.slots[0].text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["  abcd", "  efgh"]);
+    }
+
+    #[test]
+    fn vertical_alignment_places_short_cells_within_a_tall_row() {
+        use crate::domain::sheet::{Alignment, Vertical};
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![
+                CellValue::Text("one two three four".into()),
+                CellValue::Text("b".into()),
+                CellValue::Number(1.0),
+                CellValue::Text("t".into()),
+            ]],
+        )
+        .with_alignments(HashMap::from([
+            (
+                (0, 1),
+                Alignment {
+                    vertical: Some(Vertical::Bottom),
+                    ..Alignment::default()
+                },
+            ),
+            (
+                (0, 2),
+                Alignment {
+                    vertical: Some(Vertical::Center),
+                    ..Alignment::default()
+                },
+            ),
+        ]));
+        let widths = [Some(6.0), Some(4.0), Some(4.0), Some(4.0)];
+        let notes = HashSet::new();
+        let markers = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (0, 0),
+            markers: &markers,
+            notes: &notes,
+            col_widths: &widths,
+            selection: None,
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(&input, &Viewport { width: 40, rows: 6 }, &mut scroll);
+        assert_eq!(layout.lines.len(), 3, "the first cell wraps to three lines");
+        let col = |c: usize| -> Vec<String> {
+            layout
+                .lines
+                .iter()
+                .map(|l| l.slots[c].text.trim().to_string())
+                .collect()
+        };
+        assert_eq!(col(1), vec!["", "", "b"], "bottom");
+        assert_eq!(col(2), vec!["", "1", ""], "center");
+        assert_eq!(col(3), vec!["t", "", ""], "unspecified stays on top");
+    }
+
+    #[test]
+    fn a_vertically_aligned_merge_draws_its_text_on_the_matching_row() {
+        use crate::domain::sheet::{Alignment, Vertical};
+        let build = |vertical: Vertical| {
+            let sheet = Sheet::new(
+                "s",
+                vec![
+                    vec![CellValue::Text("T".into()), CellValue::Text("a".into())],
+                    vec![CellValue::Empty, CellValue::Text("b".into())],
+                    vec![CellValue::Empty, CellValue::Text("c".into())],
+                ],
+            )
+            .with_merges(vec![MergedRange {
+                start_row: 0,
+                start_col: 0,
+                end_row: 2,
+                end_col: 0,
+            }])
+            .with_alignments(HashMap::from([(
+                (0, 0),
+                Alignment {
+                    vertical: Some(vertical),
+                    ..Alignment::default()
+                },
+            )]));
+            let layout = run_layout(&sheet, (0, 1), &HashSet::new(), 30, 6);
+            let texts: Vec<String> = layout
+                .lines
+                .iter()
+                .map(|l| l.slots[0].text.trim().to_string())
+                .collect();
+            texts
+        };
+        assert_eq!(build(Vertical::Top), vec!["T", "", ""]);
+        assert_eq!(build(Vertical::Center), vec!["", "T", ""]);
+        assert_eq!(build(Vertical::Bottom), vec!["", "", "T"]);
+    }
+
+    #[test]
+    fn a_merged_header_is_centered_across_its_span() {
+        use crate::domain::sheet::{Alignment, Horizontal};
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![
+                CellValue::Text("Title".into()),
+                CellValue::Empty,
+                CellValue::Empty,
+            ]],
+        )
+        .with_merges(vec![MergedRange {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 2,
+        }])
+        .with_alignments(HashMap::from([(
+            (0, 0),
+            Alignment {
+                horizontal: Some(Horizontal::Center),
+                ..Alignment::default()
+            },
+        )]));
+        let widths = [Some(5.0); 3];
+        let notes = HashSet::new();
+        let markers = HashSet::new();
+        let input = LayoutInput {
+            sheet: &sheet,
+            cursor: (0, 0),
+            markers: &markers,
+            notes: &notes,
+            col_widths: &widths,
+            selection: None,
+        };
+        let mut scroll = Scroll::default();
+        let layout = grid_layout(&input, &Viewport { width: 40, rows: 3 }, &mut scroll);
+        assert_eq!(layout.lines[0].slots.len(), 1);
+        assert_eq!(layout.lines[0].slots[0].text, "      Title      ");
     }
 
     #[test]
