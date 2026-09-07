@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/kaneko1117/docrev/compare/v0.3.1...v0.4.0) - 2026-09-07
+
+### Added
+
+- list the stored number behind a formatted cell in comment list --json
+- render conditional, scientific, fraction and text number formats
+- apply conditional formatting to the cells whose rules match
+- inherit row and column fills and resolve indexed colors
+- inherit font emphasis: bold, italic and strikethrough
+- inherit cell alignment instead of inferring it from the value type
+- inherit custom row heights and the sheet's default row and column size
+- keep hidden sheets out of the tab strip and picker
+- skip hidden rows and columns everywhere Excel does
+- read hidden rows, columns and sheets into the domain model
+- wire date and time cells through the number-format engine
+- inherit date and time formats in the number-format engine
+- reload the document when it changes on disk
+
+### Changed
+
+- move the number-format engine out of domain
+- read xlsx metadata in one archive pass
+- replace string-wrapped errors with typed variants
+
+### Documentation
+
+- state the domain criterion by whose contract a thing is
+- ship the docrev-review agent skill in-repo
+
+### Fixed
+
+- keep entity references in workbook comment text and author names
+- keep a vertically aligned merge's text on a row the grid can build
+- count a merge crossing the column freeze at its pinned width
+- honor in-cell line breaks instead of flattening them to ⏎
+
 ## [0.3.1](https://github.com/kaneko1117/docrev/compare/v0.3.0...v0.3.1) - 2026-08-23
 
 ### Documentation
