@@ -10,6 +10,7 @@ use crate::domain::anchor::Anchor;
 use super::MetaError;
 use super::archive::{
     attr_value, entry_path, open_archive, parse_rel_targets, parse_sheet_ids, read_entry,
+    reference_piece, text_piece,
 };
 
 /// 0-based cell coordinates.
@@ -156,11 +157,12 @@ fn parse_persons(xml: &str) -> Result<HashMap<String, String>, MetaError> {
 }
 
 /// `<comment ref authorId>` with the body as its `<t>` runs; authors by index.
-fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError> {
+pub(super) fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut authors: Vec<String> = Vec::new();
     let mut out = Vec::new();
-    let mut in_author = false;
+    // Some while inside <author>; pieces accumulate until the end tag
+    let mut author: Option<String> = None;
     let mut current: Option<RawWorkbookComment> = None;
     let mut in_text = false;
     // <rPh> runs are ruby readings, not body text (山田 would read 山田ヤマダ)
@@ -168,7 +170,7 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
     loop {
         match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"author" => in_author = true,
+                b"author" => author = Some(String::new()),
                 b"rPh" => in_phonetic = true,
                 b"comment" => {
                     let mut cell = None;
@@ -203,12 +205,17 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
                 _ => {}
             },
             Event::Text(t) => {
-                let text = t
-                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
-                    .map_err(|e| MetaError(e.to_string()))?;
-                if in_author {
-                    authors.push(text.into_owned());
-                    in_author = false;
+                let text = text_piece(&t)?;
+                if let Some(author) = &mut author {
+                    author.push_str(&text);
+                } else if in_text && let Some(comment) = &mut current {
+                    comment.body.push_str(&text);
+                }
+            }
+            Event::GeneralRef(r) => {
+                let text = reference_piece(&r)?;
+                if let Some(author) = &mut author {
+                    author.push_str(&text);
                 } else if in_text && let Some(comment) = &mut current {
                     comment.body.push_str(&text);
                 }
@@ -216,7 +223,11 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
             Event::End(e) => match e.local_name().as_ref() {
                 b"t" => in_text = false,
                 b"rPh" => in_phonetic = false,
-                b"author" => in_author = false,
+                b"author" => {
+                    if let Some(author) = author.take() {
+                        authors.push(author);
+                    }
+                }
                 b"comment" => {
                     if let Some(comment) = current.take()
                         && !comment.body.trim().is_empty()
@@ -234,7 +245,7 @@ fn parse_legacy_comments(xml: &str) -> Result<Vec<RawWorkbookComment>, MetaError
 }
 
 /// Roots have no `parentId`; `done="1"` on the root maps to resolved.
-fn parse_threaded_comments(
+pub(super) fn parse_threaded_comments(
     xml: &str,
     persons: &HashMap<String, String>,
 ) -> Result<Vec<RawWorkbookComment>, MetaError> {
@@ -250,7 +261,8 @@ fn parse_threaded_comments(
     // Some(true) = a reply is open, Some(false) = a root is open
     let mut open: Option<bool> = None;
     loop {
-        match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
+        let event = reader.read_event().map_err(|e| MetaError(e.to_string()))?;
+        match &event {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"threadedComment" => {
                 let mut cell = None;
                 let mut id = String::new();
@@ -292,10 +304,12 @@ fn parse_threaded_comments(
                 }
             }
             Event::Start(e) if e.local_name().as_ref() == b"text" => in_text = open.is_some(),
-            Event::Text(t) if in_text => {
-                let text = t
-                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
-                    .map_err(|e| MetaError(e.to_string()))?;
+            Event::Text(_) | Event::GeneralRef(_) if in_text => {
+                let text = match &event {
+                    Event::Text(t) => text_piece(t)?,
+                    Event::GeneralRef(r) => reference_piece(r)?,
+                    _ => String::new(),
+                };
                 match open {
                     Some(true) => {
                         if let Some((_, _, body)) = replies.last_mut() {

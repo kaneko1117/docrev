@@ -1,4 +1,7 @@
-use super::styles::{CellAlignment, builtin_format, parse_cell_styles, parse_styles};
+use super::comments::{parse_legacy_comments, parse_threaded_comments};
+use super::styles::{
+    CellAlignment, Dxf, builtin_format, parse_cell_styles, parse_dxfs, parse_styles,
+};
 use super::theme::{apply_tint, default_palette, parse_hex_rgb, parse_theme_palette};
 use super::worksheet::{
     RowAttrs, SheetFormat, parse_cols, parse_pane, parse_rows, parse_sheet_format,
@@ -299,6 +302,48 @@ fn fonts_carry_emphasis_and_the_default_font_stays_plain() {
 }
 
 #[test]
+fn dxfs_carry_fill_font_and_emphasis() {
+    let styles = r#"<styleSheet>
+        <fonts count="1"><font><b/><color rgb="FF123456"/></font></fonts>
+        <fills count="1"><fill><patternFill patternType="solid"><fgColor rgb="FF111111"/></patternFill></fill></fills>
+        <dxfs count="4">
+            <dxf><font><color rgb="FF9C0006"/><strike/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf>
+            <dxf><fill><patternFill patternType="solid"><fgColor rgb="FF00FF00"/><bgColor indexed="64"/></patternFill></fill></dxf>
+            <dxf><font><b val="1"/><i/></font></dxf>
+            <dxf/>
+        </dxfs>
+    </styleSheet>"#;
+    let dxfs = parse_dxfs(styles, &default_palette()).unwrap();
+    assert_eq!(
+        dxfs,
+        vec![
+            Dxf {
+                fill: Some((0xFF, 0xC7, 0xCE)),
+                font: Some((0x9C, 0x00, 0x06)),
+                strike: true,
+                ..Dxf::default()
+            },
+            Dxf {
+                fill: Some((0, 0xFF, 0)),
+                ..Dxf::default()
+            },
+            Dxf {
+                bold: true,
+                italic: true,
+                ..Dxf::default()
+            },
+            Dxf::default(),
+        ],
+        "bgColor wins unless it is the system color; the plain fonts and fills are untouched"
+    );
+    assert!(
+        parse_dxfs("<styleSheet/>", &default_palette())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn styles_carry_alignment_from_cell_xfs_only() {
     let styles = r#"<styleSheet>
         <cellStyleXfs count="1"><xf numFmtId="0"><alignment horizontal="right"/></xf></cellStyleXfs>
@@ -565,4 +610,25 @@ fn out_of_range_style_indices_are_ignored() {
     </sheetData></worksheet>"#;
     let cells = parse_cell_styles(sheet, &percent_style()).unwrap().styled;
     assert!(cells.is_empty());
+}
+
+#[test]
+fn comment_text_keeps_entity_references_together() {
+    let legacy = r#"<comments><authors><author>A &amp; B</author></authors><commentList>
+        <comment ref="B2" authorId="0"><text><r><t>say &quot;hi&quot; &#x1F600; &lt;3</t></r></text></comment>
+    </commentList></comments>"#;
+    let notes = parse_legacy_comments(legacy).unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].author, "A & B");
+    assert_eq!(notes[0].body, "say \"hi\" 😀 <3");
+
+    let threaded = r#"<ThreadedComments>
+        <threadedComment ref="B2" id="{1}" personId="{p}"><text>a &amp; b</text></threadedComment>
+        <threadedComment ref="B2" id="{2}" parentId="{1}" personId="{p}"><text>&quot;ok&quot;</text></threadedComment>
+    </ThreadedComments>"#;
+    let persons = HashMap::from([("{p}".to_string(), "P".to_string())]);
+    let roots = parse_threaded_comments(threaded, &persons).unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].body, "a & b");
+    assert_eq!(roots[0].replies[0].1, "\"ok\"");
 }

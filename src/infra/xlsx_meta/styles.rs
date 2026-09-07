@@ -43,6 +43,7 @@ impl CellStyle {
 pub struct WorkbookStyles {
     pub styles: Vec<CellStyle>,
     pub sheets: HashMap<String, SheetCells>,
+    pub dxfs: Vec<Dxf>,
 }
 
 /// 0-based (row, col): `styled` maps to indices in `styles`; `blank` holds the `<c/>` elements
@@ -232,6 +233,82 @@ pub(super) fn parse_styles(
             strike: face_of(font_id).strike,
         })
         .collect())
+}
+
+/// A differential format a conditional rule applies; colors are sRGB.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Dxf {
+    pub fill: Option<(u8, u8, u8)>,
+    pub font: Option<(u8, u8, u8)>,
+    pub bold: bool,
+    pub italic: bool,
+    pub strike: bool,
+}
+
+/// One entry per `<dxfs>` `<dxf>`; a dxf fill is its `bgColor`, else its `fgColor`.
+pub(super) fn parse_dxfs(xml: &str, palette: &[(u8, u8, u8)]) -> Result<Vec<Dxf>, MetaError> {
+    let indexed = parse_indexed_palette(xml)?;
+    let palettes = Palettes {
+        theme: palette,
+        indexed: &indexed,
+    };
+    let mut reader = Reader::from_str(xml);
+    let mut out = Vec::new();
+    let mut in_dxfs = false;
+    let mut in_dxf = false;
+    let mut in_font = false;
+    let mut in_fill = false;
+    let mut current = Dxf::default();
+    let mut fg = None;
+    let mut bg = None;
+    loop {
+        let event = reader.read_event().map_err(|e| MetaError(e.to_string()))?;
+        match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                let empty = matches!(event, Event::Empty(_));
+                match e.local_name().as_ref() {
+                    b"dxfs" if !empty => in_dxfs = true,
+                    b"dxf" if in_dxfs => {
+                        current = Dxf::default();
+                        if empty {
+                            out.push(current);
+                        } else {
+                            in_dxf = true;
+                        }
+                    }
+                    b"font" if in_dxf && !empty => in_font = true,
+                    b"fill" if in_dxf && !empty => {
+                        in_fill = true;
+                        fg = None;
+                        bg = None;
+                    }
+                    b"color" if in_font => current.font = parse_color_attrs(e, &reader, &palettes),
+                    b"b" if in_font => current.bold = flag_on(e, &reader),
+                    b"i" if in_font => current.italic = flag_on(e, &reader),
+                    b"strike" if in_font => current.strike = flag_on(e, &reader),
+                    b"fgColor" if in_fill => fg = parse_color_attrs(e, &reader, &palettes),
+                    b"bgColor" if in_fill => bg = parse_color_attrs(e, &reader, &palettes),
+                    _ => {}
+                }
+            }
+            Event::End(e) => match e.local_name().as_ref() {
+                b"font" if in_dxf => in_font = false,
+                b"fill" if in_dxf => {
+                    current.fill = bg.or(fg);
+                    in_fill = false;
+                }
+                b"dxf" if in_dxf => {
+                    out.push(current);
+                    in_dxf = false;
+                }
+                b"dxfs" => break,
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 /// One `<fonts>` entry; color is sRGB.

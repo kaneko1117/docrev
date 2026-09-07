@@ -13,6 +13,7 @@ use crate::domain::sheet::{
 use crate::domain::workbook_comment::{WorkbookComment, WorkbookReply};
 use crate::infra::datetime::{DateTimeKind, DateTimeParts};
 use crate::infra::number_format::NumberFormat;
+use crate::infra::xlsx_meta::conditional::{self, Value};
 use crate::infra::{xlsx, xlsx_meta};
 
 pub struct XlsxSource;
@@ -26,8 +27,14 @@ impl DocumentSource for XlsxSource {
         let is_1904 = raw.is_1904;
         let raw = raw.sheets;
         let meta = xlsx_meta::read_meta(path);
-        let (cols, rows, sheet_formats, styles, frozen) =
-            (meta.cols, meta.rows, meta.formats, meta.styles, meta.frozen);
+        let (cols, rows, sheet_formats, styles, frozen, conditional) = (
+            meta.cols,
+            meta.rows,
+            meta.formats,
+            meta.styles,
+            meta.frozen,
+            meta.conditional,
+        );
         let mut workbook_comments = xlsx_meta::workbook_comments(path).unwrap_or_default();
         // parse each format once per workbook
         let formats: Vec<Option<NumberFormat>> = styles
@@ -70,6 +77,10 @@ impl DocumentSource for XlsxSource {
                     .into_iter()
                     .map(|((row, col), f)| ((row as usize, col as usize), f))
                     .collect();
+                let flags = conditional
+                    .get(&raw_sheet.name)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 let sheet = to_sheet(
                     raw_sheet.name,
                     raw_sheet.cells,
@@ -77,6 +88,7 @@ impl DocumentSource for XlsxSource {
                     &styles.styles,
                     &formats,
                     is_1904,
+                    (flags, &styles.dxfs),
                 )
                 .with_merges(merges)
                 .with_frozen(frozen_rows, frozen_cols)
@@ -210,7 +222,8 @@ fn column_indexes(col: &xlsx_meta::ColumnRange, col_count: usize) -> std::ops::R
     from..to.max(from)
 }
 
-/// Pads with `Empty` up to the used range's offset so (0, 0) stays A1.
+/// Pads with `Empty` up to the used range's offset so (0, 0) stays A1; `conditional` is the
+/// sheet's (rule blocks, dxf table).
 fn to_sheet(
     name: String,
     range: Range<Data>,
@@ -218,6 +231,7 @@ fn to_sheet(
     styles: &[xlsx_meta::CellStyle],
     formats: &[Option<NumberFormat>],
     is_1904: bool,
+    conditional: (&[xlsx_meta::CondFormat], &[xlsx_meta::Dxf]),
 ) -> Sheet {
     let Some((start_row, start_col)) = range.start() else {
         return Sheet::new(name, Vec::new());
@@ -242,7 +256,7 @@ fn to_sheet(
         }
         rows.push(row);
     }
-    let styling = match cells {
+    let mut styling = match cells {
         Some(cells) => apply_styles(
             &mut rows,
             &cells.styled,
@@ -253,6 +267,7 @@ fn to_sheet(
         ),
         None => Styling::default(),
     };
+    apply_conditional(&mut styling, &rows, conditional.0, conditional.1);
     let blank: HashSet<(usize, usize)> = cells
         .map(|c| {
             c.blank
@@ -267,6 +282,50 @@ fn to_sheet(
         .with_text_colors(styling.text_colors)
         .with_alignments(styling.alignments)
         .with_emphases(styling.emphases)
+}
+
+/// Flagged cells take the rule's fill, color and emphasis over their base style.
+fn apply_conditional(
+    styling: &mut Styling,
+    rows: &[Vec<CellValue>],
+    formats: &[xlsx_meta::CondFormat],
+    dxfs: &[xlsx_meta::Dxf],
+) {
+    if formats.is_empty() {
+        return;
+    }
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let value_at = |r: u32, c: u32| -> Value {
+        match rows.get(r as usize).and_then(|row| row.get(c as usize)) {
+            None | Some(CellValue::Empty) => Value::Empty,
+            Some(CellValue::Text(s)) => Value::Text(s.clone()),
+            Some(CellValue::Number(n)) | Some(CellValue::FormattedNumber { value: n, .. }) => {
+                Value::Number(*n)
+            }
+            Some(CellValue::Bool(b)) => Value::Bool(*b),
+            // the serial is gone by now; rules see the date as its text
+            Some(CellValue::DateTime { text, .. }) => Value::Text(text.clone()),
+            Some(CellValue::Error(_)) => Value::Error,
+        }
+    };
+    let flagged = conditional::evaluate(formats, dxfs, rows.len() as u32, cols as u32, &value_at);
+    for ((r, c), flag) in flagged {
+        let pos = (r as usize, c as usize);
+        if let Some((r, g, b)) = flag.fill {
+            styling.fills.insert(pos, Rgb { r, g, b });
+        }
+        if let Some((r, g, b)) = flag.font {
+            styling
+                .text_colors
+                .insert(pos, TextColor::Literal(Rgb { r, g, b }));
+        }
+        if flag.bold || flag.italic || flag.strike {
+            let emphasis = styling.emphases.entry(pos).or_default();
+            emphasis.bold |= flag.bold;
+            emphasis.italic |= flag.italic;
+            emphasis.strike |= flag.strike;
+        }
+    }
 }
 
 /// Per-cell styling keyed by 0-based (row, col).
