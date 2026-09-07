@@ -1,5 +1,7 @@
 use super::comments::{parse_legacy_comments, parse_threaded_comments};
-use super::styles::{CellAlignment, builtin_format, parse_cell_styles, parse_styles};
+use super::styles::{
+    CellAlignment, Dxf, builtin_format, parse_cell_styles, parse_dxfs, parse_styles,
+};
 use super::theme::{apply_tint, default_palette, parse_hex_rgb, parse_theme_palette};
 use super::worksheet::{
     RowAttrs, SheetFormat, parse_cols, parse_pane, parse_rows, parse_sheet_format,
@@ -297,6 +299,48 @@ fn fonts_carry_emphasis_and_the_default_font_stays_plain() {
     );
     assert!(!styles[2].is_plain(), "emphasis alone makes a cell styled");
     assert_eq!(flags(&styles[3]), (false, false, false));
+}
+
+#[test]
+fn dxfs_carry_fill_font_and_emphasis() {
+    let styles = r#"<styleSheet>
+        <fonts count="1"><font><b/><color rgb="FF123456"/></font></fonts>
+        <fills count="1"><fill><patternFill patternType="solid"><fgColor rgb="FF111111"/></patternFill></fill></fills>
+        <dxfs count="4">
+            <dxf><font><color rgb="FF9C0006"/><strike/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf>
+            <dxf><fill><patternFill patternType="solid"><fgColor rgb="FF00FF00"/><bgColor indexed="64"/></patternFill></fill></dxf>
+            <dxf><font><b val="1"/><i/></font></dxf>
+            <dxf/>
+        </dxfs>
+    </styleSheet>"#;
+    let dxfs = parse_dxfs(styles, &default_palette()).unwrap();
+    assert_eq!(
+        dxfs,
+        vec![
+            Dxf {
+                fill: Some((0xFF, 0xC7, 0xCE)),
+                font: Some((0x9C, 0x00, 0x06)),
+                strike: true,
+                ..Dxf::default()
+            },
+            Dxf {
+                fill: Some((0, 0xFF, 0)),
+                ..Dxf::default()
+            },
+            Dxf {
+                bold: true,
+                italic: true,
+                ..Dxf::default()
+            },
+            Dxf::default(),
+        ],
+        "bgColor wins unless it is the system color; the plain fonts and fills are untouched"
+    );
+    assert!(
+        parse_dxfs("<styleSheet/>", &default_palette())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

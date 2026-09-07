@@ -7,6 +7,7 @@ use thiserror::Error;
 
 mod archive;
 mod comments;
+pub mod conditional;
 mod styles;
 #[cfg(test)]
 mod tests;
@@ -14,11 +15,13 @@ mod theme;
 mod worksheet;
 
 pub use comments::{RawWorkbookComment, workbook_comments};
-pub use styles::{CellAlignment, CellStyle, SheetCells, WorkbookStyles};
+pub use conditional::CondFormat;
+pub use styles::{CellAlignment, CellStyle, Dxf, SheetCells, WorkbookStyles};
 pub use worksheet::{ColumnRange, RowAttrs, SheetFormat};
 
 use archive::{entry_path, open_archive, parse_rel_targets, parse_sheet_ids, read_entry};
-use styles::{parse_cell_styles, parse_styles};
+use conditional::parse_conditional_formats;
+use styles::{parse_cell_styles, parse_dxfs, parse_styles};
 use theme::{default_palette, parse_theme_palette};
 use worksheet::{parse_cols, parse_pane, parse_rows, parse_sheet_format};
 
@@ -35,6 +38,7 @@ pub struct WorkbookMeta {
     pub formats: HashMap<String, SheetFormat>,
     pub styles: WorkbookStyles,
     pub frozen: HashMap<String, (usize, usize)>,
+    pub conditional: HashMap<String, Vec<CondFormat>>,
 }
 
 /// Never fails: every attribute degrades to its default.
@@ -49,9 +53,14 @@ pub fn read_meta(document: &Path) -> WorkbookMeta {
         Ok(xml) => parse_theme_palette(&xml).unwrap_or_default(),
         Err(_) => default_palette(),
     };
-    let styles = read_entry(&mut archive, "xl/styles.xml")
-        .ok()
-        .and_then(|xml| parse_styles(&xml, &palette).ok())
+    let styles_xml = read_entry(&mut archive, "xl/styles.xml").ok();
+    let styles = styles_xml
+        .as_deref()
+        .and_then(|xml| parse_styles(xml, &palette).ok())
+        .unwrap_or_default();
+    let dxfs = styles_xml
+        .as_deref()
+        .and_then(|xml| parse_dxfs(xml, &palette).ok())
         .unwrap_or_default();
     let styles_active = !styles.iter().all(CellStyle::is_plain);
 
@@ -96,6 +105,12 @@ pub fn read_meta(document: &Path) -> WorkbookMeta {
         if let Ok(Some(frozen)) = parse_pane(&xml) {
             meta.frozen.insert(name.clone(), frozen);
         }
+        if !dxfs.is_empty()
+            && let Ok(formats) = parse_conditional_formats(&xml)
+            && !formats.is_empty()
+        {
+            meta.conditional.insert(name.clone(), formats);
+        }
         if styles_active
             && let Ok(cells) = parse_cell_styles(&xml, &styles)
             && !cells.is_empty()
@@ -103,11 +118,10 @@ pub fn read_meta(document: &Path) -> WorkbookMeta {
             style_cells.insert(name, cells);
         }
     }
-    if styles_active {
-        meta.styles = WorkbookStyles {
-            styles,
-            sheets: style_cells,
-        };
-    }
+    meta.styles = WorkbookStyles {
+        styles: if styles_active { styles } else { Vec::new() },
+        sheets: style_cells,
+        dxfs,
+    };
     meta
 }
