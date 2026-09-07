@@ -86,14 +86,19 @@ impl DocumentSource for XlsxSource {
                 .with_hidden_rows(hidden_rows)
                 .with_default_sizes(format.default_row_height, format.default_col_width);
                 let heights = expand_heights(rows, sheet.row_count());
+                let row_fills = row_fills(rows, &styles.styles, sheet.row_count());
                 let sheet = sheet.with_row_heights(heights);
                 match cols {
                     Some(cols) => {
                         let expanded = expand_widths(cols, sheet.col_count());
                         let hidden = hidden_cols(cols, sheet.col_count());
-                        sheet.with_col_widths(expanded).with_hidden_cols(hidden)
+                        let fills = col_fills(cols, &styles.styles, sheet.col_count());
+                        sheet
+                            .with_col_widths(expanded)
+                            .with_hidden_cols(hidden)
+                            .with_default_fills(row_fills, fills)
                     }
-                    None => sheet,
+                    None => sheet.with_default_fills(row_fills, HashMap::new()),
                 }
             })
             .collect();
@@ -158,6 +163,39 @@ fn expand_heights(rows: &[xlsx_meta::RowAttrs], row_count: usize) -> Vec<Option<
     heights
 }
 
+/// Fill of each custom-format row's style, within the used range.
+fn row_fills(
+    rows: &[xlsx_meta::RowAttrs],
+    styles: &[xlsx_meta::CellStyle],
+    row_count: usize,
+) -> HashMap<usize, Rgb> {
+    rows.iter()
+        .filter(|row| (row.index as usize) < row_count)
+        .filter_map(|row| {
+            let (r, g, b) = styles.get(row.style?)?.fill?;
+            Some((row.index as usize, Rgb { r, g, b }))
+        })
+        .collect()
+}
+
+/// Fill of each styled column's style, within the used range.
+fn col_fills(
+    cols: &[xlsx_meta::ColumnRange],
+    styles: &[xlsx_meta::CellStyle],
+    col_count: usize,
+) -> HashMap<usize, Rgb> {
+    let mut fills = HashMap::new();
+    for col in cols {
+        let Some((r, g, b)) = col.style.and_then(|s| styles.get(s)?.fill) else {
+            continue;
+        };
+        for index in column_indexes(col, col_count) {
+            fills.insert(index, Rgb { r, g, b });
+        }
+    }
+    fills
+}
+
 /// 0-based columns marked hidden, within the used range.
 fn hidden_cols(cols: &[xlsx_meta::ColumnRange], col_count: usize) -> HashSet<usize> {
     cols.iter()
@@ -176,7 +214,7 @@ fn column_indexes(col: &xlsx_meta::ColumnRange, col_count: usize) -> std::ops::R
 fn to_sheet(
     name: String,
     range: Range<Data>,
-    cells: Option<&HashMap<(u32, u32), usize>>,
+    cells: Option<&xlsx_meta::SheetCells>,
     styles: &[xlsx_meta::CellStyle],
     formats: &[Option<NumberFormat>],
     is_1904: bool,
@@ -205,10 +243,26 @@ fn to_sheet(
         rows.push(row);
     }
     let styling = match cells {
-        Some(cells) => apply_styles(&mut rows, cells, styles, formats, &date_parts, is_1904),
+        Some(cells) => apply_styles(
+            &mut rows,
+            &cells.styled,
+            styles,
+            formats,
+            &date_parts,
+            is_1904,
+        ),
         None => Styling::default(),
     };
+    let blank: HashSet<(usize, usize)> = cells
+        .map(|c| {
+            c.blank
+                .iter()
+                .map(|&(r, c)| (r as usize, c as usize))
+                .collect()
+        })
+        .unwrap_or_default();
     Sheet::new(name, rows)
+        .with_blank_cells(blank)
         .with_fills(styling.fills)
         .with_text_colors(styling.text_colors)
         .with_alignments(styling.alignments)
@@ -396,7 +450,64 @@ mod tests {
             max,
             width,
             hidden,
+            style: None,
         }
+    }
+
+    #[test]
+    fn row_and_column_fills_come_from_their_styles_within_the_used_range() {
+        let styles = vec![
+            xlsx_meta::CellStyle::default(),
+            xlsx_meta::CellStyle {
+                fill: Some((255, 255, 0)),
+                ..Default::default()
+            },
+            xlsx_meta::CellStyle {
+                font: Some((1, 2, 3)),
+                ..Default::default()
+            },
+        ];
+        let yellow = Rgb {
+            r: 255,
+            g: 255,
+            b: 0,
+        };
+        let row = |index, style| xlsx_meta::RowAttrs {
+            index,
+            hidden: false,
+            height: None,
+            style,
+        };
+        let rows = vec![
+            row(0, Some(1)),
+            row(1, Some(2)),
+            row(2, None),
+            row(9, Some(1)),
+        ];
+        assert_eq!(
+            row_fills(&rows, &styles, 5),
+            HashMap::from([(0, yellow)]),
+            "no fill in the style, no style, and past the used range are all skipped"
+        );
+        let cols = vec![
+            xlsx_meta::ColumnRange {
+                style: Some(1),
+                ..col(2, 3, None, false)
+            },
+            xlsx_meta::ColumnRange {
+                style: Some(7),
+                ..col(4, 4, None, false)
+            },
+            xlsx_meta::ColumnRange {
+                style: Some(1),
+                ..col(6, 16384, None, false)
+            },
+        ];
+        assert_eq!(
+            col_fills(&cols, &styles, 6),
+            HashMap::from([(1, yellow), (2, yellow), (5, yellow)]),
+            "an out-of-range style index is skipped; the range stops at the used range"
+        );
     }
 
     #[test]
@@ -479,6 +590,7 @@ mod tests {
             index,
             hidden: false,
             height,
+            style: None,
         };
         let rows = vec![row(1, Some(60.0)), row(2, None), row(7, Some(30.0))];
         assert_eq!(expand_heights(&rows, 3), vec![None, Some(60.0), None]);

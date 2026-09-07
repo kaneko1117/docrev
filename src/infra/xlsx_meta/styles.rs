@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -39,11 +39,24 @@ impl CellStyle {
     }
 }
 
-/// `sheets` maps 0-based (row, col) to indices in `styles`.
 #[derive(Debug, Default, Clone)]
 pub struct WorkbookStyles {
     pub styles: Vec<CellStyle>,
-    pub sheets: HashMap<String, HashMap<(u32, u32), usize>>,
+    pub sheets: HashMap<String, SheetCells>,
+}
+
+/// 0-based (row, col): `styled` maps to indices in `styles`; `blank` holds the `<c/>` elements
+/// written without content, which carry their own style instead of their row's or column's.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SheetCells {
+    pub styled: HashMap<(u32, u32), usize>,
+    pub blank: HashSet<(u32, u32)>,
+}
+
+impl SheetCells {
+    pub fn is_empty(&self) -> bool {
+        self.styled.is_empty() && self.blank.is_empty()
+    }
 }
 
 /// One entry per `cellXfs` `<xf>`.
@@ -51,6 +64,13 @@ pub(super) fn parse_styles(
     xml: &str,
     palette: &[(u8, u8, u8)],
 ) -> Result<Vec<CellStyle>, MetaError> {
+    // <colors> comes after <fonts> and <fills> in the file, so the indexed palette is read first
+    let indexed = parse_indexed_palette(xml)?;
+    let palettes = Palettes {
+        theme: palette,
+        indexed: &indexed,
+    };
+    let palette = &palettes;
     let mut reader = Reader::from_str(xml);
     let mut custom: HashMap<u32, String> = HashMap::new();
     let mut fills: Vec<Option<(u8, u8, u8)>> = Vec::new();
@@ -234,29 +254,92 @@ fn flag_on(e: &quick_xml::events::BytesStart, reader: &Reader<&[u8]>) -> bool {
         })
 }
 
-/// `rgb=` wins, else `theme=` (+ `tint=`) through the palette; `indexed=` is ignored.
+/// Theme colors in `theme=` order; legacy colors in `indexed=` order.
+struct Palettes<'a> {
+    theme: &'a [(u8, u8, u8)],
+    indexed: &'a [(u8, u8, u8)],
+}
+
+/// `rgb=` wins, then `indexed=`, then `theme=` (+ `tint=`); `auto="1"` and indexes past the
+/// palette (64 and 65 are the system colors) are no color.
 fn parse_color_attrs(
     e: &quick_xml::events::BytesStart,
     reader: &Reader<&[u8]>,
-    palette: &[(u8, u8, u8)],
+    palettes: &Palettes,
 ) -> Option<(u8, u8, u8)> {
     let mut rgb = None;
+    let mut indexed = None;
     let mut theme = None;
     let mut tint = 0.0f64;
     for attr in e.attributes().flatten() {
         let value = attr_value(&attr, reader.decoder());
         match attr.key.as_ref() {
             b"rgb" => rgb = parse_hex_rgb(&value),
+            b"indexed" => indexed = value.parse::<usize>().ok(),
             b"theme" => theme = value.parse::<usize>().ok(),
             b"tint" => tint = value.parse().unwrap_or(0.0),
+            b"auto" if value == "1" || value == "true" => return None,
             _ => {}
         }
     }
     if let Some(rgb) = rgb {
         return Some(rgb);
     }
-    let base = palette.get(theme?).copied()?;
+    if let Some(index) = indexed {
+        return palettes.indexed.get(index).copied();
+    }
+    let base = palettes.theme.get(theme?).copied()?;
     Some(apply_tint(base, tint))
+}
+
+/// ECMA-376 §18.8.27: the legacy palette in `indexed=` order.
+const INDEXED_PALETTE: [u32; 64] = [
+    0x000000, 0xFFFFFF, 0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0xFF00FF, 0x00FFFF, 0x000000,
+    0xFFFFFF, 0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0xFF00FF, 0x00FFFF, 0x800000, 0x008000,
+    0x000080, 0x808000, 0x800080, 0x008080, 0xC0C0C0, 0x808080, 0x9999FF, 0x993366, 0xFFFFCC,
+    0xCCFFFF, 0x660066, 0xFF8080, 0x0066CC, 0xCCCCFF, 0x000080, 0xFF00FF, 0xFFFF00, 0x00FFFF,
+    0x800080, 0x800000, 0x008080, 0x0000FF, 0x00CCFF, 0xCCFFFF, 0xCCFFCC, 0xFFFF99, 0x99CCFF,
+    0xFF99CC, 0xCC99FF, 0xFFCC99, 0x3366FF, 0x33CCCC, 0x99CC00, 0xFFCC00, 0xFF9900, 0xFF6600,
+    0x666699, 0x969696, 0x003366, 0x339966, 0x003300, 0x333300, 0x993300, 0x993366, 0x333399,
+    0x333333,
+];
+
+fn default_indexed_palette() -> Vec<(u8, u8, u8)> {
+    INDEXED_PALETTE
+        .iter()
+        .map(|&c| ((c >> 16) as u8, (c >> 8) as u8, c as u8))
+        .collect()
+}
+
+/// The workbook's own `<indexedColors>` when it has one, else the default legacy palette.
+fn parse_indexed_palette(xml: &str) -> Result<Vec<(u8, u8, u8)>, MetaError> {
+    let mut reader = Reader::from_str(xml);
+    let mut in_indexed = false;
+    let mut custom = Vec::new();
+    loop {
+        match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
+            Event::Start(e) if e.local_name().as_ref() == b"indexedColors" => in_indexed = true,
+            Event::End(e) if e.local_name().as_ref() == b"indexedColors" => break,
+            Event::Start(e) | Event::Empty(e)
+                if in_indexed && e.local_name().as_ref() == b"rgbColor" =>
+            {
+                // a missing or broken entry keeps its slot so later indexes stay aligned
+                let rgb = e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == b"rgb")
+                    .and_then(|a| parse_hex_rgb(&attr_value(&a, reader.decoder())));
+                custom.push(rgb.unwrap_or((0, 0, 0)));
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(if custom.is_empty() {
+        default_indexed_palette()
+    } else {
+        custom
+    })
 }
 
 /// Built-in ids (ECMA-376 §18.8.30) with ja-JP renderings for the locale-dependent ones; scientific (11, 48) and text (49) stay `None`.
@@ -303,16 +386,14 @@ pub(super) fn builtin_format(id: u32) -> Option<&'static str> {
 }
 
 /// Cells whose style is not plain. `<row r=…>` and `<c r=…>` are optional; positions then continue from the previous element.
-pub(super) fn parse_cell_styles(
-    xml: &str,
-    styles: &[CellStyle],
-) -> Result<HashMap<(u32, u32), usize>, MetaError> {
+pub(super) fn parse_cell_styles(xml: &str, styles: &[CellStyle]) -> Result<SheetCells, MetaError> {
     let mut reader = Reader::from_str(xml);
-    let mut cells = HashMap::new();
+    let mut cells = SheetCells::default();
     let mut row: Option<u32> = None;
     let mut next_col: u32 = 0;
     loop {
-        match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
+        let event = reader.read_event().map_err(|e| MetaError(e.to_string()))?;
+        match &event {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"row" => {
                 let explicit = e
                     .attributes()
@@ -351,13 +432,20 @@ pub(super) fn parse_cell_styles(
                         (r, c)
                     }),
                 };
-                let (Some(position), Some(style)) = (position, style) else {
+                let Some(position) = position else {
+                    continue;
+                };
+                // a childless <c/> holds no value: present in the file, yet nothing to show
+                if matches!(event, Event::Empty(_)) {
+                    cells.blank.insert(position);
+                }
+                let Some(style) = style else {
                     continue;
                 };
                 if styles.get(style).is_none_or(|s| s.is_plain()) {
                     continue;
                 }
-                cells.insert(position, style);
+                cells.styled.insert(position, style);
             }
             Event::Eof => break,
             _ => {}

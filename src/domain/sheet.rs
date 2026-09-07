@@ -102,6 +102,11 @@ pub struct Sheet {
     merges: Vec<MergedRange>,
     /// Keyed by (row, col).
     fills: HashMap<(usize, usize), Rgb>,
+    /// Inherited by empty cells; keyed by row / column.
+    row_fills: HashMap<usize, Rgb>,
+    col_fills: HashMap<usize, Rgb>,
+    /// Empty cells the file styled on their own; they inherit nothing.
+    blank_cells: HashSet<(usize, usize)>,
     text_colors: HashMap<(usize, usize), TextColor>,
     alignments: HashMap<(usize, usize), Alignment>,
     emphases: HashMap<(usize, usize), Emphasis>,
@@ -129,6 +134,9 @@ impl Sheet {
             default_col_width: None,
             merges: Vec::new(),
             fills: HashMap::new(),
+            row_fills: HashMap::new(),
+            col_fills: HashMap::new(),
+            blank_cells: HashSet::new(),
             text_colors: HashMap::new(),
             alignments: HashMap::new(),
             emphases: HashMap::new(),
@@ -259,8 +267,35 @@ impl Sheet {
         self
     }
 
+    /// (row fills, column fills) empty cells fall back to, the row's first.
+    pub fn with_default_fills(
+        mut self,
+        rows: HashMap<usize, Rgb>,
+        cols: HashMap<usize, Rgb>,
+    ) -> Self {
+        self.row_fills = rows;
+        self.col_fills = cols;
+        self
+    }
+
+    pub fn with_blank_cells(mut self, cells: HashSet<(usize, usize)>) -> Self {
+        self.blank_cells = cells;
+        self
+    }
+
+    /// The cell's own fill; a cell the file never wrote inherits its row's, then its column's.
+    /// Any written cell, valued or blank, keeps its own (possibly absent) style as in Excel.
     pub fn fill_at(&self, row: usize, col: usize) -> Option<Rgb> {
-        self.fills.get(&(row, col)).copied()
+        if let Some(fill) = self.fills.get(&(row, col)) {
+            return Some(*fill);
+        }
+        if !self.cell(row, col).is_empty() || self.blank_cells.contains(&(row, col)) {
+            return None;
+        }
+        self.row_fills
+            .get(&row)
+            .or_else(|| self.col_fills.get(&col))
+            .copied()
     }
 
     pub fn with_text_colors(mut self, colors: HashMap<(usize, usize), TextColor>) -> Self {
@@ -618,6 +653,53 @@ mod tests {
         assert_eq!(sheet.text_color_at(0, 2), Some(TextColor::Literal(red)));
         assert_eq!(sheet.display_fill_at(0, 2), Some(red));
         assert_eq!(sheet.fill_at(0, 2), None, "the raw lookup stays raw");
+    }
+
+    #[test]
+    fn empty_cells_inherit_row_then_column_fills() {
+        let red = Rgb { r: 255, g: 0, b: 0 };
+        let blue = Rgb { r: 0, g: 0, b: 255 };
+        let green = Rgb { r: 0, g: 255, b: 0 };
+        let sheet = Sheet::new(
+            "s",
+            vec![
+                vec![
+                    CellValue::Text("a".into()),
+                    CellValue::Empty,
+                    CellValue::Empty,
+                ],
+                vec![CellValue::Empty, CellValue::Empty],
+            ],
+        )
+        .with_fills(HashMap::from([((1, 0), green)]))
+        .with_default_fills(
+            HashMap::from([(0, red)]),
+            HashMap::from([(0, blue), (2, blue)]),
+        )
+        .with_blank_cells(HashSet::from([(1, 2)]));
+        assert_eq!(
+            sheet.fill_at(0, 0),
+            None,
+            "a valued cell keeps its own (missing) style"
+        );
+        assert_eq!(sheet.fill_at(0, 1), Some(red), "empty cell in a styled row");
+        assert_eq!(sheet.fill_at(0, 2), Some(red), "the row beats the column");
+        assert_eq!(
+            sheet.fill_at(1, 0),
+            Some(green),
+            "an explicit fill beats both"
+        );
+        assert_eq!(sheet.fill_at(1, 1), None);
+        assert_eq!(
+            sheet.fill_at(1, 2),
+            None,
+            "a blank cell the file wrote keeps its own fill-less style"
+        );
+        assert_eq!(
+            sheet.fill_at(0, 2),
+            Some(red),
+            "beyond the row's cells counts as unwritten"
+        );
     }
 
     #[test]
