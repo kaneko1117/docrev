@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::domain::anchor::Anchor;
-use crate::domain::sheet::{Rgb, Sheet, TextColor, Vertical};
+use crate::domain::sheet::{Emphasis, Rgb, Sheet, TextColor, Vertical};
 
 use super::text::{Placement, cell_lines, cell_text, center, pad_left};
 
@@ -97,6 +97,8 @@ pub(crate) struct Slot {
     pub fill: Option<Rgb>,
     /// Suppressed under the cursor unless it comes from the number format.
     pub font: Option<TextColor>,
+    /// Applies to the text only, never to the padding.
+    pub emphasis: Emphasis,
     /// Merges only rule their last row.
     pub ruled: bool,
 }
@@ -405,6 +407,7 @@ impl RowBuilder<'_> {
                             note,
                             fill: sheet.display_fill_at(row, col),
                             font,
+                            emphasis: sheet.display_emphasis_at(row, col),
                             ruled: row == merge_last_row(sheet, merge) && last_line,
                         });
                         col = segment_end;
@@ -451,6 +454,7 @@ impl RowBuilder<'_> {
                         note: sub == 0 && input.notes.contains(&(row, col)),
                         fill,
                         font: visible_color(sheet.text_color_at(row, col), on_cursor || in_range),
+                        emphasis: sheet.display_emphasis_at(row, col),
                         ruled: last_line,
                     });
                     col += 1;

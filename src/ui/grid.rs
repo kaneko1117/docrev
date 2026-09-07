@@ -2,12 +2,12 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::domain::comment::CommentThread;
-use crate::domain::sheet::{Sheet, TextColor};
+use crate::domain::sheet::{Emphasis, Sheet, TextColor};
 
 use super::layout::{self, GridLayout, LayoutInput, Separator, Viewport};
 use super::style::{
@@ -243,13 +243,15 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
             } else {
                 base
             };
-            if slot.note {
+            let (head, corner) = if slot.note {
                 let split = slot.text.char_indices().last().map(|(i, _)| i).unwrap_or(0);
-                let (head, corner) = slot.text.split_at(split);
-                spans.push(Span::styled(head.to_string(), style));
-                spans.push(Span::styled(corner.to_string(), note_corner(p)));
+                slot.text.split_at(split)
             } else {
-                spans.push(Span::styled(slot.text.clone(), style));
+                (slot.text.as_str(), "")
+            };
+            spans.extend(emphasized(head, style, slot.emphasis));
+            if slot.note {
+                spans.push(Span::styled(corner.to_string(), note_corner(p)));
             }
         }
         lines.push(Line::from(spans));
@@ -257,11 +259,41 @@ fn draw_grid(p: &Palette, frame: &mut Frame, area: Rect, grid: &GridLayout) {
     frame.render_widget(Paragraph::new(lines).style(canvas(p)), area);
 }
 
+/// The modifiers go on the text between the padding: a strikethrough over spaces would rule the
+/// whole slot.
+fn emphasized(text: &str, style: Style, emphasis: Emphasis) -> Vec<Span<'static>> {
+    let mut modifier = Modifier::empty();
+    if emphasis.bold {
+        modifier |= Modifier::BOLD;
+    }
+    if emphasis.italic {
+        modifier |= Modifier::ITALIC;
+    }
+    if emphasis.strike {
+        modifier |= Modifier::CROSSED_OUT;
+    }
+    if modifier.is_empty() {
+        return vec![Span::styled(text.to_string(), style)];
+    }
+    let body_start = text.len() - text.trim_start().len();
+    let body_end = text.trim_end().len().max(body_start);
+    let (lead, rest) = text.split_at(body_start);
+    let (body, trail) = rest.split_at(body_end - body_start);
+    [
+        (lead, style),
+        (body, style.add_modifier(modifier)),
+        (trail, style),
+    ]
+    .into_iter()
+    .filter(|(part, _)| !part.is_empty())
+    .map(|(part, style)| Span::styled(part.to_string(), style))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::style::Modifier;
 
     use crate::domain::cell::CellValue;
     use crate::domain::sheet::NamedColor;
@@ -355,6 +387,100 @@ mod tests {
             fg,
             Some(Theme::default().palette().named_fg(NamedColor::Red)),
             "the [Red] tag must color the cell"
+        );
+    }
+
+    #[test]
+    fn emphasis_reaches_the_glyphs_but_not_the_padding() {
+        use std::collections::HashMap;
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![
+                CellValue::Text("bold".into()),
+                CellValue::Text("gone".into()),
+                CellValue::Number(7.0),
+                CellValue::Text("plain".into()),
+            ]],
+        )
+        .with_emphases(HashMap::from([
+            (
+                (0, 0),
+                Emphasis {
+                    bold: true,
+                    ..Emphasis::default()
+                },
+            ),
+            (
+                (0, 1),
+                Emphasis {
+                    strike: true,
+                    italic: true,
+                    ..Emphasis::default()
+                },
+            ),
+            (
+                (0, 2),
+                Emphasis {
+                    strike: true,
+                    ..Emphasis::default()
+                },
+            ),
+        ]));
+        let view = GridView {
+            sheet: &sheet,
+            tabs: vec![(0, "s")],
+            active: 0,
+            cursor: (0, 0),
+            markers: HashSet::new(),
+            notes: HashSet::new(),
+            notes_view: None,
+            notice: None,
+            thread: None,
+            editor: None,
+            selection: None,
+            search: None,
+            picker: None,
+            col_widths: vec![Some(6.0); 4],
+            theme: Theme::default(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        let mut scroll = Scroll::default();
+        terminal
+            .draw(|f| {
+                draw(f, &view, &mut scroll);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..buffer.area.height)
+            .find(|&y| buffer.cell((3, y)).is_some_and(|c| c.symbol() == "b"))
+            .expect("the body row");
+        let modifiers_at = |x: u16| buffer.cell((x, row)).unwrap().style().add_modifier;
+        let find = |symbol: &str| {
+            (0..buffer.area.width)
+                .find(|&x| buffer.cell((x, row)).is_some_and(|c| c.symbol() == symbol))
+                .unwrap()
+        };
+        let b = find("b");
+        assert!(
+            modifiers_at(b).contains(Modifier::BOLD),
+            "bold under the cursor too"
+        );
+        assert!(
+            !modifiers_at(b + 5).contains(Modifier::BOLD),
+            "the padding after the text is plain"
+        );
+        let g = find("g");
+        assert!(modifiers_at(g).contains(Modifier::CROSSED_OUT | Modifier::ITALIC));
+        assert!(!modifiers_at(g + 4).contains(Modifier::CROSSED_OUT));
+        let seven = find("7");
+        assert!(modifiers_at(seven).contains(Modifier::CROSSED_OUT));
+        assert!(
+            !modifiers_at(seven - 1).contains(Modifier::CROSSED_OUT),
+            "leading padding of a right-aligned number is plain"
+        );
+        let p = find("p");
+        assert!(
+            !modifiers_at(p).intersects(Modifier::BOLD | Modifier::ITALIC | Modifier::CROSSED_OUT)
         );
     }
 

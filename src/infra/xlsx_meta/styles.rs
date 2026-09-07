@@ -16,6 +16,9 @@ pub struct CellStyle {
     pub fill: Option<(u8, u8, u8)>,
     pub font: Option<(u8, u8, u8)>,
     pub alignment: Option<CellAlignment>,
+    pub bold: bool,
+    pub italic: bool,
+    pub strike: bool,
 }
 
 /// `<alignment>` attributes as written; `horizontal` and `vertical` are the file's keywords.
@@ -32,6 +35,7 @@ impl CellStyle {
             && self.fill.is_none()
             && self.font.is_none()
             && self.alignment.is_none()
+            && !(self.bold || self.italic || self.strike)
     }
 }
 
@@ -50,7 +54,7 @@ pub(super) fn parse_styles(
     let mut reader = Reader::from_str(xml);
     let mut custom: HashMap<u32, String> = HashMap::new();
     let mut fills: Vec<Option<(u8, u8, u8)>> = Vec::new();
-    let mut fonts: Vec<Option<(u8, u8, u8)>> = Vec::new();
+    let mut fonts: Vec<FontFace> = Vec::new();
     let mut xfs: Vec<(u32, usize, usize, Option<CellAlignment>)> = Vec::new();
     // the same elements also appear under <dxfs> and <cellStyleXfs>, which cells never reference
     let mut in_num_fmts = false;
@@ -62,7 +66,7 @@ pub(super) fn parse_styles(
     let mut solid = false;
     let mut fill_color: Option<(u8, u8, u8)> = None;
     let mut font_depth = 0u32;
-    let mut font_color: Option<(u8, u8, u8)> = None;
+    let mut face = FontFace::default();
     loop {
         let event = reader.read_event().map_err(|e| MetaError(e.to_string()))?;
         match &event {
@@ -108,16 +112,19 @@ pub(super) fn parse_styles(
                         fill_color = parse_color_attrs(e, &reader, palette);
                     }
                     b"font" if in_fonts => {
-                        font_color = None;
+                        face = FontFace::default();
                         if empty {
-                            fonts.push(None);
+                            fonts.push(face);
                         } else {
                             font_depth += 1;
                         }
                     }
                     b"color" if in_fonts && font_depth > 0 => {
-                        font_color = parse_color_attrs(e, &reader, palette);
+                        face.color = parse_color_attrs(e, &reader, palette);
                     }
+                    b"b" if in_fonts && font_depth > 0 => face.bold = flag_on(e, &reader),
+                    b"i" if in_fonts && font_depth > 0 => face.italic = flag_on(e, &reader),
+                    b"strike" if in_fonts && font_depth > 0 => face.strike = flag_on(e, &reader),
                     b"xf" if in_cell_xfs => {
                         let mut num_fmt = 0u32;
                         let mut fill_id = 0usize;
@@ -174,7 +181,7 @@ pub(super) fn parse_styles(
                 }
                 b"font" if in_fonts && font_depth > 0 => {
                     font_depth -= 1;
-                    fonts.push(font_color);
+                    fonts.push(face);
                 }
                 _ => {}
             },
@@ -182,6 +189,13 @@ pub(super) fn parse_styles(
             _ => {}
         }
     }
+    let face_of = |font_id: usize| {
+        if font_id == 0 {
+            FontFace::default()
+        } else {
+            fonts.get(font_id).copied().unwrap_or_default()
+        }
+    };
     Ok(xfs
         .into_iter()
         .map(|(num_fmt, fill_id, font_id, alignment)| CellStyle {
@@ -190,15 +204,34 @@ pub(super) fn parse_styles(
                 None => builtin_format(num_fmt).map(str::to_string),
             },
             fill: fills.get(fill_id).copied().flatten(),
-            // font 0 is the workbook default; inheriting its color would restyle every plain cell
-            font: if font_id == 0 {
-                None
-            } else {
-                fonts.get(font_id).copied().flatten()
-            },
+            // font 0 is the workbook default; inheriting it would restyle every plain cell
+            font: face_of(font_id).color,
             alignment,
+            bold: face_of(font_id).bold,
+            italic: face_of(font_id).italic,
+            strike: face_of(font_id).strike,
         })
         .collect())
+}
+
+/// One `<fonts>` entry; color is sRGB.
+#[derive(Debug, Default, Clone, Copy)]
+struct FontFace {
+    color: Option<(u8, u8, u8)>,
+    bold: bool,
+    italic: bool,
+    strike: bool,
+}
+
+/// A bare `<b/>` is on; `val="0"` or `val="false"` turns it off.
+fn flag_on(e: &quick_xml::events::BytesStart, reader: &Reader<&[u8]>) -> bool {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == b"val")
+        .is_none_or(|a| {
+            let value = attr_value(&a, reader.decoder());
+            value != "0" && value != "false"
+        })
 }
 
 /// `rgb=` wins, else `theme=` (+ `tint=`) through the palette; `indexed=` is ignored.
