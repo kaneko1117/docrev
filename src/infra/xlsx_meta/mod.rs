@@ -15,12 +15,12 @@ mod worksheet;
 
 pub use comments::{RawWorkbookComment, workbook_comments};
 pub use styles::{CellStyle, WorkbookStyles};
-pub use worksheet::ColumnRange;
+pub use worksheet::{ColumnRange, RowAttrs, SheetFormat};
 
 use archive::{entry_path, open_archive, parse_rel_targets, parse_sheet_ids, read_entry};
 use styles::{parse_cell_styles, parse_styles};
 use theme::{default_palette, parse_theme_palette};
-use worksheet::{parse_cols, parse_hidden_rows, parse_pane};
+use worksheet::{parse_cols, parse_pane, parse_rows, parse_sheet_format};
 
 #[derive(Debug, Error)]
 #[error("{0}")]
@@ -30,8 +30,9 @@ pub struct MetaError(String);
 #[derive(Debug, Default)]
 pub struct WorkbookMeta {
     pub cols: HashMap<String, Vec<ColumnRange>>,
-    /// 0-based row indexes per sheet.
-    pub hidden_rows: HashMap<String, Vec<u32>>,
+    /// Only rows that are hidden or custom-height, per sheet.
+    pub rows: HashMap<String, Vec<RowAttrs>>,
+    pub formats: HashMap<String, SheetFormat>,
     pub styles: WorkbookStyles,
     pub frozen: HashMap<String, (usize, usize)>,
 }
@@ -82,10 +83,15 @@ pub fn read_meta(document: &Path) -> WorkbookMeta {
         {
             meta.cols.insert(name.clone(), cols);
         }
-        if let Ok(rows) = parse_hidden_rows(&xml)
+        if let Ok(rows) = parse_rows(&xml)
             && !rows.is_empty()
         {
-            meta.hidden_rows.insert(name.clone(), rows);
+            meta.rows.insert(name.clone(), rows);
+        }
+        if let Ok(format) = parse_sheet_format(&xml)
+            && format != SheetFormat::default()
+        {
+            meta.formats.insert(name.clone(), format);
         }
         if let Ok(Some(frozen)) = parse_pane(&xml) {
             meta.frozen.insert(name.clone(), frozen);

@@ -57,6 +57,12 @@ pub struct Sheet {
     rows: Vec<Vec<CellValue>>,
     /// Index = column.
     col_widths: Vec<Option<f64>>,
+    /// Index = row; points, only where the author set a height by hand.
+    row_heights: Vec<Option<f64>>,
+    /// Points.
+    default_row_height: Option<f64>,
+    /// Characters.
+    default_col_width: Option<f64>,
     merges: Vec<MergedRange>,
     /// Keyed by (row, col).
     fills: HashMap<(usize, usize), Rgb>,
@@ -80,6 +86,9 @@ impl Sheet {
             name: name.into(),
             rows,
             col_widths: Vec::new(),
+            row_heights: Vec::new(),
+            default_row_height: None,
+            default_col_width: None,
             merges: Vec::new(),
             fills: HashMap::new(),
             text_colors: HashMap::new(),
@@ -225,6 +234,19 @@ impl Sheet {
         self
     }
 
+    /// Points as the file states them; the ui turns them into lines.
+    pub fn with_row_heights(mut self, heights: Vec<Option<f64>>) -> Self {
+        self.row_heights = heights;
+        self
+    }
+
+    /// (points, characters) the sheet uses where a row or column states nothing.
+    pub fn with_default_sizes(mut self, row_height: Option<f64>, col_width: Option<f64>) -> Self {
+        self.default_row_height = row_height;
+        self.default_col_width = col_width;
+        self
+    }
+
     pub fn with_merges(mut self, merges: Vec<MergedRange>) -> Self {
         self.merges = merges;
         self
@@ -297,6 +319,18 @@ impl Sheet {
 
     pub fn col_width(&self, col: usize) -> Option<f64> {
         self.col_widths.get(col).copied().flatten()
+    }
+
+    pub fn row_height(&self, row: usize) -> Option<f64> {
+        self.row_heights.get(row).copied().flatten()
+    }
+
+    pub fn default_row_height(&self) -> Option<f64> {
+        self.default_row_height
+    }
+
+    pub fn default_col_width(&self) -> Option<f64> {
+        self.default_col_width
     }
 
     /// Inside a merged region, the anchor's value.

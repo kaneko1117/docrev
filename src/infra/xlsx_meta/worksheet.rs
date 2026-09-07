@@ -84,8 +84,61 @@ pub(super) fn parse_cols(xml: &str) -> Result<Vec<ColumnRange>, MetaError> {
     Ok(out)
 }
 
-/// 0-based indexes of `<row hidden="1">`; a `<row>` without `r` follows the previous one.
-pub(super) fn parse_hidden_rows(xml: &str) -> Result<Vec<u32>, MetaError> {
+/// 0-based; `height` is set only for `customHeight` rows, in points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowAttrs {
+    pub index: u32,
+    pub hidden: bool,
+    pub height: Option<f64>,
+}
+
+/// Character width and points, each only when the file states a positive finite value.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SheetFormat {
+    pub default_col_width: Option<f64>,
+    pub default_row_height: Option<f64>,
+}
+
+/// Excel derives `defaultColWidth` from `baseColWidth` by adding cell padding.
+const BASE_COL_PADDING: f64 = 0.71;
+/// The spec's default `baseColWidth`; writers restate it, so it carries no intent.
+const SPEC_BASE_COL_WIDTH: f64 = 8.0;
+
+pub(super) fn parse_sheet_format(xml: &str) -> Result<SheetFormat, MetaError> {
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader.read_event().map_err(|e| MetaError(e.to_string()))? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"sheetFormatPr" => {
+                let mut default_col_width = None;
+                let mut base_col_width = None;
+                let mut default_row_height = None;
+                for attr in e.attributes().flatten() {
+                    let value = attr_value(&attr, reader.decoder());
+                    match attr.key.as_ref() {
+                        b"defaultColWidth" => default_col_width = positive(&value),
+                        b"baseColWidth" => base_col_width = positive(&value),
+                        b"defaultRowHeight" => default_row_height = positive(&value),
+                        _ => {}
+                    }
+                }
+                return Ok(SheetFormat {
+                    default_col_width: default_col_width.or(base_col_width
+                        .filter(|w| *w != SPEC_BASE_COL_WIDTH)
+                        .map(|w| w + BASE_COL_PADDING)),
+                    default_row_height,
+                });
+            }
+            // sheetFormatPr precedes sheetData
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"sheetData" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(SheetFormat::default())
+}
+
+/// Rows that are hidden or have a custom height; a `<row>` without `r` follows the previous one.
+pub(super) fn parse_rows(xml: &str) -> Result<Vec<RowAttrs>, MetaError> {
     let mut reader = Reader::from_str(xml);
     let mut out = Vec::new();
     let mut row: Option<u32> = None;
@@ -94,11 +147,15 @@ pub(super) fn parse_hidden_rows(xml: &str) -> Result<Vec<u32>, MetaError> {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"row" => {
                 let mut explicit = None;
                 let mut hidden = false;
+                let mut height = None;
+                let mut custom = false;
                 for attr in e.attributes().flatten() {
                     let value = attr_value(&attr, reader.decoder());
                     match attr.key.as_ref() {
                         b"r" => explicit = value.parse::<u32>().ok().and_then(|r| r.checked_sub(1)),
                         b"hidden" => hidden = is_true(&value),
+                        b"ht" => height = positive(&value),
+                        b"customHeight" => custom = is_true(&value),
                         _ => {}
                     }
                 }
@@ -108,8 +165,13 @@ pub(super) fn parse_hidden_rows(xml: &str) -> Result<Vec<u32>, MetaError> {
                     break;
                 };
                 row = Some(current);
-                if hidden {
-                    out.push(current);
+                let height = height.filter(|_| custom);
+                if hidden || height.is_some() {
+                    out.push(RowAttrs {
+                        index: current,
+                        hidden,
+                        height,
+                    });
                 }
             }
             Event::End(e) if e.local_name().as_ref() == b"sheetData" => break,
@@ -118,6 +180,14 @@ pub(super) fn parse_hidden_rows(xml: &str) -> Result<Vec<u32>, MetaError> {
         }
     }
     Ok(out)
+}
+
+/// `None` unless the value parses to a positive finite number.
+fn positive(value: &str) -> Option<f64> {
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v > 0.0)
 }
 
 fn is_true(value: &str) -> bool {
