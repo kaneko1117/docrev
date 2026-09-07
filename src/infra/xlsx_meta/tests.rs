@@ -1,6 +1,8 @@
 use super::styles::{builtin_format, parse_cell_styles, parse_styles};
 use super::theme::{apply_tint, default_palette, parse_hex_rgb, parse_theme_palette};
-use super::worksheet::{parse_cols, parse_hidden_rows, parse_pane};
+use super::worksheet::{
+    RowAttrs, SheetFormat, parse_cols, parse_pane, parse_rows, parse_sheet_format,
+};
 use super::*;
 
 fn formats_of(styles: &[CellStyle]) -> Vec<Option<&str>> {
@@ -74,11 +76,72 @@ fn hidden_rows_are_zero_based_and_follow_sequential_rows() {
         <row/>
         <row hidden="1"/>
     </sheetData></worksheet>"#;
-    assert_eq!(parse_hidden_rows(xml).unwrap(), vec![2, 3, 11]);
+    let hidden: Vec<u32> = parse_rows(xml)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.hidden)
+        .map(|r| r.index)
+        .collect();
+    assert_eq!(hidden, vec![2, 3, 11]);
     assert!(
-        parse_hidden_rows("<worksheet><sheetData/></worksheet>")
+        parse_rows("<worksheet><sheetData/></worksheet>")
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn row_heights_count_only_custom_positive_ones() {
+    let xml = r#"<worksheet><sheetData>
+        <row r="1" ht="60" customHeight="1"><c r="A1"/></row>
+        <row r="2" ht="45"><c r="A2"/></row>
+        <row r="3" ht="0" customHeight="1"/>
+        <row r="4" ht="abc" customHeight="true"/>
+        <row r="5" ht="30.5" customHeight="true" hidden="1"/>
+        <row r="6" customHeight="1"/>
+    </sheetData></worksheet>"#;
+    let row = |index, hidden, height| RowAttrs {
+        index,
+        hidden,
+        height,
+    };
+    assert_eq!(
+        parse_rows(xml).unwrap(),
+        vec![row(0, false, Some(60.0)), row(4, true, Some(30.5))],
+        "auto-fit, zero, unparsable and absent heights are dropped"
+    );
+}
+
+#[test]
+fn sheet_format_prefers_default_col_width_over_base_and_stops_at_sheet_data() {
+    let explicit = r#"<worksheet><sheetFormatPr defaultColWidth="12.63" baseColWidth="8" defaultRowHeight="15.75" customHeight="1"/><sheetData/></worksheet>"#;
+    assert_eq!(
+        parse_sheet_format(explicit).unwrap(),
+        SheetFormat {
+            default_col_width: Some(12.63),
+            default_row_height: Some(15.75),
+        }
+    );
+    let base = r#"<worksheet><sheetFormatPr baseColWidth="10" defaultRowHeight="0"/><sheetData/></worksheet>"#;
+    let format = parse_sheet_format(base).unwrap();
+    assert!(
+        format
+            .default_col_width
+            .is_some_and(|w| (w - 10.71).abs() < 1e-9),
+        "base width plus Excel's padding, got {format:?}"
+    );
+    assert_eq!(format.default_row_height, None, "zero is not a height");
+    let restated = r#"<worksheet><sheetFormatPr baseColWidth="8" defaultRowHeight="15"/><sheetData/></worksheet>"#;
+    assert_eq!(
+        parse_sheet_format(restated).unwrap().default_col_width,
+        None,
+        "the spec default says nothing"
+    );
+    let late = r#"<worksheet><sheetData/><sheetFormatPr defaultColWidth="20"/></worksheet>"#;
+    assert_eq!(parse_sheet_format(late).unwrap(), SheetFormat::default());
+    assert_eq!(
+        parse_sheet_format("<worksheet/>").unwrap(),
+        SheetFormat::default()
     );
 }
 
@@ -88,7 +151,7 @@ fn a_row_counter_at_u32_max_stops_instead_of_wrapping() {
         <row r="4294967295"/><row/><row hidden="1"/>
     </sheetData></worksheet>"#;
     assert!(
-        parse_hidden_rows(xml).unwrap().is_empty(),
+        parse_rows(xml).unwrap().is_empty(),
         "row 0 must not turn hidden"
     );
     let styled = r#"<worksheet><sheetData>

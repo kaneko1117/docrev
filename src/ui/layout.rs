@@ -8,12 +8,30 @@ use crate::domain::sheet::{Rgb, Sheet, TextColor};
 use super::text::{cell_lines, cell_text, center, clip, pad_left, pad_right};
 
 pub const DEFAULT_CELL_WIDTH: usize = 12;
+/// Excel's own default row height, in points.
+const DEFAULT_ROW_HEIGHT_PT: f64 = 15.0;
+const MAX_ROW_LINES: usize = 10;
 
-/// Absent or non-finite widths fall back to the default.
-fn display_width(excel: Option<f64>) -> usize {
-    match excel {
+/// A column without a width takes the sheet's default; absent or non-finite widths fall back to
+/// `DEFAULT_CELL_WIDTH`.
+fn display_width(excel: Option<f64>, sheet_default: Option<f64>) -> usize {
+    match excel.or(sheet_default) {
         Some(w) if w.is_finite() => w.round().clamp(4.0, 60.0) as usize,
         _ => DEFAULT_CELL_WIDTH,
+    }
+}
+
+/// Lines a row's stated height claims: one per default row height, at least 1, at most
+/// `MAX_ROW_LINES`; non-positive or non-finite values claim 1.
+fn display_lines(height_pt: Option<f64>, sheet_default_pt: Option<f64>) -> usize {
+    let base = sheet_default_pt
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .unwrap_or(DEFAULT_ROW_HEIGHT_PT);
+    match height_pt {
+        Some(h) if h.is_finite() && h > 0.0 => {
+            (h / base).round().clamp(1.0, MAX_ROW_LINES as f64) as usize
+        }
+        _ => 1,
     }
 }
 
@@ -136,7 +154,12 @@ fn plan_columns(input: &LayoutInput, viewport: &Viewport, scroll: &mut Scroll) -
     let label_width = sheet.row_count().to_string().len().max(2);
     let avail = viewport.width.saturating_sub(label_width);
     let widths: Vec<usize> = (0..sheet.col_count())
-        .map(|c| display_width(input.col_widths.get(c).copied().flatten()))
+        .map(|c| {
+            display_width(
+                input.col_widths.get(c).copied().flatten(),
+                sheet.default_col_width(),
+            )
+        })
         .collect();
     let hidden: Vec<bool> = (0..sheet.col_count())
         .map(|c| sheet.col_hidden(c))
@@ -228,8 +251,8 @@ struct RowViewport {
 }
 
 impl RowBuilder<'_> {
-    /// Tallest visible cell, frozen columns included; numbers are single-line; a merge counts on
-    /// its anchor row at the merged width.
+    /// Tallest visible cell, frozen columns included, never below the row's stated height;
+    /// numbers are single-line; a merge counts on its anchor row at the merged width.
     /// 0 for a hidden row.
     fn height_of(&self, row: usize) -> usize {
         let sheet = self.input.sheet;
@@ -237,7 +260,7 @@ impl RowBuilder<'_> {
             return 0;
         }
         let width_of = |c: usize| self.plan.width_of(c);
-        let mut height = 1;
+        let mut height = display_lines(sheet.row_height(row), sheet.default_row_height());
         for (seg_index, (start, end)) in self.plan.segments().enumerate() {
             let mut col = start;
             while col < end {
@@ -676,12 +699,105 @@ mod tests {
 
     #[test]
     fn display_width_rounds_clamps_and_defaults() {
-        assert_eq!(display_width(Some(18.5)), 19, "rounds to a whole cell");
-        assert_eq!(display_width(Some(3.0)), 4, "clamped up");
-        assert_eq!(display_width(Some(100.0)), 60, "clamped down");
-        assert_eq!(display_width(Some(f64::NAN)), DEFAULT_CELL_WIDTH);
-        assert_eq!(display_width(Some(f64::INFINITY)), DEFAULT_CELL_WIDTH);
-        assert_eq!(display_width(None), DEFAULT_CELL_WIDTH);
+        assert_eq!(
+            display_width(Some(18.5), None),
+            19,
+            "rounds to a whole cell"
+        );
+        assert_eq!(display_width(Some(3.0), None), 4, "clamped up");
+        assert_eq!(display_width(Some(100.0), None), 60, "clamped down");
+        assert_eq!(display_width(Some(f64::NAN), None), DEFAULT_CELL_WIDTH);
+        assert_eq!(display_width(Some(f64::INFINITY), None), DEFAULT_CELL_WIDTH);
+        assert_eq!(display_width(None, None), DEFAULT_CELL_WIDTH);
+        assert_eq!(
+            display_width(None, Some(8.43)),
+            8,
+            "sheet default before ours"
+        );
+        assert_eq!(display_width(Some(20.0), Some(8.43)), 20, "own width wins");
+        assert_eq!(display_width(None, Some(f64::NAN)), DEFAULT_CELL_WIDTH);
+    }
+
+    #[test]
+    fn display_lines_are_proportional_to_the_sheet_default() {
+        assert_eq!(
+            display_lines(Some(60.0), None),
+            4,
+            "15pt per line by default"
+        );
+        assert_eq!(display_lines(Some(60.0), Some(18.75)), 3);
+        assert_eq!(display_lines(Some(18.75), Some(18.75)), 1);
+        assert_eq!(display_lines(Some(37.5), Some(15.0)), 3, "rounds half up");
+        assert_eq!(display_lines(Some(409.5), None), MAX_ROW_LINES, "capped");
+        assert_eq!(display_lines(Some(1.0), None), 1, "never below one");
+        assert_eq!(display_lines(Some(0.0), None), 1);
+        assert_eq!(display_lines(Some(f64::NAN), None), 1);
+        assert_eq!(display_lines(None, Some(30.0)), 1);
+        assert_eq!(
+            display_lines(Some(60.0), Some(0.0)),
+            4,
+            "bad default falls back"
+        );
+    }
+
+    #[test]
+    fn a_custom_row_height_makes_the_row_taller_than_its_neighbors() {
+        let sheet = Sheet::new(
+            "s",
+            vec![
+                vec![CellValue::Text("a".into())],
+                vec![CellValue::Text("b".into())],
+                vec![CellValue::Text("c".into())],
+            ],
+        )
+        .with_row_heights(vec![None, Some(60.0), None]);
+        let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 20, 10);
+        let rows: Vec<usize> = layout.lines.iter().map(|l| l.row).collect();
+        assert_eq!(rows, vec![0, 1, 1, 1, 1, 2]);
+        assert!(layout.lines[1].label.contains('2'));
+        assert_eq!(
+            layout.lines[2].label.trim(),
+            "",
+            "continuation lines have no label"
+        );
+        assert!(!layout.lines[1].ruled && layout.lines[4].ruled);
+        assert_eq!(
+            layout.lines[2].slots[0].text.trim(),
+            "",
+            "the text sits on the first line only"
+        );
+    }
+
+    #[test]
+    fn wrapped_text_still_grows_a_row_past_its_stated_height() {
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![CellValue::Text(
+                "a very long text that wraps across many lines".into(),
+            )]],
+        )
+        .with_row_heights(vec![Some(30.0)]);
+        let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 20, 10);
+        assert!(
+            layout.lines.len() > 2,
+            "wrapping needs more than the 2 stated lines, got {}",
+            layout.lines.len()
+        );
+    }
+
+    #[test]
+    fn unstyled_columns_take_the_sheet_default_width() {
+        let sheet = Sheet::new(
+            "s",
+            vec![vec![
+                CellValue::Text("a".into()),
+                CellValue::Text("b".into()),
+            ]],
+        )
+        .with_default_sizes(None, Some(8.43));
+        let layout = run_layout(&sheet, (0, 0), &HashSet::new(), 80, 3);
+        let widths: Vec<usize> = layout.col_spans.iter().map(|(_, r)| r.len()).collect();
+        assert_eq!(widths, vec![9, 9], "8 cells plus the separator, not 12");
     }
     use crate::domain::cell::CellValue;
     use crate::domain::sheet::MergedRange;

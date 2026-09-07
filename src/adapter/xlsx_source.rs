@@ -24,8 +24,8 @@ impl DocumentSource for XlsxSource {
         let is_1904 = raw.is_1904;
         let raw = raw.sheets;
         let meta = xlsx_meta::read_meta(path);
-        let (cols, hidden_rows, styles, frozen) =
-            (meta.cols, meta.hidden_rows, meta.styles, meta.frozen);
+        let (cols, rows, sheet_formats, styles, frozen) =
+            (meta.cols, meta.rows, meta.formats, meta.styles, meta.frozen);
         let mut workbook_comments = xlsx_meta::workbook_comments(path).unwrap_or_default();
         // parse each format once per workbook
         let formats: Vec<Option<NumberFormat>> = styles
@@ -37,9 +37,15 @@ impl DocumentSource for XlsxSource {
             .into_iter()
             .map(|raw_sheet| {
                 let cols = cols.get(&raw_sheet.name);
-                let hidden_rows: HashSet<usize> = hidden_rows
+                let rows = rows.get(&raw_sheet.name).map(Vec::as_slice).unwrap_or(&[]);
+                let hidden_rows: HashSet<usize> = rows
+                    .iter()
+                    .filter(|r| r.hidden)
+                    .map(|r| r.index as usize)
+                    .collect();
+                let format = sheet_formats
                     .get(&raw_sheet.name)
-                    .map(|rows| rows.iter().map(|&r| r as usize).collect())
+                    .copied()
                     .unwrap_or_default();
                 let cells = styles.sheets.get(&raw_sheet.name);
                 let native = workbook_comments
@@ -75,7 +81,10 @@ impl DocumentSource for XlsxSource {
                 .with_formulas(formulas)
                 .with_workbook_comments(native.into_iter().map(to_workbook_comment).collect())
                 .with_hidden(raw_sheet.hidden)
-                .with_hidden_rows(hidden_rows);
+                .with_hidden_rows(hidden_rows)
+                .with_default_sizes(format.default_row_height, format.default_col_width);
+                let heights = expand_heights(rows, sheet.row_count());
+                let sheet = sheet.with_row_heights(heights);
                 match cols {
                     Some(cols) => {
                         let expanded = expand_widths(cols, sheet.col_count());
@@ -134,6 +143,17 @@ fn expand_widths(cols: &[xlsx_meta::ColumnRange], col_count: usize) -> Vec<Optio
         }
     }
     widths
+}
+
+/// One entry per 0-based row within the used range, values as the file states them.
+fn expand_heights(rows: &[xlsx_meta::RowAttrs], row_count: usize) -> Vec<Option<f64>> {
+    let mut heights = vec![None; row_count];
+    for row in rows {
+        if let (Some(height), Some(slot)) = (row.height, heights.get_mut(row.index as usize)) {
+            *slot = Some(height);
+        }
+    }
+    heights
 }
 
 /// 0-based columns marked hidden, within the used range.
@@ -344,6 +364,18 @@ mod tests {
             col(2, 2, None, true),
         ];
         assert_eq!(expand_widths(&cols, 3), vec![Some(10.0), None, Some(18.5)]);
+    }
+
+    #[test]
+    fn heights_land_on_their_row_and_stop_at_the_used_range() {
+        let row = |index, height| xlsx_meta::RowAttrs {
+            index,
+            hidden: false,
+            height,
+        };
+        let rows = vec![row(1, Some(60.0)), row(2, None), row(7, Some(30.0))];
+        assert_eq!(expand_heights(&rows, 3), vec![None, Some(60.0), None]);
+        assert!(expand_heights(&rows, 0).is_empty());
     }
 
     #[test]

@@ -24,7 +24,12 @@ fn hidden_columns_and_rows_are_read_from_the_workbook() {
             .any(|c| c.min == 4 && c.max == 4 && !c.hidden && c.width.is_some()),
         "column D keeps its width and is visible: {cols:?}"
     );
-    assert_eq!(meta.hidden_rows.get("表"), Some(&vec![2, 4]));
+    let hidden: Vec<u32> = meta.rows["表"]
+        .iter()
+        .filter(|r| r.hidden)
+        .map(|r| r.index)
+        .collect();
+    assert_eq!(hidden, vec![2, 4]);
 }
 
 #[test]
