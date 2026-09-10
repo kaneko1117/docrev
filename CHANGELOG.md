@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/kaneko1117/docrev/compare/v0.4.0...v0.5.0) - 2026-09-10
+
+### Fixed
+
+- [**breaking**] keep one thread per cell; c and comment add continue it, r key is gone
+
 ## [0.4.0](https://github.com/kaneko1117/docrev/compare/v0.3.1...v0.4.0) - 2026-09-07
 
 ### Added
