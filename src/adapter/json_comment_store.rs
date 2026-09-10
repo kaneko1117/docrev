@@ -103,16 +103,7 @@ impl CommentStore for JsonCommentStore {
             .exclusive()
             .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
-        let thread = CommentThread {
-            id: Uuid::new_v4().to_string(),
-            anchor,
-            author: author.to_string(),
-            body: body.to_string(),
-            created_at: now(),
-            resolved: false,
-            replies: Vec::new(),
-        };
-        file.comments.push(ThreadDto::from_domain(&thread));
+        let thread = push_thread(&mut file, anchor, body, author);
         self.write(&file)?;
         Ok(thread)
     }
@@ -128,18 +119,32 @@ impl CommentStore for JsonCommentStore {
             .exclusive()
             .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))?;
         let mut file = self.read()?;
-        let Some(dto) = file.comments.iter_mut().find(|t| t.id == thread_id) else {
-            return Err(StoreError::ThreadNotFound(thread_id.to_string()));
+        let thread = push_reply(&mut file, thread_id, body, author)?;
+        self.write(&file)?;
+        Ok(thread)
+    }
+
+    fn comment_on(
+        &mut self,
+        anchor: Anchor,
+        existing: &dyn Fn(&[CommentThread]) -> Option<String>,
+        body: &str,
+        author: &str,
+    ) -> Result<CommentThread, StoreError> {
+        let mut lock = self.lock()?;
+        let _guard = lock
+            .exclusive()
+            .map_err(|e| StoreError::Io(format!("cannot lock sidecar: {e}")))?;
+        let mut file = self.read()?;
+        let threads = file
+            .comments
+            .iter()
+            .map(|dto| dto.clone().into_domain())
+            .collect::<Result<Vec<_>, _>>()?;
+        let thread = match existing(&threads) {
+            Some(id) => push_reply(&mut file, &id, body, author)?,
+            None => push_thread(&mut file, anchor, body, author),
         };
-        dto.replies.push(ReplyDto {
-            id: Uuid::new_v4().to_string(),
-            author: author.to_string(),
-            body: body.to_string(),
-            created_at: now(),
-        });
-        // a reply reopens the thread
-        dto.resolved = false;
-        let thread = dto.clone().into_domain()?;
         self.write(&file)?;
         Ok(thread)
     }
@@ -156,6 +161,40 @@ impl CommentStore for JsonCommentStore {
         dto.resolved = true;
         self.write(&file)
     }
+}
+
+fn push_thread(file: &mut SidecarFile, anchor: Anchor, body: &str, author: &str) -> CommentThread {
+    let thread = CommentThread {
+        id: Uuid::new_v4().to_string(),
+        anchor,
+        author: author.to_string(),
+        body: body.to_string(),
+        created_at: now(),
+        resolved: false,
+        replies: Vec::new(),
+    };
+    file.comments.push(ThreadDto::from_domain(&thread));
+    thread
+}
+
+fn push_reply(
+    file: &mut SidecarFile,
+    thread_id: &str,
+    body: &str,
+    author: &str,
+) -> Result<CommentThread, StoreError> {
+    let Some(dto) = file.comments.iter_mut().find(|t| t.id == thread_id) else {
+        return Err(StoreError::ThreadNotFound(thread_id.to_string()));
+    };
+    dto.replies.push(ReplyDto {
+        id: Uuid::new_v4().to_string(),
+        author: author.to_string(),
+        body: body.to_string(),
+        created_at: now(),
+    });
+    // a reply reopens the thread
+    dto.resolved = false;
+    dto.clone().into_domain()
 }
 
 fn now() -> String {

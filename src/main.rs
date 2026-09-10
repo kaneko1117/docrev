@@ -64,7 +64,7 @@ enum CommentAction {
         #[arg(long)]
         sheet: Option<String>,
     },
-    /// Start a new thread on a cell
+    /// Comment on a cell; continues the cell's thread when it has one
     Add {
         file: PathBuf,
         /// Target cell, e.g. "Sheet1!B3"

@@ -117,7 +117,7 @@ pub(crate) fn draw_status(
         None => String::new(),
     };
     let hint = if view.thread.is_some() {
-        "r:reply  c:comment  q:quit"
+        "c:reply  q:quit  ^G:sheet  ^F:find"
     } else {
         "c:comment  q:quit  ^G:sheet  ^F:find"
     };

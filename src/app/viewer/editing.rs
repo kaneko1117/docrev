@@ -1,6 +1,7 @@
+use crate::app::comments;
 use crate::domain::anchor::Anchor;
 
-use super::{EditTarget, Event, Mode, Notice, Viewer};
+use super::{Event, Mode, Notice, Viewer};
 
 impl Viewer {
     pub(super) fn apply_editing(&mut self, event: Event) {
@@ -19,29 +20,25 @@ impl Viewer {
         }
     }
 
-    /// Empty input closes without saving; a failed save keeps the editor open.
+    /// Empty input closes without saving; a failed save keeps the editor open. The thread is
+    /// chosen at save time, so one that appeared on the cell while typing is continued, not forked.
     fn submit(&mut self) {
-        let Mode::Editing { target, buffer } = &self.mode else {
+        let Mode::Editing { at, buffer, .. } = &self.mode else {
             return;
         };
-        let body = buffer.trim();
+        let body = buffer.trim().to_string();
         if body.is_empty() {
             self.mode = Mode::Grid;
             return;
         }
-        let result = match target {
-            EditTarget::NewThread => {
-                // a merged region anchors at its top-left
-                let (row, col) = self.cursor();
-                let (row, col) = match self.sheet().merge_at(row, col) {
-                    Some(merge) => merge.anchor(),
-                    None => (row, col),
-                };
-                let anchor = Anchor::cell(self.sheet().name(), row as u32, col as u32);
-                self.store.add_thread(anchor, body, "user")
-            }
-            EditTarget::Reply { thread_id } => self.store.add_reply(thread_id, body, "user"),
+        let Anchor::Cell { sheet, row, col } = at;
+        let (name, row, col) = (sheet.clone(), *row as usize, *col as usize);
+        let Some(index) = self.sheet_names().iter().position(|n| *n == name) else {
+            self.notice = Some(Notice::Save(format!("save failed: sheet {name:?} is gone")));
+            return;
         };
+        let sheet = self.sheets.get(index);
+        let result = comments::comment_on_cell(self.store.as_mut(), sheet, row, col, &body, "user");
         match result {
             Ok(thread) => {
                 match self.comments.iter_mut().find(|t| t.id == thread.id) {
@@ -70,8 +67,10 @@ mod tests {
     use crate::domain::document::Document;
     use crate::domain::sheet::Sheet;
 
+    use super::super::EditTarget;
     use super::super::test_support::{
-        NullStore, RecordingStore, thread, type_text, viewer, viewer_with,
+        LiveStore, NullStore, RecordingStore, SharedSource, thread, type_text, viewer,
+        viewer_on_with, viewer_with,
     };
     use super::*;
 
@@ -126,12 +125,12 @@ mod tests {
     }
 
     #[test]
-    fn reply_goes_to_the_thread_under_the_cursor() {
-        let store = RecordingStore::default();
-        let log = store.log.clone();
+    fn c_replies_to_the_thread_under_the_cursor() {
         let comments = vec![thread("one", 0, 0, false)];
+        let store = RecordingStore::seeded(comments.clone());
+        let log = store.log.clone();
         let mut v = viewer_with(3, 3, comments, Box::new(store));
-        v.apply(Event::StartReply);
+        v.apply(Event::StartComment);
         type_text(&mut v, "done");
         v.apply(Event::Submit);
         assert_eq!(log.borrow().as_slice(), ["reply t-one-0-0 done"]);
@@ -140,30 +139,46 @@ mod tests {
     }
 
     #[test]
-    fn reply_without_a_thread_is_ignored() {
-        let mut v = viewer(3, 3);
-        v.apply(Event::StartReply);
-        assert_eq!(*v.mode(), Mode::Grid);
-    }
-
-    #[test]
     fn c_on_an_open_thread_replies_instead_of_forking() {
         let comments = vec![thread("one", 0, 0, false)];
         let mut v = viewer_with(3, 3, comments, Box::new(NullStore));
         v.apply(Event::StartComment);
-        match v.mode() {
+        assert!(matches!(
+            v.mode(),
             Mode::Editing {
-                target: EditTarget::Reply { thread_id },
+                target: EditTarget::Reply,
                 ..
-            } => assert_eq!(thread_id, "t-one-0-0"),
-            other => panic!("expected reply mode, got {other:?}"),
-        }
+            }
+        ));
     }
 
     #[test]
-    fn c_on_a_resolved_thread_starts_a_new_thread() {
+    fn c_on_a_resolved_thread_continues_it() {
         let comments = vec![thread("one", 0, 0, true)];
-        let mut v = viewer_with(3, 3, comments, Box::new(NullStore));
+        let store = RecordingStore::seeded(comments.clone());
+        let log = store.log.clone();
+        let mut v = viewer_with(3, 3, comments, Box::new(store));
+        v.apply(Event::StartComment);
+        assert!(matches!(
+            v.mode(),
+            Mode::Editing {
+                target: EditTarget::Reply,
+                ..
+            }
+        ));
+        type_text(&mut v, "one more thing");
+        v.apply(Event::Submit);
+        assert_eq!(log.borrow().as_slice(), ["reply t-one-0-0 one more thing"]);
+        assert!(
+            v.thread_at_cursor().is_some_and(|t| !t.resolved),
+            "the reply reopens the conversation"
+        );
+        assert_eq!(v.unresolved_on_active_sheet(), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn c_on_a_cell_without_a_thread_starts_one() {
+        let mut v = viewer(3, 3);
         v.apply(Event::StartComment);
         assert!(matches!(
             v.mode(),
@@ -172,6 +187,122 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_cell_with_legacy_threads_continues_the_open_one_else_the_newest() {
+        let mut older = thread("one", 0, 0, true);
+        older.id = "older".into();
+        let mut newer = thread("one", 0, 0, true);
+        newer.id = "newer".into();
+        let both = vec![older.clone(), newer.clone()];
+        let store = RecordingStore::seeded(both.clone());
+        let log = store.log.clone();
+        let mut v = viewer_with(3, 3, both, Box::new(store));
+        assert_eq!(v.thread_at_cursor().map(|t| t.id.as_str()), Some("newer"));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "again");
+        v.apply(Event::Submit);
+        assert_eq!(log.borrow().as_slice(), ["reply newer again"]);
+
+        older.resolved = false;
+        let both = vec![older, newer];
+        let store = RecordingStore::seeded(both.clone());
+        let log = store.log.clone();
+        let mut v = viewer_with(3, 3, both, Box::new(store));
+        assert_eq!(v.thread_at_cursor().map(|t| t.id.as_str()), Some("older"));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "again");
+        v.apply(Event::Submit);
+        assert_eq!(log.borrow().as_slice(), ["reply older again"]);
+    }
+
+    #[test]
+    fn a_reply_follows_its_cell_when_a_reload_moves_the_cursor() {
+        let rows = |n| vec![vec![CellValue::Number(1.0); 3]; n];
+        let source = SharedSource::new(vec![Sheet::new("one", rows(3))]);
+        let store = LiveStore::default();
+        let shared = store.clone();
+        shared.threads.borrow_mut().push(thread("one", 2, 2, false));
+        let mut v = viewer_on_with(&source, Box::new(store));
+        v.apply(Event::Move { rows: 2, cols: 2 });
+        v.apply(Event::StartComment);
+        assert!(matches!(
+            v.mode(),
+            Mode::Editing {
+                target: EditTarget::Reply,
+                ..
+            }
+        ));
+        type_text(&mut v, "fix this");
+
+        // the agent drops the last row; the reload pulls the cursor up to C2
+        source.write_from_outside(vec![Sheet::new("one", rows(2))]);
+        v.apply(Event::Tick);
+        assert_eq!(v.cursor(), (1, 2));
+
+        v.apply(Event::Submit);
+        assert_eq!(*v.mode(), Mode::Grid);
+        let threads = shared.threads.borrow();
+        assert_eq!(
+            threads.len(),
+            1,
+            "nothing lands on the cell the cursor drifted to"
+        );
+        assert_eq!(threads[0].replies[0].body, "fix this");
+    }
+
+    #[test]
+    fn a_reply_whose_sheet_vanished_keeps_the_draft_and_reports_it() {
+        let one_cell = || vec![vec![CellValue::Number(1.0)]];
+        let source = SharedSource::new(vec![Sheet::new("one", one_cell())]);
+        let store = LiveStore::default();
+        let shared = store.clone();
+        shared.threads.borrow_mut().push(thread("one", 0, 0, false));
+        let mut v = viewer_on_with(&source, Box::new(store));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "fix this");
+
+        source.write_from_outside(vec![Sheet::new("renamed", one_cell())]);
+        v.apply(Event::Tick);
+
+        v.apply(Event::Submit);
+        assert!(
+            matches!(v.mode(), Mode::Editing { .. }),
+            "the draft is kept"
+        );
+        assert!(v.notice().is_some_and(|n| n.contains("save failed")));
+        let threads = shared.threads.borrow();
+        assert_eq!(threads.len(), 1);
+        assert!(threads[0].replies.is_empty());
+    }
+
+    #[test]
+    fn a_thread_that_appears_while_typing_is_continued_not_forked() {
+        let store = LiveStore::default();
+        let shared = store.clone();
+        let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
+        v.apply(Event::Move { rows: 2, cols: 2 });
+        v.apply(Event::StartComment);
+        assert!(matches!(
+            v.mode(),
+            Mode::Editing {
+                target: EditTarget::NewThread,
+                ..
+            }
+        ));
+        type_text(&mut v, "mine");
+
+        shared.write_from_outside(vec![thread("one", 2, 2, false)]);
+
+        v.apply(Event::Submit);
+        v.apply(Event::Tick);
+
+        let threads = shared.threads.borrow();
+        assert_eq!(threads.len(), 1, "no second thread on the cell");
+        assert_eq!(threads[0].replies.len(), 1);
+        assert_eq!(threads[0].replies[0].body, "mine");
+        assert_eq!(v.thread_at_cursor().map(|t| t.replies.len()), Some(1));
     }
 
     #[test]
@@ -208,7 +339,7 @@ mod tests {
         assert!(matches!(
             v.mode(),
             Mode::Editing {
-                target: EditTarget::Reply { .. },
+                target: EditTarget::Reply,
                 ..
             }
         ));
@@ -217,7 +348,7 @@ mod tests {
         v.apply(Event::Move { rows: 1, cols: 0 });
         v.apply(Event::Move { rows: -1, cols: -1 }); // B1
         assert_eq!(v.cursor(), (0, 1));
-        v.apply(Event::StartReply);
+        v.apply(Event::StartComment);
         v.apply(Event::CancelEdit);
         let doc2 = Document::new(vec![
             Sheet::new("one", vec![vec![CellValue::Text("t".into()); 3]; 2]).with_merges(vec![
@@ -369,7 +500,7 @@ mod tests {
         shared.threads.borrow_mut().push(thread("one", 0, 0, false));
         let mut v = viewer_with(3, 3, shared.threads.borrow().clone(), Box::new(store));
 
-        v.apply(Event::StartReply);
+        v.apply(Event::StartComment);
         type_text(&mut v, "actually, no");
 
         shared.threads.borrow_mut()[0].resolved = true;

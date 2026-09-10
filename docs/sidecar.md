@@ -39,7 +39,7 @@ This format is a **public contract**: AI agents read and write it through the
 | Field | Type | Notes |
 |-------|------|-------|
 | `version` | int | Schema version. Currently `1`; readers must reject unsupported values |
-| `comments` | array | Comment threads, order not significant |
+| `comments` | array | Comment threads in creation order: writers append |
 | `comments[].id` | string | UUIDv4, assigned by the writer |
 | `comments[].anchor.sheet` | string | Sheet name |
 | `comments[].anchor.cell` | string | A1 notation (`"B3"`) |
@@ -55,9 +55,13 @@ This format is a **public contract**: AI agents read and write it through the
 - A **thread** is one root comment plus its replies; `resolved` closes the whole
   thread. **Replying reopens it** (`resolved` returns to `false`): a reply on a
   closed thread would otherwise be invisible to the viewer, which only marks
-  open threads, and to agents, which list unresolved ones. Multiple threads per cell are valid in the schema, but the TUI follows
-  the spreadsheet convention of one open thread per cell (`c` replies to an open
-  thread instead of forking a second one).
+  open threads, and to agents, which list unresolved ones.
+- **One cell holds one thread.** Several threads on a cell are valid in the
+  schema, but docrev never creates a second one: `c` in the viewer and
+  `comment add` on the CLI both continue the cell's existing thread, resolved or
+  not (a merged region counts as one cell, anchored at its top-left). When a
+  file written by hand or by an older docrev does hold several, the cell's
+  thread is the first unresolved one, else the last one in the file.
 
 ## Anchor kinds and extension
 

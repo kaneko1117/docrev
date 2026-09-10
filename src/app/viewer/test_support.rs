@@ -32,11 +32,22 @@ impl CommentStore for NullStore {
 #[derive(Clone, Default)]
 pub(crate) struct RecordingStore {
     pub(crate) log: Rc<RefCell<Vec<String>>>,
+    threads: Vec<CommentThread>,
+}
+
+impl RecordingStore {
+    /// `load` returns `threads`: what a save finds on the cell.
+    pub(crate) fn seeded(threads: Vec<CommentThread>) -> Self {
+        Self {
+            threads,
+            ..Self::default()
+        }
+    }
 }
 
 impl CommentStore for RecordingStore {
     fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
-        Ok(Vec::new())
+        Ok(self.threads.clone())
     }
     fn add_thread(
         &mut self,
@@ -82,6 +93,77 @@ impl CommentStore for RecordingStore {
         })
     }
     fn resolve(&mut self, _: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+/// A working in-memory store; `threads` is shared so a test can write from outside.
+#[derive(Clone, Default)]
+pub(crate) struct LiveStore {
+    pub(crate) threads: Rc<RefCell<Vec<CommentThread>>>,
+    pub(crate) revision: Rc<RefCell<u64>>,
+}
+
+impl LiveStore {
+    pub(crate) fn write_from_outside(&self, threads: Vec<CommentThread>) {
+        *self.threads.borrow_mut() = threads;
+        *self.revision.borrow_mut() += 1;
+    }
+}
+
+impl CommentStore for LiveStore {
+    fn revision(&self) -> Option<u64> {
+        Some(*self.revision.borrow())
+    }
+    fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
+        Ok(self.threads.borrow().clone())
+    }
+    fn add_thread(
+        &mut self,
+        anchor: Anchor,
+        body: &str,
+        author: &str,
+    ) -> Result<CommentThread, StoreError> {
+        let thread = CommentThread {
+            id: format!("live-{}", self.threads.borrow().len()),
+            anchor,
+            author: author.into(),
+            body: body.into(),
+            created_at: "2026-08-14T00:00:00Z".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        self.threads.borrow_mut().push(thread.clone());
+        *self.revision.borrow_mut() += 1;
+        Ok(thread)
+    }
+    fn add_reply(
+        &mut self,
+        thread_id: &str,
+        body: &str,
+        author: &str,
+    ) -> Result<CommentThread, StoreError> {
+        let mut threads = self.threads.borrow_mut();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == thread_id) else {
+            return Err(StoreError::ThreadNotFound(thread_id.to_string()));
+        };
+        thread.replies.push(Reply {
+            id: format!("r{}", thread.replies.len()),
+            author: author.into(),
+            body: body.into(),
+            created_at: "2026-08-15T00:00:00Z".into(),
+        });
+        thread.resolved = false;
+        *self.revision.borrow_mut() += 1;
+        Ok(thread.clone())
+    }
+    fn resolve(&mut self, thread_id: &str) -> Result<(), StoreError> {
+        let mut threads = self.threads.borrow_mut();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == thread_id) else {
+            return Err(StoreError::ThreadNotFound(thread_id.to_string()));
+        };
+        thread.resolved = true;
+        *self.revision.borrow_mut() += 1;
         Ok(())
     }
 }

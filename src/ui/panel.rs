@@ -272,7 +272,7 @@ mod tests {
         };
         let with_thread = render_text(&view, &mut Scroll::default(), 76, 10);
         assert!(
-            with_thread.contains("r:reply"),
+            with_thread.contains("c:reply"),
             "the hint still points at the thread:\n{with_thread}"
         );
         assert!(

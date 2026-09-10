@@ -6,9 +6,10 @@ description: Handle review comments left on Excel files via docrev. Use when the
 # docrev review workflow
 
 docrev stores review comments in a sidecar JSON file (`<file>.xlsx.docrev.json`)
-next to the document. The original document is never modified. Interact through
-the `docrev comment` CLI — never edit the sidecar by hand; the CLI locks and
-writes atomically.
+next to the document. docrev itself never modifies the document — when a fix
+belongs in the file, you make it with your own tools (see "Editing the
+workbook"). Interact with comments through the `docrev comment` CLI — never
+edit the sidecar by hand; the CLI locks and writes atomically.
 
 ## When the user says "I commented"
 
@@ -29,7 +30,7 @@ writes atomically.
    A second array, `workbook_comments`, carries the workbook's own Excel
    comments (notes and threaded comments). They are **read-only context**:
    they have no `id`, and `reply`/`resolve` can never target them. To answer
-   one, add a docrev thread on the same cell instead.
+   one, `comment add` on the same cell instead.
 
 3. For each thread: investigate, act, reply. **Start from the `cell` content
    that came with the thread** — for most comments the anchored row is all the
@@ -60,11 +61,34 @@ writes atomically.
 
 ## Proactive findings
 
-To flag something the user did not ask about, open a new thread:
+To flag something the user did not ask about, comment on its cell:
 
 ```bash
 docrev comment add <file.xlsx> --cell "Sheet1!B3" --body "..." --author claude
 ```
+
+A cell holds one thread: when the cell already has one, `add` appends to it
+(reopening it if it was resolved) and prints that thread, not a new one.
+
+## Editing the workbook
+
+docrev has no write commands — editing the document is your job, with your own
+tools (e.g. Python + openpyxl). When a comment asks for a fix in the file
+itself:
+
+1. **Copy the file first** (`cp file.xlsx file.xlsx.bak`) unless it is tracked
+   by git — the copy is the only undo there is.
+2. **Do not edit while Excel has the file open** (a `~$<name>.xlsx` file sits
+   next to it): Excel's next save would erase your change.
+3. **Mind regeneration loss.** Libraries rewrite the whole workbook on save;
+   drawings, shapes, pivot tables and other parts they do not model can be
+   dropped. If the file contains such parts, confirm with the user before the
+   first edit.
+4. **Record every edit on its thread** — reply with the cell address and
+   before → after, then resolve. An edit that is not in the comments did not
+   happen. Batch one thread's edits into one reply.
+
+Good: `Fixed E10: 「アカウントがロックされています」 → 「IDまたはパスワードが違います」. Resolved.`
 
 ## Keep replies short
 
@@ -72,7 +96,8 @@ Comments are read in a narrow sidebar, a few characters wider than a phone
 screen. Write for that space:
 
 - **Two or three short sentences.** Lead with the answer, not the reasoning.
-- One decision or fact per reply. Split unrelated points into their own threads.
+- One decision or fact per reply. A cell holds one thread, so unrelated points
+  on the same cell go into separate replies.
 - No headings, no bullet lists, no code blocks — they wrap badly in the panel.
 - Reference cells by their address (`C5`), not by quoting their contents.
 - When something needs a long explanation, say the conclusion in the thread and

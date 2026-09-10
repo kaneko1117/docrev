@@ -17,6 +17,7 @@ use crate::domain::document::Document;
 use crate::domain::sheet::Sheet;
 use crate::domain::workbook_comment::WorkbookComment;
 
+use super::comments;
 use super::error::{DocumentError, FrontendError};
 use super::ports::{CommentStore, DocumentSource};
 
@@ -50,7 +51,6 @@ pub enum Event {
         copy: bool,
     },
     StartComment,
-    StartReply,
     Insert(char),
     Newline,
     Backspace,
@@ -72,9 +72,10 @@ pub trait Frontend {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Only the editor's title: the thread itself is chosen when the text is saved.
 pub enum EditTarget {
     NewThread,
-    Reply { thread_id: String },
+    Reply,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,8 +102,10 @@ impl Notice {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Grid,
+    /// `at` is the cell the editor opened on: a document reload may move the cursor meanwhile.
     Editing {
         target: EditTarget,
+        at: Anchor,
         buffer: String,
     },
     /// `selected` indexes the filtered candidate list, not the workbook.
@@ -246,32 +249,10 @@ impl Viewer {
         &self.mode
     }
 
-    /// Unresolved threads win; a merged region counts as one cell.
+    /// The cursor cell's conversation, as `comments::thread_on` picks it.
     pub fn thread_at_cursor(&self) -> Option<&CommentThread> {
         let (row, col) = self.cursor();
-        let sheet = self.sheet();
-        let name = sheet.name();
-        let merge = sheet.merge_at(row, col);
-        let in_region = |r: usize, c: usize| match merge {
-            Some(m) => m.contains(r, c),
-            None => (r, c) == (row, col),
-        };
-        let at_cell: Vec<&CommentThread> = self
-            .comments
-            .iter()
-            .filter(|t| match &t.anchor {
-                Anchor::Cell {
-                    sheet,
-                    row: r,
-                    col: c,
-                } => sheet == name && in_region(*r as usize, *c as usize),
-            })
-            .collect();
-        at_cell
-            .iter()
-            .find(|t| !t.resolved)
-            .copied()
-            .or_else(|| at_cell.first().copied())
+        comments::thread_on(&self.comments, self.sheet(), row, col)
     }
 
     /// (row, col) per unresolved thread.
@@ -561,29 +542,17 @@ impl Viewer {
                 }
                 return;
             }
-            // one open thread per cell: reply if present, else start one
+            // one conversation per cell: continue it if present, else start one
             Event::StartComment => {
-                let target = match self.thread_at_cursor().filter(|t| !t.resolved) {
-                    Some(thread) => EditTarget::Reply {
-                        thread_id: thread.id.clone(),
-                    },
+                let target = match self.thread_at_cursor() {
+                    Some(_) => EditTarget::Reply,
                     None => EditTarget::NewThread,
                 };
                 self.mode = Mode::Editing {
                     target,
+                    at: Anchor::cell(self.sheet().name(), row as u32, col as u32),
                     buffer: String::new(),
                 };
-                return;
-            }
-            Event::StartReply => {
-                if let Some(thread) = self.thread_at_cursor() {
-                    self.mode = Mode::Editing {
-                        target: EditTarget::Reply {
-                            thread_id: thread.id.clone(),
-                        },
-                        buffer: String::new(),
-                    };
-                }
                 return;
             }
             Event::SelectCell { .. }

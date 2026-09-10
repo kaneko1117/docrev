@@ -4,6 +4,7 @@ use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::comment::CommentThread;
 use crate::domain::document::Document;
+use crate::domain::sheet::{MergedRange, Sheet};
 use crate::domain::workbook_comment::WorkbookComment;
 
 use super::error::{CommentError, DocumentError, StoreError};
@@ -145,7 +146,58 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
     })
 }
 
-/// The sheet must exist; the cell may lie outside the used range.
+/// The cell's conversation: its first unresolved thread, else its newest; a merged region
+/// counts as one cell.
+pub(crate) fn thread_on<'a>(
+    threads: &'a [CommentThread],
+    sheet: &Sheet,
+    row: usize,
+    col: usize,
+) -> Option<&'a CommentThread> {
+    let merge = sheet.merge_at(row, col);
+    let in_region = |r: usize, c: usize| match merge {
+        Some(m) => m.contains(r, c),
+        None => (r, c) == (row, col),
+    };
+    let mut newest = None;
+    for thread in threads {
+        let Anchor::Cell {
+            sheet: name,
+            row: r,
+            col: c,
+        } = &thread.anchor;
+        if name != sheet.name() || !in_region(*r as usize, *c as usize) {
+            continue;
+        }
+        if !thread.resolved {
+            return Some(thread);
+        }
+        newest = Some(thread);
+    }
+    newest
+}
+
+/// Continues the cell's thread, else starts one anchored at the cell (a merged region's
+/// top-left); the choice is made by the store at write time.
+pub(crate) fn comment_on_cell(
+    store: &mut dyn CommentStore,
+    sheet: &Sheet,
+    row: usize,
+    col: usize,
+    body: &str,
+    author: &str,
+) -> Result<CommentThread, StoreError> {
+    let (anchor_row, anchor_col) = sheet
+        .merge_at(row, col)
+        .map_or((row, col), MergedRange::anchor);
+    let anchor = Anchor::cell(sheet.name(), anchor_row as u32, anchor_col as u32);
+    let existing =
+        |threads: &[CommentThread]| thread_on(threads, sheet, row, col).map(|t| t.id.clone());
+    store.comment_on(anchor, &existing, body, author)
+}
+
+/// The sheet must exist; the cell may lie outside the used range. A cell that already has a
+/// thread gets the body as a reply on it, which reopens a resolved one.
 pub fn add(
     source: &impl DocumentSource,
     store: &mut impl CommentStore,
@@ -158,13 +210,19 @@ pub fn add(
         return Err(CommentError::BadReference(target.to_string()));
     };
     let document = source.load(document_path).map_err(DocumentError::from)?;
-    if document.index_of(anchor.sheet()).is_none() {
+    let Some(sheet) = document
+        .sheets()
+        .iter()
+        .find(|s| s.name() == anchor.sheet())
+    else {
         return Err(CommentError::Document(DocumentError::SheetNotFound {
             name: anchor.sheet().to_string(),
             available: document.sheet_names().map(str::to_string).collect(),
         }));
-    }
-    Ok(store.add_thread(anchor, body, author)?)
+    };
+    let Anchor::Cell { row, col, .. } = &anchor;
+    let (row, col) = (*row as usize, *col as usize);
+    Ok(comment_on_cell(store, sheet, row, col, body, author)?)
 }
 
 pub fn reply(
@@ -279,6 +337,118 @@ mod tests {
         let thread = add(&FakeSource, &mut store, &path(), "売上!B3", "b", "claude").unwrap();
         assert_eq!(thread.anchor.cell_ref(), "B3");
         assert_eq!(thread.author, "claude");
+    }
+
+    struct MergedSource;
+
+    impl DocumentSource for MergedSource {
+        fn load(&self, _: &Path) -> Result<Document, LoadError> {
+            Ok(Document::new(vec![
+                Sheet::new("売上", vec![vec![CellValue::Number(1.0); 3]]).with_merges(vec![
+                    MergedRange {
+                        start_row: 0,
+                        start_col: 0,
+                        end_row: 0,
+                        end_col: 2,
+                    },
+                ]),
+            ]))
+        }
+    }
+
+    #[test]
+    fn add_on_a_commented_cell_continues_its_thread() {
+        let mut store = MemoryStore::default();
+        let first = add(&FakeSource, &mut store, &path(), "売上!B3", "first", "user").unwrap();
+        resolve(&mut store, &first.id).unwrap();
+
+        let again = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            "売上!B3",
+            "again",
+            "claude",
+        )
+        .unwrap();
+        assert_eq!(again.id, first.id, "the reply lands on the existing thread");
+        assert_eq!(again.replies.len(), 1);
+        assert_eq!(again.replies[0].body, "again");
+        assert_eq!(store.threads.len(), 1, "no second thread on the cell");
+
+        let elsewhere = add(&FakeSource, &mut store, &path(), "売上!C3", "other", "user").unwrap();
+        assert_ne!(elsewhere.id, first.id);
+        assert_eq!(store.threads.len(), 2);
+    }
+
+    #[test]
+    fn add_inside_a_merged_region_joins_the_regions_thread() {
+        let mut store = MemoryStore::default();
+        let first = add(
+            &MergedSource,
+            &mut store,
+            &path(),
+            "売上!B1",
+            "first",
+            "user",
+        )
+        .unwrap();
+        assert_eq!(
+            first.anchor.cell_ref(),
+            "A1",
+            "anchored at the region's top-left"
+        );
+
+        let again = add(
+            &MergedSource,
+            &mut store,
+            &path(),
+            "売上!C1",
+            "again",
+            "user",
+        )
+        .unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(store.threads.len(), 1);
+    }
+
+    #[test]
+    fn thread_on_prefers_the_open_thread_and_falls_back_to_the_newest() {
+        let sheet = Sheet::new("s", vec![vec![CellValue::Number(1.0); 2]]);
+        let mut store = MemoryStore::default();
+        let older = store
+            .add_thread(Anchor::cell("s", 0, 0), "older", "user")
+            .unwrap();
+        let newer = store
+            .add_thread(Anchor::cell("s", 0, 0), "newer", "user")
+            .unwrap();
+        store
+            .add_thread(Anchor::cell("s", 0, 1), "elsewhere", "user")
+            .unwrap();
+
+        let pick =
+            |threads: &[CommentThread]| thread_on(threads, &sheet, 0, 0).map(|t| t.id.clone());
+        assert_eq!(
+            pick(&store.threads),
+            Some(older.id.clone()),
+            "first unresolved"
+        );
+
+        resolve(&mut store, &older.id).unwrap();
+        assert_eq!(
+            pick(&store.threads),
+            Some(newer.id.clone()),
+            "still unresolved"
+        );
+
+        resolve(&mut store, &newer.id).unwrap();
+        assert_eq!(
+            pick(&store.threads),
+            Some(newer.id.clone()),
+            "all resolved: newest"
+        );
+
+        assert_eq!(thread_on(&store.threads, &sheet, 1, 1), None);
     }
 
     #[test]

@@ -30,7 +30,7 @@ edit the sidecar by hand; the CLI locks and writes atomically.
    A second array, `workbook_comments`, carries the workbook's own Excel
    comments (notes and threaded comments). They are **read-only context**:
    they have no `id`, and `reply`/`resolve` can never target them. To answer
-   one, add a docrev thread on the same cell instead.
+   one, `comment add` on the same cell instead.
 
 3. For each thread: investigate, act, reply. **Start from the `cell` content
    that came with the thread** — for most comments the anchored row is all the
@@ -61,11 +61,14 @@ edit the sidecar by hand; the CLI locks and writes atomically.
 
 ## Proactive findings
 
-To flag something the user did not ask about, open a new thread:
+To flag something the user did not ask about, comment on its cell:
 
 ```bash
 docrev comment add <file.xlsx> --cell "Sheet1!B3" --body "..." --author claude
 ```
+
+A cell holds one thread: when the cell already has one, `add` appends to it
+(reopening it if it was resolved) and prints that thread, not a new one.
 
 ## Editing the workbook
 
@@ -93,7 +96,8 @@ Comments are read in a narrow sidebar, a few characters wider than a phone
 screen. Write for that space:
 
 - **Two or three short sentences.** Lead with the answer, not the reasoning.
-- One decision or fact per reply. Split unrelated points into their own threads.
+- One decision or fact per reply. A cell holds one thread, so unrelated points
+  on the same cell go into separate replies.
 - No headings, no bullet lists, no code blocks — they wrap badly in the panel.
 - Reference cells by their address (`C5`), not by quoting their contents.
 - When something needs a long explanation, say the conclusion in the thread and
