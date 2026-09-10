@@ -13,4 +13,4 @@ expression: "render_text(&view, &mut scroll, 76, 12)"
                                             │█                             │
                                             └ Ctrl+S:save  Esc:cancel ─────┘
 [売上]
-                                                  r:reply  c:comment  q:quit
+                                          c:reply  q:quit  ^G:sheet  ^F:find

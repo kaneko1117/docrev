@@ -49,8 +49,7 @@ docrev dump file.xlsx --formulas   # formulas instead of results, like Excel's C
 | Tab / Shift+Tab | Next / previous sheet |
 | Ctrl+G / F5 | Go to a sheet by name (type to filter, Enter to switch) |
 | Ctrl+F | Find on the active sheet (type to jump, ↓/↑ next/previous, Enter to stay, Esc to go back) |
-| c | Comment on the cell (replies when the cell already has an open thread) |
-| r | Reply to the thread on the cell |
+| c | Comment on the cell (continues the cell's thread when it has one, reopening a resolved one) |
 | n | View the workbook's own Excel comments on the cell (read-only; Esc closes) |
 | q / Ctrl+C | Quit |
 
@@ -69,8 +68,10 @@ has one, and its full value otherwise — the grid keeps showing results,
 like Excel. Cells with an open
 thread are marked with `●`; press `c` on one to open its thread in a side
 panel — read and `Esc` out, or type and `Ctrl+S` to reply. (On terminals too
-narrow for the panel, `c` still opens the reply editor.) Moving the cursor
-alone never opens the panel, so the grid keeps its width. Cells carrying the
+narrow for the panel, `c` still opens the reply editor.) A cell holds one
+thread: `c` always continues it, and a reply on a resolved thread reopens it.
+Moving the cursor alone never opens the panel, so the grid keeps its width.
+Cells carrying the
 workbook's own Excel comments show a tinted top-right corner; press `n` to
 read them. Frozen
 panes saved in the workbook are honored: pinned rows and columns stay on
@@ -103,7 +104,8 @@ docrev comment resolve file.xlsx --thread <id>
 `list --json` emits the [sidecar schema](docs/sidecar.md), with each thread
 carrying the anchored cell's content and its row — a batch of comments is
 actionable without reading the sheets. `add`/`reply`/`resolve` print the
-affected thread (including its id). Comments live in a sidecar file
+affected thread (including its id); `add` on a cell that already has a thread
+appends to it instead of starting a second one. Comments live in a sidecar file
 (`file.xlsx.docrev.json`); the original document is never modified, and
 concurrent TUI/CLI writes are serialized through a `.lock` file.
 

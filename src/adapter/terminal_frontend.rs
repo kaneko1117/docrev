@@ -131,15 +131,13 @@ impl Frontend for TerminalFrontend {
         }
         let mut fallback = Scroll::default();
         let scroll = scrolls.get_mut(viewer.active()).unwrap_or(&mut fallback);
-        let (row, col) = viewer.cursor();
-        let address = Anchor::cell(viewer.sheet().name(), row as u32, col as u32).cell_ref();
         let editor = match viewer.mode() {
-            Mode::Editing { target, buffer } => Some(EditorView {
+            Mode::Editing { target, at, buffer } => Some(EditorView {
                 kind: match target {
                     EditTarget::NewThread => grid::EditorKind::Comment,
-                    EditTarget::Reply { .. } => grid::EditorKind::Reply,
+                    EditTarget::Reply => grid::EditorKind::Reply,
                 },
-                address,
+                address: at.cell_ref(),
                 buffer,
             }),
             _ => None,
@@ -300,7 +298,6 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
         // raw mode turns Ctrl+C into a plain key event
         KeyCode::Char('c') if ctrl => Event::Quit,
         KeyCode::Char('c') => Event::StartComment,
-        KeyCode::Char('r') => Event::StartReply,
         KeyCode::Char('g') if ctrl => Event::OpenSheetPicker,
         KeyCode::F(5) => Event::OpenSheetPicker,
         KeyCode::Char('f') if ctrl => Event::OpenSearch,
@@ -353,7 +350,7 @@ mod tests {
             map_key_grid(key(KeyCode::Char('c')), 10),
             Event::StartComment
         );
-        assert_eq!(map_key_grid(key(KeyCode::Char('r')), 10), Event::StartReply);
+        assert_eq!(map_key_grid(key(KeyCode::Char('r')), 10), Event::Noop);
     }
 
     #[test]
