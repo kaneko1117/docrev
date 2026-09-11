@@ -12,7 +12,7 @@ This format is a **public contract**: AI agents read and write it through the
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "comments": [
     {
       "id": "3e1f0b6c-6a86-4b8e-9f0e-2d8b3a4f5c6d",
@@ -29,6 +29,15 @@ This format is a **public contract**: AI agents read and write it through the
           "created_at": "2026-08-11T09:20:00Z"
         }
       ]
+    },
+    {
+      "id": "5a7c2d1e-0f3b-4a9c-8d2e-6b1f4c7a9e0d",
+      "anchor": { "kind": "line", "line": 13 },
+      "author": "user",
+      "body": "brew tap comes first, doesn't it?",
+      "created_at": "2026-09-11T01:02:00Z",
+      "resolved": false,
+      "replies": []
     }
   ]
 }
@@ -38,11 +47,14 @@ This format is a **public contract**: AI agents read and write it through the
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `version` | int | Schema version. Currently `1`; readers must reject unsupported values |
+| `version` | int | Schema version. Currently `2`; readers accept `1` and `2` and reject anything else. Every write emits `2`, so a version-1 file becomes version 2 the first time docrev writes it |
 | `comments` | array | Comment threads in creation order: writers append |
 | `comments[].id` | string | UUIDv4, assigned by the writer |
-| `comments[].anchor.sheet` | string | Sheet name |
-| `comments[].anchor.cell` | string | A1 notation (`"B3"`) |
+| `comments[].anchor` | object | Where the thread sits; one of the shapes below |
+| `comments[].anchor.sheet` | string | Cell anchor: sheet name |
+| `comments[].anchor.cell` | string | Cell anchor: A1 notation (`"B3"`) |
+| `comments[].anchor.kind` | string | Line anchor: always `"line"`. Absent on a cell anchor |
+| `comments[].anchor.line` | int | Line anchor: 1-based physical line of the text file |
 | `comments[].author` | string | `"user"` for the human reviewer; agents use their own name (e.g. `"claude"`) |
 | `comments[].body` | string | Comment text, may contain newlines |
 | `comments[].created_at` | string | ISO 8601 UTC (`2026-08-11T09:15:00Z`) |
@@ -61,58 +73,37 @@ This format is a **public contract**: AI agents read and write it through the
   `comment add` on the CLI both continue the cell's existing thread, resolved or
   not (a merged region counts as one cell, anchored at its top-left). When a
   file written by hand or by an older docrev does hold several, the cell's
-  thread is the first unresolved one, else the last one in the file.
+  thread is the first unresolved one, else the last one in the file. A line
+  of a text document holds one thread by the same rule.
 
-## Anchor kinds and extension
+## Anchor kinds
 
-Today `anchor` has exactly one shape — the cell anchor
-`{"sheet": ..., "cell": ...}` — and that shape is frozen: agents parse it,
-and it never gains or loses keys. Word support will need at least a
-paragraph anchor, so the extension rule is fixed now, before any docx code
-exists:
+`anchor` has two shapes, told apart by the presence of `"kind"`:
 
-- **Every future anchor kind is a distinct object shape carrying a required
-  `"kind"` discriminator** (for example `{"kind": "paragraph", ...}` — its
-  fields are decided with the docx design). Cell anchors are grandfathered:
-  the absence of `"kind"` means cell, and writers never emit a `"kind"` key
-  on them. `"kind": "cell"` is reserved and must not be written — a reader
-  treats it as an unknown kind, so a well-meaning writer that emits it
-  makes its own comments invisible.
-- **The first non-cell kind ships with a `version` bump to `2`**, and any
-  file containing a non-cell anchor must declare version 2 or higher — the
-  writer that first adds one raises the field. Version-2 readers keep
-  accepting version 1 unchanged. One caveat keeps this honest: today's
-  version-1 readers parse `comments` *before* checking `version`, so on a
-  real v2 file they fail with an "invalid sidecar" corruption-shaped
-  message and never reach the version check. Before any v2 writer ships, a
-  v1.x release must move the version check ahead of comment parsing, so
-  that old readers refuse with "unsupported sidecar version" — a message
-  that says "upgrade", not "your file is broken". (Version `2` was once
-  earmarked for an embedded `changes` array; that plan was retired with
-  the issue that proposed it, so the number is free.)
-- **From version 2 on, unknown anchor kinds are skipped and preserved.**
-  A reader that meets a kind it does not know leaves the thread out of the
-  TUI and out of `list`, does not let `reply`/`resolve` address it (same
-  error as an unknown id), and — the binding part — **preserves it
-  byte-faithfully when rewriting the file**. Read-modify-write must round-trip
-  threads it cannot interpret (keep the raw JSON, don't re-serialize through
-  typed structs). That makes `2` the last bump anchors ever force — provided
-  shipped kinds are frozen: an incompatible change to an existing kind ships
-  as a new kind name, never as a new shape under the old one, and a reader
-  that knows a kind but cannot parse its fields treats the thread as
-  unknown. Kind number three then never requires version `3`.
+- **Cell** — `{"sheet": "Sales", "cell": "B3"}`, never with a `kind` key. This
+  is the only shape version 1 knew.
+- **Line** — `{"kind": "line", "line": 13}`, for text documents (Markdown).
+  `line` is the 1-based physical line of the file, the number `cat -n` shows.
+  Like a cell anchor, it is stored as-is: editing the file does not move the
+  comment, so a comment on line 13 stays on line 13 after lines are inserted
+  above it.
 
-Checked against today's consumers: the agent skill drives everything through
-the `docrev comment` CLI and only ever writes `Sheet!B3` cell references, so
-nothing changes for it until a new kind actually ships.
+A reader treats anything else as corrupt — a `kind` it does not know
+(`"kind": "cell"` included), a line anchor without `line` or with `line: 0`,
+an object with neither a cell nor a kind — and refuses to load the file.
+
+Version 2 added the line kind; version 1 files load unchanged. The next kind
+(a Word paragraph, say) gets its own `kind` value and a version bump; docrev is
+one binary reading one file, so there is no staged compatibility beyond
+"newer docrev reads older files".
 
 ## CLI
 
 `docrev comment` is the intended way for agents to read and write this file:
 
-- `list --json` prints this document shape (`{"version": 1, "comments": [...]}`)
+- `list --json` prints this document shape (`{"version": 2, "comments": [...]}`)
   after applying filters — the schema above is the output contract, plus one
-  **derived, output-only** addition: each thread carries a `cell` object with
+  **derived, output-only** addition: each cell thread carries a `cell` object with
   the anchored cell's displayed text and its row's other non-empty cells
   (`"cell": {"value": "...", "row": {"A2": "...", "D2": "..."}}`; `row` keys
   come in column order and the object may be empty). When a number format
@@ -133,7 +124,9 @@ nothing changes for it until a new kind actually ships.
   ignore a `cell` key on input. When the workbook cannot be read (corrupt
   file) or the sheet was renamed, `cell` is omitted for the affected threads
   and the command still succeeds; a document path that does not exist at all
-  is still an error, as for every `comment` command. A merged anchor's
+  is still an error, as for every `comment` command. A line thread never
+  carries `cell`, and `--sheet` matches cell anchors only, so it leaves line
+  threads out. A merged anchor's
   `value` is its region's value, and the region's cells never repeat in
   `row`. `row` shows what a person sees: columns the workbook hides are
   left out, and a hidden row or a hidden sheet has an empty `row`. A thread

@@ -83,7 +83,7 @@ fn full_agent_loop() {
         .output()
         .unwrap();
     let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(listed["version"], 1, "list output uses the sidecar schema");
+    assert_eq!(listed["version"], 2, "list output uses the sidecar schema");
     assert_eq!(listed["comments"].as_array().unwrap().len(), 1);
     // the thread carries its cell content, so agents act without dumping
     let first = &listed["comments"][0];

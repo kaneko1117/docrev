@@ -14,7 +14,11 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn loaded_sheets_carry_cell_alignment() {
-    let document = XlsxSource.load(&fixture("alignment.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("alignment.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(
         sheet.alignment_at(0, 0).and_then(|a| a.horizontal),

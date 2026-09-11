@@ -10,7 +10,11 @@ fn fixture() -> PathBuf {
 
 #[test]
 fn formulas_load_and_shared_ones_resolve_per_cell() {
-    let document = XlsxSource.load(&fixture()).unwrap();
+    let document = XlsxSource
+        .load(&fixture())
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.formula_at(0, 1), Some("SUM(A1:A2)"));
     assert_eq!(sheet.formula_at(0, 2), Some("A1*2"), "the shared master");
@@ -27,7 +31,11 @@ fn formulas_load_and_shared_ones_resolve_per_cell() {
 /// grid must grow to reach them or the formula is silently invisible.
 #[test]
 fn a_formula_without_a_cached_result_is_still_reachable() {
-    let document = XlsxSource.load(&fixture()).unwrap();
+    let document = XlsxSource
+        .load(&fixture())
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.formula_at(3, 1), Some("A1+A2"));
     assert!(
@@ -45,7 +53,11 @@ fn a_formula_without_a_cached_result_is_still_reachable() {
 /// Excel's formula view aligns every formula left, whatever its result type.
 #[test]
 fn formulas_align_left_even_over_numeric_results() {
-    let document = XlsxSource.load(&fixture()).unwrap();
+    let document = XlsxSource
+        .load(&fixture())
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     let formulas = render(sheet, 0, 1, true);
     let line = formulas
@@ -60,7 +72,11 @@ fn formulas_align_left_even_over_numeric_results() {
 
 #[test]
 fn dump_shows_results_by_default_and_formulas_on_demand() {
-    let document = XlsxSource.load(&fixture()).unwrap();
+    let document = XlsxSource
+        .load(&fixture())
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
 
     let plain = render(sheet, 0, 1, false);

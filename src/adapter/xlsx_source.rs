@@ -114,7 +114,7 @@ impl DocumentSource for XlsxSource {
                 }
             })
             .collect();
-        Ok(Document::new(sheets))
+        Ok(Document::from_sheets(sheets))
     }
 
     /// mtime mixed with size; a missing file is `Some(0)`.

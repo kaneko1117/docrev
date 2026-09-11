@@ -1,7 +1,8 @@
-/// 0-based; A1 notation is converted only by the methods here.
+/// 0-based; the 1-based forms (A1 notation, line numbers) are converted only by the methods here.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Anchor {
     Cell { sheet: String, row: u32, col: u32 },
+    Line { line: u32 },
 }
 
 impl Anchor {
@@ -13,17 +14,50 @@ impl Anchor {
         }
     }
 
-    pub fn sheet(&self) -> &str {
+    pub fn line(line: u32) -> Self {
+        Anchor::Line { line }
+    }
+
+    /// `13` -> line 12; `None` for 0.
+    pub fn from_line_number(number: u32) -> Option<Self> {
+        number.checked_sub(1).map(Anchor::line)
+    }
+
+    /// `None` for a line anchor.
+    pub fn sheet(&self) -> Option<&str> {
         match self {
-            Anchor::Cell { sheet, .. } => sheet,
+            Anchor::Cell { sheet, .. } => Some(sheet),
+            Anchor::Line { .. } => None,
+        }
+    }
+
+    /// 1-based; `None` for a cell anchor.
+    pub fn line_number(&self) -> Option<u32> {
+        match self {
+            Anchor::Cell { .. } => None,
+            Anchor::Line { line } => Some(line.saturating_add(1)),
+        }
+    }
+
+    /// `"B3"` or `"line 13"`: the place inside its sheet or file.
+    pub fn position(&self) -> String {
+        match self {
+            Anchor::Cell { row, col, .. } => Self::a1(*row, *col),
+            Anchor::Line { line } => format!("line {}", line.saturating_add(1)),
+        }
+    }
+
+    /// `"売上!B3"` or `"line 13"`: the place inside the document.
+    pub fn label(&self) -> String {
+        match self {
+            Anchor::Cell { sheet, .. } => format!("{sheet}!{}", self.position()),
+            Anchor::Line { .. } => self.position(),
         }
     }
 
     /// `row 2, col 1` -> `"B3"`.
-    pub fn cell_ref(&self) -> String {
-        match self {
-            Anchor::Cell { row, col, .. } => format!("{}{}", Self::column_label(*col), row + 1),
-        }
+    pub fn a1(row: u32, col: u32) -> String {
+        format!("{}{}", Self::column_label(col), row + 1)
     }
 
     /// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`.
@@ -87,11 +121,34 @@ mod tests {
     }
 
     #[test]
-    fn cell_ref_round_trips() {
+    fn a1_round_trips() {
         for (row, col) in [(0, 0), (2, 1), (9, 26), (99, 701)] {
-            let anchor = Anchor::cell("s", row, col);
-            assert_eq!(Anchor::parse_cell_ref(&anchor.cell_ref()), Some((row, col)));
+            assert_eq!(
+                Anchor::parse_cell_ref(&Anchor::a1(row, col)),
+                Some((row, col))
+            );
         }
+    }
+
+    #[test]
+    fn line_numbers_are_one_based_at_the_edges() {
+        assert_eq!(Anchor::from_line_number(13), Some(Anchor::line(12)));
+        assert_eq!(Anchor::from_line_number(1), Some(Anchor::line(0)));
+        assert_eq!(Anchor::from_line_number(0), None);
+        assert_eq!(Anchor::line(12).line_number(), Some(13));
+        assert_eq!(Anchor::cell("s", 0, 0).line_number(), None);
+    }
+
+    #[test]
+    fn labels_name_the_place_in_each_kind_of_document() {
+        let cell = Anchor::cell("売上", 2, 1);
+        assert_eq!(cell.position(), "B3");
+        assert_eq!(cell.label(), "売上!B3");
+        assert_eq!(cell.sheet(), Some("売上"));
+        let line = Anchor::line(12);
+        assert_eq!(line.position(), "line 13");
+        assert_eq!(line.label(), "line 13");
+        assert_eq!(line.sheet(), None);
     }
 
     #[test]

@@ -40,7 +40,9 @@ impl Viewer {
             .collect();
         let mut counts = vec![0; names.len()];
         for thread in self.comments.iter().filter(|t| !t.resolved) {
-            let Anchor::Cell { sheet, row, col } = &thread.anchor;
+            let Anchor::Cell { sheet, row, col } = &thread.anchor else {
+                continue;
+            };
             if let Some(&i) = index.get(sheet.as_str())
                 && !self.sheets.get(i).cell_hidden(*row as usize, *col as usize)
             {
@@ -120,7 +122,7 @@ mod tests {
             .map(|n| Sheet::new(*n, vec![vec![CellValue::Number(1.0)]]))
             .collect();
         Viewer::from_document(
-            Document::new(sheets),
+            Document::from_sheets(sheets),
             Vec::new(),
             None,
             None,
@@ -228,7 +230,7 @@ mod tests {
             })
             .collect();
         let mut v = Viewer::from_document(
-            Document::new(sheets),
+            Document::from_sheets(sheets),
             Vec::new(),
             None,
             None,
@@ -293,10 +295,13 @@ mod tests {
 
     #[test]
     fn unresolved_counts_align_with_sheet_names() {
+        let mut line_thread = thread("one", 9, 9, false);
+        line_thread.anchor = Anchor::line(1);
         let comments = vec![
             thread("one", 0, 0, false),
             thread("one", 1, 1, false),
             thread("two", 0, 0, true),
+            line_thread,
         ];
         let v = viewer_with(3, 3, comments, Box::new(NullStore));
         assert_eq!(v.unresolved_counts(), vec![2, 0]);

@@ -10,7 +10,11 @@ fn fixture() -> PathBuf {
 
 #[test]
 fn both_comment_formats_load_with_authors_and_anchors() {
-    let document = XlsxSource.load(&fixture()).unwrap();
+    let document = XlsxSource
+        .load(&fixture())
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     let comments = sheet.workbook_comments();
     assert_eq!(comments.len(), 3, "two notes + one thread: {comments:?}");
@@ -49,7 +53,11 @@ fn both_comment_formats_load_with_authors_and_anchors() {
 /// invisible and the cursor can never reach it.
 #[test]
 fn a_comment_outside_the_used_range_is_reachable() {
-    let document = XlsxSource.load(&fixture()).unwrap();
+    let document = XlsxSource
+        .load(&fixture())
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert!(sheet.row_count() >= 9, "the grid covers the D9 note");
     assert_eq!(
@@ -63,7 +71,11 @@ fn a_comment_outside_the_used_range_is_reachable() {
 /// showing both would duplicate the conversation.
 #[test]
 fn the_legacy_fallback_under_a_thread_is_deduplicated() {
-    let document = XlsxSource.load(&fixture()).unwrap();
+    let document = XlsxSource
+        .load(&fixture())
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert!(
         sheet

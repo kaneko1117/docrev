@@ -208,7 +208,10 @@ impl Viewer {
         revision: Option<u64>,
         store: Box<dyn CommentStore>,
     ) -> Result<Self, DocumentError> {
-        let mut sheets = document.into_sheets().into_iter();
+        let workbook = document
+            .into_workbook()
+            .ok_or(DocumentError::NotAWorkbook)?;
+        let mut sheets = workbook.into_sheets().into_iter();
         let Some(first) = sheets.next() else {
             return Err(DocumentError::EmptyDocument);
         };
@@ -446,12 +449,15 @@ impl Viewer {
             let index = *state.candidates.get(state.selected)?;
             Some(self.sheets.get(index).name().to_string())
         });
-        let mut incoming = document.into_sheets().into_iter();
+        let Some(workbook) = document.into_workbook() else {
+            let reason = DocumentError::NotAWorkbook;
+            self.doc_stale = Some(format!("document unavailable: {reason}"));
+            return;
+        };
+        let mut incoming = workbook.into_sheets().into_iter();
         let Some(first) = incoming.next() else {
-            self.doc_stale = Some(format!(
-                "document unavailable: {}",
-                DocumentError::EmptyDocument
-            ));
+            let reason = DocumentError::EmptyDocument;
+            self.doc_stale = Some(format!("document unavailable: {reason}"));
             return;
         };
         let new = Sheets {
@@ -626,7 +632,7 @@ mod tests {
             .with_hidden_rows(HashSet::from([0, 2]))
             .with_hidden_cols(HashSet::from([1, 4]));
         Viewer::from_document(
-            Document::new(vec![sheet]),
+            Document::from_sheets(vec![sheet]),
             vec![
                 thread("one", 2, 0, false),
                 thread("one", 3, 1, false),
@@ -679,7 +685,7 @@ mod tests {
     #[test]
     fn hidden_sheets_are_skipped_by_tabs_and_refused_by_clicks() {
         let mut v = Viewer::from_document(
-            Document::new(three_sheets(&[0, 2])),
+            Document::from_sheets(three_sheets(&[0, 2])),
             Vec::new(),
             None,
             None,
@@ -694,7 +700,7 @@ mod tests {
         assert_eq!(v.active(), 1, "a hidden sheet cannot be selected");
 
         let mut v = Viewer::from_document(
-            Document::new(three_sheets(&[1])),
+            Document::from_sheets(three_sheets(&[1])),
             Vec::new(),
             None,
             None,
@@ -739,7 +745,7 @@ mod tests {
     fn empty_document_is_rejected() {
         assert!(
             Viewer::from_document(
-                Document::new(vec![]),
+                Document::from_sheets(vec![]),
                 Vec::new(),
                 None,
                 None,
@@ -750,11 +756,40 @@ mod tests {
     }
 
     #[test]
+    fn a_text_document_is_rejected() {
+        let err = Viewer::from_document(
+            Document::from_text("a\nb"),
+            Vec::new(),
+            None,
+            None,
+            Box::new(NullStore),
+        )
+        .err();
+        assert!(matches!(err, Some(DocumentError::NotAWorkbook)), "{err:?}");
+    }
+
+    #[test]
+    fn a_reload_that_turned_into_text_keeps_the_old_view() {
+        let source = SharedSource::new(vec![one_cell("one", "old")]);
+        let mut v = viewer_on(&source);
+        source.write_text_from_outside("# heading");
+        v.apply(Event::Tick);
+        assert_eq!(v.sheet().cell(0, 0).display_text(), "old");
+        assert_eq!(
+            v.notice(),
+            Some("document unavailable: document has no sheets: it is a text file")
+        );
+    }
+
+    #[test]
     fn unresolved_markers_follow_the_active_sheet() {
+        let mut line_thread = thread("one", 9, 9, false);
+        line_thread.anchor = Anchor::line(1);
         let comments = vec![
             thread("one", 1, 1, false),
             thread("one", 2, 2, true),
             thread("two", 0, 0, false),
+            line_thread,
         ];
         let mut v = viewer_with(3, 3, comments, Box::new(NullStore));
         assert_eq!(v.unresolved_on_active_sheet(), vec![(1, 1)]);
@@ -1032,7 +1067,7 @@ mod tests {
             replies: Vec::new(),
         }]);
         let mut v = Viewer::from_document(
-            Document::new(vec![sheet]),
+            Document::from_sheets(vec![sheet]),
             Vec::new(),
             None,
             None,

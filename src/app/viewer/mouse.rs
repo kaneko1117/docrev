@@ -108,7 +108,7 @@ mod tests {
             ],
         );
         Viewer::from_document(
-            Document::new(vec![sheet]),
+            Document::from_sheets(vec![sheet]),
             Vec::new(),
             None,
             None,
@@ -166,7 +166,7 @@ mod tests {
         .with_hidden_rows(HashSet::from([1]))
         .with_hidden_cols(HashSet::from([1]));
         let mut v = Viewer::from_document(
-            Document::new(vec![sheet]),
+            Document::from_sheets(vec![sheet]),
             Vec::new(),
             None,
             None,
@@ -255,7 +255,7 @@ mod tests {
             vec![vec![CellValue::Text(big.clone()), CellValue::Text(big)]],
         );
         let mut v = Viewer::from_document(
-            Document::new(vec![sheet]),
+            Document::from_sheets(vec![sheet]),
             Vec::new(),
             None,
             None,

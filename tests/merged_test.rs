@@ -12,7 +12,11 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn loaded_sheets_carry_their_merged_regions() {
-    let document = XlsxSource.load(&fixture("merged.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("merged.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
 
     let horizontal = sheet.merge_at(0, 1).expect("B1 is inside A1:C1");
@@ -34,6 +38,10 @@ fn loaded_sheets_carry_their_merged_regions() {
 
 #[test]
 fn documents_without_merges_load_unchanged() {
-    let document = XlsxSource.load(&fixture("basic.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("basic.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     assert!(document.sheets()[0].merge_at(0, 0).is_none());
 }

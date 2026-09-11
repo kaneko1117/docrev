@@ -19,7 +19,11 @@ const GREEN: Rgb = Rgb { r: 0, g: 255, b: 0 };
 
 #[test]
 fn empty_cells_take_their_column_and_row_fills() {
-    let document = XlsxSource.load(&fixture("default_styles.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("default_styles.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(
         sheet.fill_at(0, 0),
@@ -41,7 +45,11 @@ fn empty_cells_take_their_column_and_row_fills() {
 
 #[test]
 fn indexed_and_auto_colors_arrive() {
-    let document = XlsxSource.load(&fixture("default_styles.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("default_styles.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.fill_at(0, 2), Some(YELLOW), "indexed 13");
     assert_eq!(

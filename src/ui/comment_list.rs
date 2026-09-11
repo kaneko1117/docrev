@@ -12,9 +12,8 @@ pub fn render(threads: &[(&CommentThread, bool)]) -> String {
         let mark = if thread.resolved { "✓" } else { "●" };
         let first_line = sanitize(thread.body.lines().next().unwrap_or(""));
         out.push_str(&format!(
-            "{mark} {}!{}{} [{}] {first_line}",
-            thread.anchor.sheet(),
-            thread.anchor.cell_ref(),
+            "{mark} {}{} [{}] {first_line}",
+            thread.anchor.label(),
             if hidden { " (hidden)" } else { "" },
             thread.author,
         ));

@@ -137,7 +137,7 @@ impl Frontend for TerminalFrontend {
                     EditTarget::NewThread => grid::EditorKind::Comment,
                     EditTarget::Reply => grid::EditorKind::Reply,
                 },
-                address: at.cell_ref(),
+                address: at.position(),
                 buffer,
             }),
             _ => None,
@@ -170,7 +170,7 @@ impl Frontend for TerminalFrontend {
         let notes_view = viewer.notes_state().map(|(comments, scroll)| {
             let (row, col) = viewer.cursor();
             NotesView {
-                cell_ref: Anchor::cell("", row as u32, col as u32).cell_ref(),
+                cell_ref: Anchor::a1(row as u32, col as u32),
                 comments: comments
                     .iter()
                     .map(|c| NoteView {

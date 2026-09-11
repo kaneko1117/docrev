@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::domain::anchor::Anchor;
 use crate::domain::cell::CellValue;
 use crate::domain::comment::CommentThread;
-use crate::domain::document::Document;
+use crate::domain::document::{Document, Workbook};
 use crate::domain::sheet::{MergedRange, Sheet};
 use crate::domain::workbook_comment::WorkbookComment;
 
@@ -50,7 +50,7 @@ pub fn list(
         .into_iter()
         .filter(|t| !(filter.unresolved_only && t.resolved))
         .filter(|t| filter.author.is_none_or(|a| t.author == a))
-        .filter(|t| filter.sheet.is_none_or(|s| t.anchor.sheet() == s))
+        .filter(|t| filter.sheet.is_none_or(|s| t.anchor.sheet() == Some(s)))
         .collect())
 }
 
@@ -80,7 +80,8 @@ pub fn list_with_context(
         .collect();
     let workbook = document
         .iter()
-        .flat_map(Document::sheets)
+        .filter_map(Document::workbook)
+        .flat_map(Workbook::sheets)
         .filter(|sheet| filter.sheet.is_none_or(|s| sheet.name() == s))
         .flat_map(|sheet| {
             sheet
@@ -95,9 +96,12 @@ pub fn list_with_context(
 }
 
 fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
-    let Anchor::Cell { sheet, row, col } = anchor;
-    let index = document.index_of(sheet)?;
-    let sheet = &document.sheets()[index];
+    let Anchor::Cell { sheet, row, col } = anchor else {
+        return None;
+    };
+    let workbook = document.workbook()?;
+    let index = workbook.index_of(sheet)?;
+    let sheet = &workbook.sheets()[index];
     let (row, col) = (*row as usize, *col as usize);
     let display = sheet.display_cell(row, col);
     let value = display.display_text();
@@ -129,12 +133,7 @@ fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
         .filter(|&c| !in_anchor_region(c) && !sheet.col_hidden(c))
         .filter_map(|c| {
             let text = sheet.cell(sibling_row, c).display_text();
-            (!text.is_empty()).then(|| {
-                (
-                    Anchor::cell("", sibling_row as u32, c as u32).cell_ref(),
-                    text,
-                )
-            })
+            (!text.is_empty()).then(|| (Anchor::a1(sibling_row as u32, c as u32), text))
         })
         .take(ROW_CONTEXT_CAP)
         .collect();
@@ -165,7 +164,10 @@ pub(crate) fn thread_on<'a>(
             sheet: name,
             row: r,
             col: c,
-        } = &thread.anchor;
+        } = &thread.anchor
+        else {
+            continue;
+        };
         if name != sheet.name() || !in_region(*r as usize, *c as usize) {
             continue;
         }
@@ -196,6 +198,32 @@ pub(crate) fn comment_on_cell(
     store.comment_on(anchor, &existing, body, author)
 }
 
+/// The line's conversation: its first unresolved thread, else its newest.
+pub fn thread_on_line(threads: &[CommentThread], line: u32) -> Option<&CommentThread> {
+    let mut newest = None;
+    for thread in threads {
+        if thread.anchor != Anchor::line(line) {
+            continue;
+        }
+        if !thread.resolved {
+            return Some(thread);
+        }
+        newest = Some(thread);
+    }
+    newest
+}
+
+/// Continues the line's thread, else starts one; the choice is made by the store at write time.
+pub fn comment_on_line(
+    store: &mut dyn CommentStore,
+    line: u32,
+    body: &str,
+    author: &str,
+) -> Result<CommentThread, StoreError> {
+    let existing = |threads: &[CommentThread]| thread_on_line(threads, line).map(|t| t.id.clone());
+    store.comment_on(Anchor::line(line), &existing, body, author)
+}
+
 /// The sheet must exist; the cell may lie outside the used range. A cell that already has a
 /// thread gets the body as a reply on it, which reopens a resolved one.
 pub fn add(
@@ -209,18 +237,17 @@ pub fn add(
     let Some(anchor) = Anchor::parse_ref(target) else {
         return Err(CommentError::BadReference(target.to_string()));
     };
+    let Anchor::Cell { sheet, row, col } = &anchor else {
+        return Err(CommentError::BadReference(target.to_string()));
+    };
     let document = source.load(document_path).map_err(DocumentError::from)?;
-    let Some(sheet) = document
-        .sheets()
-        .iter()
-        .find(|s| s.name() == anchor.sheet())
-    else {
+    let workbook = document.workbook().ok_or(DocumentError::NotAWorkbook)?;
+    let Some(sheet) = workbook.sheets().iter().find(|s| s.name() == sheet) else {
         return Err(CommentError::Document(DocumentError::SheetNotFound {
-            name: anchor.sheet().to_string(),
-            available: document.sheet_names().map(str::to_string).collect(),
+            name: sheet.to_string(),
+            available: workbook.sheet_names().map(str::to_string).collect(),
         }));
     };
-    let Anchor::Cell { row, col, .. } = &anchor;
     let (row, col) = (*row as usize, *col as usize);
     Ok(comment_on_cell(store, sheet, row, col, body, author)?)
 }
@@ -260,7 +287,7 @@ mod tests {
 
     impl DocumentSource for FakeSource {
         fn load(&self, _: &Path) -> Result<Document, LoadError> {
-            Ok(Document::new(vec![
+            Ok(Document::from_sheets(vec![
                 Sheet::new("売上", vec![vec![CellValue::Number(1.0)]]),
                 Sheet::new("経費", vec![vec![CellValue::Number(1.0)]]),
             ]))
@@ -335,7 +362,7 @@ mod tests {
         assert!(err.to_string().contains("売上, 経費"), "{err}");
 
         let thread = add(&FakeSource, &mut store, &path(), "売上!B3", "b", "claude").unwrap();
-        assert_eq!(thread.anchor.cell_ref(), "B3");
+        assert_eq!(thread.anchor.position(), "B3");
         assert_eq!(thread.author, "claude");
     }
 
@@ -343,7 +370,7 @@ mod tests {
 
     impl DocumentSource for MergedSource {
         fn load(&self, _: &Path) -> Result<Document, LoadError> {
-            Ok(Document::new(vec![
+            Ok(Document::from_sheets(vec![
                 Sheet::new("売上", vec![vec![CellValue::Number(1.0); 3]]).with_merges(vec![
                     MergedRange {
                         start_row: 0,
@@ -394,7 +421,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            first.anchor.cell_ref(),
+            first.anchor.position(),
             "A1",
             "anchored at the region's top-left"
         );
@@ -449,6 +476,74 @@ mod tests {
         );
 
         assert_eq!(thread_on(&store.threads, &sheet, 1, 1), None);
+    }
+
+    #[test]
+    fn thread_on_line_prefers_the_open_thread_and_falls_back_to_the_newest() {
+        let mut store = MemoryStore::default();
+        let older = store.add_thread(Anchor::line(3), "older", "user").unwrap();
+        let newer = store.add_thread(Anchor::line(3), "newer", "user").unwrap();
+        store
+            .add_thread(Anchor::line(4), "elsewhere", "user")
+            .unwrap();
+
+        let pick = |threads: &[CommentThread]| thread_on_line(threads, 3).map(|t| t.id.clone());
+        assert_eq!(pick(&store.threads), Some(older.id.clone()));
+        resolve(&mut store, &older.id).unwrap();
+        assert_eq!(pick(&store.threads), Some(newer.id.clone()));
+        resolve(&mut store, &newer.id).unwrap();
+        assert_eq!(pick(&store.threads), Some(newer.id.clone()), "newest");
+        assert_eq!(thread_on_line(&store.threads, 5), None);
+    }
+
+    #[test]
+    fn comment_on_line_continues_the_lines_thread_and_reopens_a_resolved_one() {
+        let mut store = MemoryStore::default();
+        let first = comment_on_line(&mut store, 3, "first", "user").unwrap();
+        resolve(&mut store, &first.id).unwrap();
+        let again = comment_on_line(&mut store, 3, "again", "agent").unwrap();
+        assert_eq!(again.id, first.id, "one line, one thread");
+        assert_eq!(again.replies.len(), 1);
+
+        let other = comment_on_line(&mut store, 4, "other", "user").unwrap();
+        assert_ne!(other.id, first.id);
+        assert_eq!(other.anchor, Anchor::line(4));
+        assert_eq!(store.threads.len(), 2);
+    }
+
+    #[test]
+    fn a_text_document_has_no_cells_to_comment_on() {
+        struct TextSource;
+        impl DocumentSource for TextSource {
+            fn load(&self, _: &Path) -> Result<Document, LoadError> {
+                Ok(Document::from_text("a\nb"))
+            }
+        }
+        let mut store = MemoryStore::default();
+        let err = add(&TextSource, &mut store, &path(), "s!A1", "x", "user").unwrap_err();
+        assert!(
+            matches!(err, CommentError::Document(DocumentError::NotAWorkbook)),
+            "{err:?}"
+        );
+        assert!(store.threads.is_empty());
+    }
+
+    #[test]
+    fn the_sheet_filter_leaves_line_threads_out() {
+        let mut store = MemoryStore::default();
+        store.add_thread(Anchor::line(0), "l", "user").unwrap();
+        add(&FakeSource, &mut store, &path(), "売上!A1", "a", "user").unwrap();
+        let on_sheet = list(
+            &store,
+            &Filter {
+                sheet: Some("売上"),
+                ..Filter::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(on_sheet.len(), 1);
+        assert_eq!(on_sheet[0].anchor, Anchor::cell("売上", 0, 0));
+        assert_eq!(list(&store, &Filter::default()).unwrap().len(), 2);
     }
 
     #[test]
@@ -539,7 +634,7 @@ mod tests {
                 end_row: 2,
                 end_col: 1,
             }]);
-            Ok(Document::new(vec![sheet]))
+            Ok(Document::from_sheets(vec![sheet]))
         }
     }
 
@@ -579,8 +674,8 @@ mod tests {
         fn load(&self, path: &Path) -> Result<Document, LoadError> {
             use std::collections::HashSet;
             let document = RichSource.load(path)?;
-            let sheet = document.into_sheets().remove(0);
-            Ok(Document::new(vec![
+            let sheet = document.into_workbook().unwrap().into_sheets().remove(0);
+            Ok(Document::from_sheets(vec![
                 sheet
                     .with_hidden_cols(HashSet::from([3]))
                     .with_hidden_rows(HashSet::from([3])),
@@ -611,7 +706,7 @@ mod tests {
                 end_col: 0,
             }])
             .with_hidden_rows(HashSet::from([0]));
-            Ok(Document::new(vec![sheet]))
+            Ok(Document::from_sheets(vec![sheet]))
         }
     }
 
@@ -631,8 +726,13 @@ mod tests {
 
     impl DocumentSource for HiddenSheetSource {
         fn load(&self, path: &Path) -> Result<Document, LoadError> {
-            let sheet = RichSource.load(path)?.into_sheets().remove(0);
-            Ok(Document::new(vec![
+            let sheet = RichSource
+                .load(path)?
+                .into_workbook()
+                .unwrap()
+                .into_sheets()
+                .remove(0);
+            Ok(Document::from_sheets(vec![
                 sheet.with_hidden(true),
                 Sheet::new("shown", vec![vec![CellValue::Number(1.0)]]),
             ]))

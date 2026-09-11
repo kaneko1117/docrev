@@ -13,7 +13,11 @@ fn fixture(name: &str) -> PathBuf {
 /// The acceptance table of #97: every cell displays as Excel shows it.
 #[test]
 fn date_cells_display_as_excel_shows_them() {
-    let document = XlsxSource.load(&fixture("dates.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("dates.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.name(), "日付");
     let text = |row: usize| sheet.cell(row, 1).display_text();
@@ -48,7 +52,11 @@ fn date_cells_display_as_excel_shows_them() {
 /// Agents keep a machine-readable value next to the formatted display.
 #[test]
 fn date_cells_keep_a_machine_readable_raw() {
-    let document = XlsxSource.load(&fixture("dates.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("dates.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     let raw = |row: usize| match sheet.cell(row, 1) {
         CellValue::DateTime { raw, .. } => raw.clone(),
