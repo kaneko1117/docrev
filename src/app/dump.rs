@@ -19,7 +19,10 @@ pub fn dump(
     path: &Path,
     sheet_name: Option<&str>,
 ) -> Result<DumpView, DocumentError> {
-    let document = source.load(path)?;
+    let document = source
+        .load(path)?
+        .into_workbook()
+        .ok_or(DocumentError::NotAWorkbook)?;
     let total = document.sheets().len();
     if total == 0 {
         return Err(DocumentError::EmptyDocument);
@@ -60,7 +63,7 @@ mod tests {
     }
 
     fn doc(names: &[&str]) -> Document {
-        Document::new(names.iter().map(|n| Sheet::new(*n, vec![])).collect())
+        Document::from_sheets(names.iter().map(|n| Sheet::new(*n, vec![])).collect())
     }
 
     #[test]
@@ -76,7 +79,7 @@ mod tests {
     fn defaults_to_the_first_shown_sheet_and_names_reach_hidden_ones() {
         use crate::domain::cell::CellValue;
         use crate::domain::sheet::Sheet;
-        let document = Document::new(vec![
+        let document = Document::from_sheets(vec![
             Sheet::new("scratch", vec![vec![CellValue::Empty]]).with_hidden(true),
             Sheet::new("main", vec![vec![CellValue::Empty]]),
         ]);

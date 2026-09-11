@@ -12,7 +12,11 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn loaded_sheets_carry_their_font_colors() {
-    let document = XlsxSource.load(&fixture("fonts.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("fonts.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.name(), "フォント");
     assert_eq!(
@@ -39,7 +43,11 @@ fn loaded_sheets_carry_their_font_colors() {
 fn font_colors_and_dark_fills_arrive_together() {
     // the cell that motivated #32: readable in Excel because the author
     // paired a dark fill with a white font — both must survive the trip
-    let document = XlsxSource.load(&fixture("fonts.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("fonts.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(
         sheet.fill_at(0, 0),

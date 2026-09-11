@@ -28,12 +28,9 @@ pub(crate) fn draw_formula_bar(p: &Palette, frame: &mut Frame, area: Rect, view:
     let (row, col) = view.cursor;
     let (address, cell) = match view.sheet.merge_at(row, col) {
         Some(merge) => {
-            let start = Anchor::cell("", merge.start_row as u32, merge.start_col as u32);
-            let end = Anchor::cell("", merge.end_row as u32, merge.end_col as u32);
-            (
-                format!("{}:{}", start.cell_ref(), end.cell_ref()),
-                merge.anchor(),
-            )
+            let start = Anchor::a1(merge.start_row as u32, merge.start_col as u32);
+            let end = Anchor::a1(merge.end_row as u32, merge.end_col as u32);
+            (format!("{start}:{end}"), merge.anchor())
         }
         None => (
             format!("{}{}", column_label(col as u32), row + 1),

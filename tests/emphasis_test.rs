@@ -14,7 +14,11 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn loaded_sheets_carry_font_emphasis_but_not_underline() {
-    let document = XlsxSource.load(&fixture("emphasis.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("emphasis.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     let bold = Emphasis {
         bold: true,

@@ -16,7 +16,7 @@ fn loads_threads_from_committed_fixture() {
     let store = JsonCommentStore::for_document(&fixture("basic.xlsx"));
     let threads = store.load().unwrap();
     assert_eq!(threads.len(), 2);
-    assert_eq!(threads[0].anchor.cell_ref(), "B2");
+    assert_eq!(threads[0].anchor.position(), "B2");
     assert_eq!(threads[0].replies[0].author, "claude");
     assert!(threads[1].resolved);
 }

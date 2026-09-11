@@ -30,7 +30,11 @@ fn custom_row_heights_and_sheet_defaults_are_read_from_the_workbook() {
 
 #[test]
 fn loaded_sheets_carry_row_heights_and_default_sizes() {
-    let document = XlsxSource.load(&fixture("heights.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("heights.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sections = &document.sheets()[0];
     assert_eq!(sections.row_height(2), Some(60.0));
     assert_eq!(sections.row_height(4), Some(20.0));

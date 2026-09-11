@@ -46,9 +46,9 @@ pub(crate) fn draw_panel(
     let mut lines = Vec::new();
     if let Some(thread) = view.thread {
         let title = if thread.resolved {
-            format!("{} (resolved)", thread.anchor.cell_ref())
+            format!("{} (resolved)", thread.anchor.position())
         } else {
-            thread.anchor.cell_ref()
+            thread.anchor.position()
         };
         lines.push(Line::styled(title, canvas(p).add_modifier(Modifier::BOLD)));
         lines.push(Line::raw(""));

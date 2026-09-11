@@ -202,7 +202,7 @@ mod tests {
 
     fn search_viewer(sheet: Sheet) -> Viewer {
         Viewer::from_document(
-            Document::new(vec![sheet]),
+            Document::from_sheets(vec![sheet]),
             Vec::new(),
             None,
             None,

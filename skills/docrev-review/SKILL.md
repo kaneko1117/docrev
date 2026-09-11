@@ -20,7 +20,7 @@ edit the sidecar by hand; the CLI locks and writes atomically.
    docrev comment list <file.xlsx> --json --unresolved
    ```
 
-   The output is `{"version": 1, "comments": [...]}`. Each thread carries `id`,
+   The output is `{"version": 2, "comments": [...]}`. Each thread carries `id`,
    `anchor` (`{"sheet": "売上", "cell": "B3"}`), `author`, `body`, `created_at`,
    `replies` — and `cell`: the anchored cell's displayed text plus its row's
    other non-empty cells (`{"value": "...", "row": {"A3": "...", "C3": "..."}}`;

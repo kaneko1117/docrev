@@ -12,7 +12,9 @@ use crate::domain::comment::{CommentThread, Reply};
 use crate::infra::fs;
 
 pub const SIDECAR_SUFFIX: &str = ".docrev.json";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+/// Version 1 had cell anchors only; 2 added `{"kind": "line"}` and reads 1 unchanged.
+const OLDEST_READABLE_VERSION: u32 = 1;
 
 /// `<document>.docrev.json`.
 pub struct JsonCommentStore {
@@ -52,13 +54,17 @@ impl JsonCommentStore {
         let file: SidecarFile = serde_json::from_str(&text).map_err(|e| {
             StoreError::Corrupt(format!("invalid sidecar {}: {e}", self.sidecar.display()))
         })?;
-        if file.version != SCHEMA_VERSION {
+        if !(OLDEST_READABLE_VERSION..=SCHEMA_VERSION).contains(&file.version) {
             return Err(StoreError::UnsupportedVersion {
                 found: file.version,
                 supported: SCHEMA_VERSION,
             });
         }
-        Ok(file)
+        // an older file is upgraded on its next write
+        Ok(SidecarFile {
+            version: SCHEMA_VERSION,
+            ..file
+        })
     }
 
     fn write(&self, file: &SidecarFile) -> Result<(), StoreError> {
@@ -298,10 +304,11 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
             .workbook
             .iter()
             .map(|(sheet, comment)| WorkbookEntry {
-                anchor: AnchorDto {
-                    sheet: sheet.clone(),
-                    cell: Anchor::cell("", comment.row as u32, comment.col as u32).cell_ref(),
-                },
+                anchor: AnchorDto::from_domain(&Anchor::cell(
+                    sheet.clone(),
+                    comment.row as u32,
+                    comment.col as u32,
+                )),
                 author: comment.author.clone(),
                 body: comment.body.clone(),
                 resolved: comment.resolved,
@@ -348,11 +355,63 @@ struct ThreadDto {
     replies: Vec<ReplyDto>,
 }
 
+/// A cell is `{sheet, cell}` with no `kind`; every other kind carries `kind` and its own keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnchorDto {
-    sheet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sheet: Option<String>,
     /// A1 notation.
-    cell: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cell: Option<String>,
+    /// 1-based.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
+}
+
+impl AnchorDto {
+    fn from_domain(anchor: &Anchor) -> Self {
+        let mut dto = Self {
+            kind: None,
+            sheet: None,
+            cell: None,
+            line: None,
+        };
+        match anchor {
+            Anchor::Cell { sheet, .. } => {
+                dto.sheet = Some(sheet.clone());
+                dto.cell = Some(anchor.position());
+            }
+            Anchor::Line { .. } => {
+                dto.kind = Some("line".to_string());
+                dto.line = anchor.line_number();
+            }
+        }
+        dto
+    }
+
+    fn into_domain(self) -> Result<Anchor, StoreError> {
+        match (self.kind.as_deref(), self.sheet, self.cell, self.line) {
+            (None, Some(sheet), Some(cell), _) => {
+                let (row, col) = Anchor::parse_cell_ref(&cell).ok_or_else(|| {
+                    StoreError::Corrupt(format!("invalid cell reference \"{cell}\""))
+                })?;
+                Ok(Anchor::cell(sheet, row, col))
+            }
+            (None, _, _, _) => Err(StoreError::Corrupt(
+                "anchor has neither a cell nor a kind".to_string(),
+            )),
+            (Some("line"), _, _, Some(line)) => Anchor::from_line_number(line)
+                .ok_or_else(|| StoreError::Corrupt("line anchors start at 1".to_string())),
+            (Some("line"), _, _, None) => {
+                Err(StoreError::Corrupt("line anchor has no line".to_string()))
+            }
+            (Some(kind), _, _, _) => Err(StoreError::Corrupt(format!(
+                "unknown anchor kind \"{kind}\""
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,12 +424,9 @@ struct ReplyDto {
 
 impl ThreadDto {
     fn into_domain(self) -> Result<CommentThread, StoreError> {
-        let (row, col) = Anchor::parse_cell_ref(&self.anchor.cell).ok_or_else(|| {
-            StoreError::Corrupt(format!("invalid cell reference \"{}\"", self.anchor.cell))
-        })?;
         Ok(CommentThread {
             id: self.id,
-            anchor: Anchor::cell(self.anchor.sheet, row, col),
+            anchor: self.anchor.into_domain()?,
             author: self.author,
             body: self.body,
             created_at: self.created_at,
@@ -391,10 +447,7 @@ impl ThreadDto {
     fn from_domain(thread: &CommentThread) -> Self {
         Self {
             id: thread.id.clone(),
-            anchor: AnchorDto {
-                sheet: thread.anchor.sheet().to_string(),
-                cell: thread.anchor.cell_ref(),
-            },
+            anchor: AnchorDto::from_domain(&thread.anchor),
             author: thread.author.clone(),
             body: thread.body.clone(),
             created_at: thread.created_at.clone(),
@@ -500,7 +553,7 @@ mod tests {
         };
         let json = threads_with_context_to_json(&list).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["version"], 1, "still the sidecar shape");
+        assert_eq!(parsed["version"], 2, "still the sidecar shape");
         let first = &parsed["comments"][0];
         assert_eq!(first["anchor"]["cell"], "C2", "thread fields flatten");
         assert_eq!(first["cell"]["value"], "ロック表示");
@@ -635,7 +688,7 @@ mod tests {
 
         let reloaded = JsonCommentStore::for_document(&document).load().unwrap();
         assert_eq!(reloaded.len(), 1);
-        assert_eq!(reloaded[0].anchor.cell_ref(), "B3");
+        assert_eq!(reloaded[0].anchor.position(), "B3");
         assert_eq!(reloaded[0].replies.len(), 1);
         assert_eq!(reloaded[0].replies[0].author, "claude");
         cleanup(&document);
@@ -685,20 +738,104 @@ mod tests {
     fn future_version_is_rejected() {
         let document = temp_document();
         let store = JsonCommentStore::for_document(&document);
-        std::fs::write(&store.sidecar, r#"{"version": 2, "comments": []}"#).unwrap();
+        std::fs::write(&store.sidecar, r#"{"version": 3, "comments": []}"#).unwrap();
         let err = store.load().unwrap_err();
         assert!(
             matches!(
                 err,
                 StoreError::UnsupportedVersion {
-                    found: 2,
-                    supported: 1
+                    found: 3,
+                    supported: 2
                 }
             ),
             "{err:?}"
         );
         assert!(err.to_string().contains("unsupported"), "{err}");
         cleanup(&document);
+    }
+
+    #[test]
+    fn a_version_1_sidecar_loads_and_is_rewritten_as_version_2() {
+        let document = temp_document();
+        let mut store = JsonCommentStore::for_document(&document);
+        std::fs::write(
+            &store.sidecar,
+            r#"{"version": 1, "comments": [{"id": "t1", "anchor": {"sheet": "s", "cell": "B3"},
+                "author": "user", "body": "old", "created_at": "2026-01-01T00:00:00Z"}]}"#,
+        )
+        .unwrap();
+        let threads = store.load().unwrap();
+        assert_eq!(threads[0].anchor, Anchor::cell("s", 2, 1));
+
+        store.resolve("t1").unwrap();
+        let text = std::fs::read_to_string(&store.sidecar).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["version"], 2);
+        assert_eq!(parsed["comments"][0]["anchor"]["cell"], "B3");
+        assert!(
+            parsed["comments"][0]["anchor"].get("kind").is_none(),
+            "a cell anchor never carries a kind"
+        );
+        assert_eq!(store.load().unwrap()[0].anchor, Anchor::cell("s", 2, 1));
+        cleanup(&document);
+    }
+
+    #[test]
+    fn a_line_anchor_round_trips_as_a_one_based_kind_line_object() {
+        let document = temp_document();
+        let mut store = JsonCommentStore::for_document(&document);
+        let thread = store
+            .add_thread(Anchor::line(12), "wrong step", "user")
+            .unwrap();
+        assert_eq!(thread.anchor, Anchor::line(12));
+
+        let text = std::fs::read_to_string(&store.sidecar).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["version"], 2);
+        assert_eq!(
+            parsed["comments"][0]["anchor"],
+            serde_json::json!({"kind": "line", "line": 13})
+        );
+        assert_eq!(store.load().unwrap()[0].anchor, Anchor::line(12));
+        assert!(thread_to_json(&thread).unwrap().contains(r#""line": 13"#));
+        cleanup(&document);
+    }
+
+    #[test]
+    fn anchors_docrev_cannot_read_are_corrupt() {
+        let cases = [
+            (r#"{"kind": "line", "line": 0}"#, "start at 1"),
+            (r#"{"kind": "line"}"#, "no line"),
+            (
+                r#"{"kind": "cell", "sheet": "s", "cell": "B3"}"#,
+                "unknown anchor kind",
+            ),
+            (
+                r#"{"kind": "paragraph", "index": 1}"#,
+                "unknown anchor kind",
+            ),
+            (r#"{"line": 13}"#, "neither a cell nor a kind"),
+            (
+                r#"{"sheet": "s", "cell": "nope"}"#,
+                "invalid cell reference",
+            ),
+        ];
+        for (anchor, expected) in cases {
+            let document = temp_document();
+            let store = JsonCommentStore::for_document(&document);
+            std::fs::write(
+                &store.sidecar,
+                format!(
+                    r#"{{"version": 2, "comments": [{{"id": "t", "anchor": {anchor},
+                    "author": "u", "body": "b", "created_at": ""}}]}}"#
+                ),
+            )
+            .unwrap();
+            let err = store.load().unwrap_err();
+            assert!(matches!(err, StoreError::Corrupt(_)), "{anchor}: {err:?}");
+            assert!(err.to_string().contains(expected), "{anchor}: {err}");
+            cleanup(&document);
+        }
     }
 
     #[test]

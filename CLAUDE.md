@@ -57,7 +57,7 @@ src/
   there, not a reason to be there.
 - No constructor-less utility modules in `domain` — free functions belong next to
   their single consumer until a real domain type can own them.
-- The sidecar file is `<document>.docrev.json`, versioned (`"version": 1`).
+- The sidecar file is `<document>.docrev.json`, versioned (`"version": 2`).
   Its schema is a public contract (agents depend on it) — document every change.
 
 ## Coding rules

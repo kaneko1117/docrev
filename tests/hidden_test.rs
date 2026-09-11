@@ -34,7 +34,11 @@ fn hidden_columns_and_rows_are_read_from_the_workbook() {
 
 #[test]
 fn loaded_sheets_carry_hidden_rows_columns_and_sheet_state() {
-    let document = XlsxSource.load(&fixture("hidden.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("hidden.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let names: Vec<&str> = document.sheet_names().collect();
     assert_eq!(
         names,
@@ -56,7 +60,11 @@ fn loaded_sheets_carry_hidden_rows_columns_and_sheet_state() {
 
 #[test]
 fn a_workbook_without_hidden_parts_reports_none() {
-    let document = XlsxSource.load(&fixture("basic.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("basic.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert!(!sheet.is_hidden());
     assert!((0..sheet.row_count()).all(|r| !sheet.row_hidden(r)));
@@ -169,7 +177,11 @@ fn dump_starts_on_the_first_shown_sheet_and_can_still_name_a_hidden_one() {
 fn a_workbook_that_hides_every_sheet_still_opens() {
     let text = dump_of("all_hidden.xlsx", None);
     assert!(text.starts_with("Sheet: a (1/2)"), "{text}");
-    let document = XlsxSource.load(&fixture("all_hidden.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("all_hidden.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     assert!(document.sheets().iter().all(|s| !s.is_hidden()));
 }
 

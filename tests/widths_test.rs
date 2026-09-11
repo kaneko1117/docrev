@@ -28,7 +28,11 @@ fn reads_custom_column_widths_from_the_workbook() {
 
 #[test]
 fn loaded_sheets_carry_their_column_widths() {
-    let document = XlsxSource.load(&fixture("widths.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("widths.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let wide = &document.sheets()[0];
     assert_eq!(wide.name(), "広い");
     assert_eq!(wide.col_width(0).map(f64::round), Some(20.0));
@@ -42,6 +46,10 @@ fn loaded_sheets_carry_their_column_widths() {
 #[test]
 fn width_parsing_failure_does_not_block_opening() {
     // basic.xlsx has no custom widths; loading must simply yield defaults
-    let document = XlsxSource.load(&fixture("basic.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("basic.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     assert_eq!(document.sheets()[0].col_width(0), None);
 }

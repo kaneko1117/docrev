@@ -57,7 +57,7 @@ impl CommentStore for RecordingStore {
     ) -> Result<CommentThread, StoreError> {
         self.log
             .borrow_mut()
-            .push(format!("thread {} {body}", anchor.cell_ref()));
+            .push(format!("thread {} {body}", anchor.position()));
         Ok(CommentThread {
             id: "new-thread".into(),
             anchor,
@@ -208,6 +208,8 @@ impl CommentStore for SharedStore {
 #[derive(Clone)]
 pub(crate) struct SharedSource {
     pub(crate) sheets: Rc<RefCell<Vec<Sheet>>>,
+    /// When set, loads yield this text instead of the sheets.
+    pub(crate) text: Rc<RefCell<Option<String>>>,
     pub(crate) revision: Rc<RefCell<Option<u64>>>,
     pub(crate) loads: Rc<RefCell<usize>>,
     pub(crate) broken: Rc<RefCell<bool>>,
@@ -217,9 +219,17 @@ impl SharedSource {
     pub(crate) fn new(sheets: Vec<Sheet>) -> Self {
         Self {
             sheets: Rc::new(RefCell::new(sheets)),
+            text: Rc::new(RefCell::new(None)),
             revision: Rc::new(RefCell::new(Some(1))),
             loads: Rc::new(RefCell::new(0)),
             broken: Rc::new(RefCell::new(false)),
+        }
+    }
+
+    pub(crate) fn write_text_from_outside(&self, text: &str) {
+        *self.text.borrow_mut() = Some(text.to_string());
+        if let Some(revision) = self.revision.borrow_mut().as_mut() {
+            *revision += 1;
         }
     }
 
@@ -237,7 +247,10 @@ impl DocumentSource for SharedSource {
         if *self.broken.borrow() {
             return Err(LoadError::Open("mid-write".into()));
         }
-        Ok(Document::new(self.sheets.borrow().clone()))
+        if let Some(text) = self.text.borrow().as_deref() {
+            return Ok(Document::from_text(text));
+        }
+        Ok(Document::from_sheets(self.sheets.borrow().clone()))
     }
 
     fn revision(&self, _: &Path) -> Option<u64> {
@@ -264,7 +277,7 @@ pub(crate) fn viewer_with(
     store: Box<dyn CommentStore>,
 ) -> Viewer {
     let grid = vec![vec![CellValue::Number(1.0); cols]; rows];
-    let doc = Document::new(vec![
+    let doc = Document::from_sheets(vec![
         Sheet::new("one", grid),
         Sheet::new("two", vec![vec![CellValue::Bool(true)]]),
     ]);

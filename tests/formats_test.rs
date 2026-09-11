@@ -32,7 +32,11 @@ fn reads_format_codes_from_the_workbook() {
 
 #[test]
 fn loaded_cells_display_as_excel_shows_them() {
-    let document = XlsxSource.load(&fixture("formats.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("formats.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.name(), "書式");
 
@@ -56,7 +60,11 @@ fn loaded_cells_display_as_excel_shows_them() {
 
 #[test]
 fn unformatted_numbers_and_dates_keep_their_existing_behavior() {
-    let document = XlsxSource.load(&fixture("formats.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("formats.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.cell(0, 5), &CellValue::Number(42.0));
     assert!(
@@ -77,7 +85,7 @@ fn format_parsing_failure_does_not_block_opening() {
         "the fixture must actually exercise the failure path"
     );
 
-    let document = XlsxSource.load(&path).unwrap();
+    let document = XlsxSource.load(&path).unwrap().into_workbook().unwrap();
     let sheet = &document.sheets()[0];
     assert_eq!(sheet.cell(0, 0), &CellValue::Number(0.15));
     assert_eq!(sheet.cell(0, 2), &CellValue::Number(-1234.0));
@@ -85,7 +93,11 @@ fn format_parsing_failure_does_not_block_opening() {
 
 #[test]
 fn formatless_workbooks_stay_raw() {
-    let document = XlsxSource.load(&fixture("basic.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("basic.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     for row in 0..sheet.row_count() {
         for col in 0..sheet.col_count() {

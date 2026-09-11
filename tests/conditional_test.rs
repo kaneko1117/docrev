@@ -20,7 +20,11 @@ const GREEN: Rgb = Rgb { r: 0, g: 255, b: 0 };
 
 #[test]
 fn flagged_cells_take_their_rules_formats() {
-    let document = XlsxSource.load(&fixture("conditional.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("conditional.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     let sheet = &document.sheets()[0];
     // B: > 100 red (priority 1) beats > 400 yellow; bold when B beats the same row's C
     assert_eq!(sheet.fill_at(1, 1), None, "50");
@@ -54,6 +58,10 @@ fn flagged_cells_take_their_rules_formats() {
 
 #[test]
 fn workbooks_without_rules_are_unchanged() {
-    let document = XlsxSource.load(&fixture("fills.xlsx")).unwrap();
+    let document = XlsxSource
+        .load(&fixture("fills.xlsx"))
+        .unwrap()
+        .into_workbook()
+        .unwrap();
     assert!(!document.sheets().is_empty());
 }

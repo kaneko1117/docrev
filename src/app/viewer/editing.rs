@@ -31,7 +31,10 @@ impl Viewer {
             self.mode = Mode::Grid;
             return;
         }
-        let Anchor::Cell { sheet, row, col } = at;
+        let Anchor::Cell { sheet, row, col } = at else {
+            self.notice = Some(Notice::Save("save failed: not a cell".into()));
+            return;
+        };
         let (name, row, col) = (sheet.clone(), *row as usize, *col as usize);
         let Some(index) = self.sheet_names().iter().position(|n| *n == name) else {
             self.notice = Some(Notice::Save(format!("save failed: sheet {name:?} is gone")));
@@ -325,7 +328,7 @@ mod tests {
                     end_col: 2,
                 },
             ]);
-        let doc = Document::new(vec![sheet]);
+        let doc = Document::from_sheets(vec![sheet]);
 
         let comments = vec![thread("one", 0, 1, false)];
         let store = RecordingStore::default();
@@ -350,7 +353,7 @@ mod tests {
         assert_eq!(v.cursor(), (0, 1));
         v.apply(Event::StartComment);
         v.apply(Event::CancelEdit);
-        let doc2 = Document::new(vec![
+        let doc2 = Document::from_sheets(vec![
             Sheet::new("one", vec![vec![CellValue::Text("t".into()); 3]; 2]).with_merges(vec![
                 MergedRange {
                     start_row: 0,

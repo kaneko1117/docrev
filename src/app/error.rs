@@ -19,6 +19,8 @@ pub enum DocumentError {
     },
     #[error("document has no sheets")]
     EmptyDocument,
+    #[error("document has no sheets: it is a text file")]
+    NotAWorkbook,
 }
 
 #[derive(Debug, Error)]
@@ -29,10 +31,10 @@ pub struct FrontendError(pub String);
 pub enum StoreError {
     #[error("{0}")]
     Io(String),
-    /// Unparsable JSON, or a stored anchor that is not a cell reference.
+    /// Unparsable JSON, or a stored anchor docrev cannot read.
     #[error("{0}")]
     Corrupt(String),
-    #[error("unsupported sidecar version {found} (supported: {supported})")]
+    #[error("unsupported sidecar version {found} (supported: 1 to {supported})")]
     UnsupportedVersion { found: u32, supported: u32 },
     #[error("no thread with id {0}")]
     ThreadNotFound(String),
