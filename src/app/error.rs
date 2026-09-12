@@ -4,6 +4,11 @@ use thiserror::Error;
 pub enum LoadError {
     #[error("{0}")]
     Open(String),
+    #[error("unsupported file type {extension:?} (supported: {})", supported.join(", "))]
+    Unsupported {
+        extension: String,
+        supported: Vec<String>,
+    },
     #[error("{0}")]
     Sheet(String),
 }
@@ -21,6 +26,8 @@ pub enum DocumentError {
     EmptyDocument,
     #[error("document has no sheets: it is a text file")]
     NotAWorkbook,
+    #[error("--formulas does not apply to a text file")]
+    NoFormulas,
 }
 
 #[derive(Debug, Error)]
@@ -44,6 +51,18 @@ pub enum StoreError {
 pub enum CommentError {
     #[error("invalid cell reference \"{0}\" (expected \"Sheet!B3\")")]
     BadReference(String),
+    #[error("line numbers start at 1")]
+    BadLine,
+    #[error("specify the target with --cell or --line")]
+    MissingTarget,
+    #[error("document has no cells: it is a text file (use --line)")]
+    NoCells,
+    #[error("document has no lines: it is a workbook (use --cell)")]
+    NoLines,
+    #[error("line {line} is beyond the end of the file ({len} lines)")]
+    LineOutOfRange { line: u32, len: usize },
+    #[error("--sheet does not apply to a text file")]
+    SheetFilterOnText,
     #[error(transparent)]
     Document(#[from] DocumentError),
     #[error(transparent)]

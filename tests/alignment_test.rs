@@ -52,8 +52,9 @@ fn loaded_sheets_carry_cell_alignment() {
 
 #[test]
 fn the_dump_centers_headers_and_indents_labels() {
-    let view = dump(&XlsxSource, &fixture("alignment.xlsx"), None).unwrap();
-    let out = render(&view.sheet, view.position, view.total, false);
+    let view = dump(&XlsxSource, &fixture("alignment.xlsx"), None, false).unwrap();
+    let (position, total) = view.place().unwrap();
+    let out = render(view.sheet().unwrap(), position, total, false);
     assert!(out.contains("│ 1 │  商品  │"), "centered header:\n{out}");
     assert!(
         out.contains("│ 3 │   合計 │"),

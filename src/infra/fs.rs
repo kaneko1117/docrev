@@ -52,3 +52,19 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     }
     renamed
 }
+
+/// mtime mixed with size (mtime alone has one-second granularity); a missing file is `Some(0)`.
+pub fn revision(path: &Path) -> Option<u64> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
+    };
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some(modified.wrapping_mul(31).wrapping_add(metadata.len()))
+}

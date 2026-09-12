@@ -2,17 +2,18 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 
+use docrev::adapter::by_extension::ByExtension;
 use docrev::adapter::json_comment_store::{self, JsonCommentStore};
 use docrev::adapter::terminal_frontend::TerminalFrontend;
-use docrev::adapter::xlsx_source::XlsxSource;
 use docrev::app::comments;
-use docrev::app::dump::dump;
+use docrev::app::dump::{DumpView, dump};
+use docrev::app::error::DocumentError;
 use docrev::app::viewer::{self, Viewer};
 use docrev::infra::terminal;
 use docrev::ui::theme::Theme;
-use docrev::ui::{comment_list, table};
+use docrev::ui::{comment_list, lines, table};
 
 #[derive(Parser)]
 #[command(name = "docrev", version, about)]
@@ -28,9 +29,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Print a sheet as a plain-text table
+    /// Print a sheet as a plain-text table, or a text document with line numbers (like `cat -n`)
     Dump {
-        /// Path to the document (.xlsx)
+        /// Path to the document (.xlsx, .md)
         file: PathBuf,
         /// Sheet name to print (defaults to the first sheet the workbook shows; a hidden sheet can be named)
         #[arg(long)]
@@ -64,12 +65,16 @@ enum CommentAction {
         #[arg(long)]
         sheet: Option<String>,
     },
-    /// Comment on a cell; continues the cell's thread when it has one
+    /// Comment on a cell or a line; continues the thread there when it has one
+    #[command(group(ArgGroup::new("target").required(true).args(["cell", "line"])))]
     Add {
         file: PathBuf,
-        /// Target cell, e.g. "Sheet1!B3"
+        /// Target cell of a workbook, e.g. "Sheet1!B3"
         #[arg(long)]
-        cell: String,
+        cell: Option<String>,
+        /// Target line of a text document, 1-based
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        line: Option<u32>,
         #[arg(long)]
         body: String,
         #[arg(long, default_value = "agent")]
@@ -146,7 +151,7 @@ fn run_comment(action: CommentAction) -> ExitCode {
                 author: author.as_deref(),
                 sheet: sheet.as_deref(),
             };
-            match comments::list_with_context(&XlsxSource, &store, &document, &filter) {
+            match comments::list_with_context(&ByExtension, &store, &document, &filter) {
                 Ok(items) if json => {
                     print_json(json_comment_store::threads_with_context_to_json(&items))
                 }
@@ -154,7 +159,7 @@ fn run_comment(action: CommentAction) -> ExitCode {
                     let threads: Vec<(&_, bool)> = items
                         .threads
                         .iter()
-                        .map(|(t, c)| (t, c.as_ref().is_some_and(|c| c.hidden)))
+                        .map(|(t, c)| (t, c.as_ref().is_some_and(comments::AnchorContext::hidden)))
                         .collect();
                     print_stdout(&comment_list::render(&threads))
                 }
@@ -162,11 +167,21 @@ fn run_comment(action: CommentAction) -> ExitCode {
             }
         }
         CommentAction::Add {
-            cell, body, author, ..
-        } => match comments::add(&XlsxSource, &mut store, &document, &cell, &body, &author) {
-            Ok(thread) => print_json(json_comment_store::thread_to_json(&thread)),
-            Err(e) => fail(&e),
-        },
+            cell,
+            line,
+            body,
+            author,
+            ..
+        } => {
+            let anchor = match comments::parse_target(cell.as_deref(), line) {
+                Ok(anchor) => anchor,
+                Err(e) => return fail(&e),
+            };
+            match comments::add(&ByExtension, &mut store, &document, anchor, &body, &author) {
+                Ok(thread) => print_json(json_comment_store::thread_to_json(&thread)),
+                Err(e) => fail(&e),
+            }
+        }
         CommentAction::Reply {
             thread,
             body,
@@ -191,13 +206,14 @@ fn print_json(rendered: Result<String, docrev::app::error::StoreError>) -> ExitC
 }
 
 fn run_dump(file: &Path, sheet: Option<&str>, formulas: bool) -> ExitCode {
-    match dump(&XlsxSource, file, sheet) {
-        Ok(view) => print_stdout(&table::render(
-            &view.sheet,
-            view.position,
-            view.total,
+    match dump(&ByExtension, file, sheet, formulas) {
+        Ok(DumpView::Sheet {
+            sheet,
+            position,
+            total,
             formulas,
-        )),
+        }) => print_stdout(&table::render(&sheet, position, total, formulas)),
+        Ok(DumpView::Text(text)) => print_stdout(&lines::render(&text)),
         Err(e) => fail(&e),
     }
 }
@@ -213,8 +229,13 @@ fn print_stdout(text: &str) -> ExitCode {
 
 fn run_viewer(file: &Path, theme: Theme) -> ExitCode {
     let store = JsonCommentStore::for_document(file);
-    let viewer = match Viewer::open(Box::new(XlsxSource), Box::new(store), file) {
+    let viewer = match Viewer::open(Box::new(ByExtension), Box::new(store), file) {
         Ok(viewer) => viewer,
+        Err(DocumentError::NotAWorkbook) => {
+            return fail(
+                &"the viewer does not open text documents yet; use `docrev dump` and `docrev comment`",
+            );
+        }
         Err(e) => return fail(&e),
     };
     let terminal = match terminal::init() {

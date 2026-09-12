@@ -178,3 +178,143 @@ fn invalid_input_fails_with_nonzero_exit() {
 
     cleanup(&doc);
 }
+
+fn temp_markdown(text: &str) -> PathBuf {
+    let dest = std::env::temp_dir().join(format!("docrev-cli-{}.md", uuid::Uuid::new_v4()));
+    std::fs::write(&dest, text).unwrap();
+    let _ = std::fs::remove_file(sidecar_of(&dest));
+    dest
+}
+
+fn run(args: &[&str], doc: &Path) -> std::process::Output {
+    let mut command = bin();
+    command.arg(args[0]);
+    if args[0] == "comment" {
+        command.arg(args[1]).arg(doc).args(&args[2..]);
+    } else {
+        command.arg(doc).args(&args[1..]);
+    }
+    command.output().unwrap()
+}
+
+#[test]
+fn markdown_agent_loop() {
+    let doc = temp_markdown("# docrev\n\nOpen a document.\n\n- Excel only\n");
+
+    let out = run(&["dump"], &doc);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "     1\t# docrev\n     2\t\n     3\tOpen a document.\n     4\t\n     5\t- Excel only\n"
+    );
+
+    let out = run(
+        &[
+            "comment",
+            "add",
+            "--line",
+            "5",
+            "--body",
+            "not any more",
+            "--author",
+            "user",
+        ],
+        &doc,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let thread: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        thread["anchor"],
+        serde_json::json!({"kind": "line", "line": 5})
+    );
+    let id = thread["id"].as_str().unwrap().to_string();
+
+    let out = run(&["comment", "add", "--line", "5", "--body", "agreed"], &doc);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let same: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(same["id"], id, "one line, one thread");
+    assert_eq!(same["replies"][0]["author"], "agent");
+
+    let out = run(&["comment", "list", "--json"], &doc);
+    let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(listed["version"], 2);
+    let first = &listed["comments"][0];
+    assert_eq!(first["line"]["text"], "- Excel only");
+    assert_eq!(
+        first["line"]["context"],
+        serde_json::json!({"3": "Open a document.", "4": ""})
+    );
+    assert!(first.get("cell").is_none() && first.get("hidden").is_none());
+    assert_eq!(listed["workbook_comments"], serde_json::json!([]));
+
+    let out = run(&["comment", "list"], &doc);
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("● line 5 [user] not any more"));
+
+    std::fs::write(&doc, "# docrev\n").unwrap();
+    let out = run(&["comment", "list", "--json"], &doc);
+    let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(listed["comments"][0]["hidden"], true);
+    assert!(listed["comments"][0].get("line").is_none());
+
+    cleanup(&doc);
+}
+
+#[test]
+fn markdown_rejects_targets_that_do_not_fit() {
+    let doc = temp_markdown("one\ntwo\n");
+    let stderr = |out: std::process::Output| {
+        assert!(!out.status.success());
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+
+    let err = stderr(run(&["comment", "add", "--line", "3", "--body", "x"], &doc));
+    assert!(
+        err.contains("line 3 is beyond the end of the file (2 lines)"),
+        "{err}"
+    );
+    let err = stderr(run(&["comment", "add", "--line", "0", "--body", "x"], &doc));
+    assert!(err.contains("1.."), "clap rejects 0: {err}");
+    let err = stderr(run(
+        &["comment", "add", "--cell", "s!A1", "--body", "x"],
+        &doc,
+    ));
+    assert!(err.contains("use --line"), "{err}");
+    let err = stderr(run(&["comment", "add", "--body", "x"], &doc));
+    assert!(err.contains("--cell") && err.contains("--line"), "{err}");
+    let err = stderr(run(&["comment", "list", "--sheet", "s"], &doc));
+    assert!(err.contains("--sheet does not apply"), "{err}");
+    let err = stderr(run(&["dump", "--formulas"], &doc));
+    assert!(err.contains("--formulas does not apply"), "{err}");
+    let err = stderr(run(&["dump", "--sheet", "s"], &doc));
+    assert!(err.contains("no sheets"), "{err}");
+    assert!(!sidecar_of(&doc).exists(), "nothing was written");
+
+    let xlsx = temp_document();
+    let err = stderr(run(
+        &["comment", "add", "--line", "1", "--body", "x"],
+        &xlsx,
+    ));
+    assert!(err.contains("use --cell"), "{err}");
+
+    let txt = doc.with_extension("txt");
+    std::fs::write(&txt, "plain\n").unwrap();
+    let err = stderr(run(&["dump"], &txt));
+    assert!(err.contains("unsupported file type \".txt\""), "{err}");
+    assert!(err.contains(".md"), "{err}");
+    let _ = std::fs::remove_file(&txt);
+
+    cleanup(&doc);
+    cleanup(&xlsx);
+}

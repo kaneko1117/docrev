@@ -137,6 +137,13 @@ one binary reading one file, so there is no staged compatibility beyond
   The anchored cell's own `value` is always present. Never redirect this
   output onto the sidecar itself — the shell truncates the file before the
   command reads it.
+- A **line thread** carries a `line` object instead of `cell`: the anchored
+  line's text and the two lines on each side, keyed by 1-based line number in
+  line order (`"line": {"text": "brew install docrev", "context": {"11":
+  "## Install", "12": "", "14": "", "15": "Check it works:"}}`). At the top or
+  bottom of the file the context is simply shorter. A thread whose line is now
+  past the end of the file carries `"hidden": true` and no `line` object. Like
+  `cell`, it is computed at list time and never stored.
 - `list --json` also carries a second, **read-only** top-level array,
   `workbook_comments`: the workbook's own Excel comments (legacy notes and
   threaded comments), each as `{"anchor": {"sheet", "cell"}, "author",
@@ -145,9 +152,12 @@ one binary reading one file, so there is no staged compatibility beyond
   why they are kept out of `comments`. The `--sheet`, `--author` and
   `--unresolved` filters apply to them the same way. Derived from the
   workbook at list time; never stored in the sidecar.
-- `add` / `reply` / `resolve` print the affected thread (same thread shape,
-  including its `id`) and exit non-zero with a message on stderr for invalid
-  cell references, unknown sheets, or unknown thread ids.
+- `add` takes `--cell "Sheet!B3"` on a workbook or `--line N` (1-based) on a
+  text document; the flag that does not fit the file is an error naming the
+  right one, and a line past the end of the file is an error with the line
+  count. `add` / `reply` / `resolve` print the affected thread (same thread
+  shape, including its `id`) and exit non-zero with a message on stderr for
+  invalid cell references, unknown sheets, or unknown thread ids.
 - Writers hold an exclusive advisory lock on `<sidecar>.lock` during
   read-modify-write, so concurrent TUI and CLI writes cannot lose updates.
   The lock file is left in place; it is safe to delete when nothing is running.

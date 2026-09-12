@@ -8,7 +8,7 @@ use crate::domain::sheet::{MergedRange, Sheet};
 use crate::domain::workbook_comment::WorkbookComment;
 
 use super::error::{CommentError, DocumentError, StoreError};
-use super::ports::{CommentStore, DocumentSource};
+use super::ports::{CommentStore, DocumentKind, DocumentSource};
 
 #[derive(Debug, Default)]
 pub struct Filter<'a> {
@@ -26,6 +26,33 @@ pub enum RawValue {
     Number(f64),
 }
 
+/// What the document shows at a thread's anchor, computed at list time.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnchorContext {
+    Cell(CellContext),
+    Line(LineContext),
+}
+
+impl AnchorContext {
+    /// Nothing of the anchor is on screen: a hidden cell, or a line past the end of the file.
+    pub fn hidden(&self) -> bool {
+        match self {
+            AnchorContext::Cell(c) => c.hidden,
+            AnchorContext::Line(l) => l.hidden,
+        }
+    }
+}
+
+/// `text` is empty and `context` has no entries when `hidden`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineContext {
+    pub text: String,
+    /// (1-based line number, text) for the lines around the anchor, in order.
+    pub context: Vec<(u32, String)>,
+    /// The line is past the end of the file.
+    pub hidden: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CellContext {
     /// A merged anchor shows its region's text.
@@ -40,6 +67,8 @@ pub struct CellContext {
 }
 
 const ROW_CONTEXT_CAP: usize = 100;
+/// Lines shown on each side of a line anchor.
+const LINE_CONTEXT_RADIUS: usize = 2;
 
 pub fn list(
     store: &impl CommentStore,
@@ -54,27 +83,33 @@ pub fn list(
         .collect())
 }
 
+#[derive(Debug)]
 pub struct ContextualList {
-    pub threads: Vec<(CommentThread, Option<CellContext>)>,
+    pub threads: Vec<(CommentThread, Option<AnchorContext>)>,
     /// (sheet name, comment).
     pub workbook: Vec<(String, WorkbookComment)>,
 }
 
-/// A workbook that cannot be read yields threads without context, never an error.
+/// A document that cannot be read yields threads without context, never an error; a sheet
+/// filter on a text document is one, readable or not.
 pub fn list_with_context(
     source: &impl DocumentSource,
     store: &impl CommentStore,
     document_path: &Path,
     filter: &Filter,
 ) -> Result<ContextualList, CommentError> {
-    let threads = list(store, filter)?;
+    if filter.sheet.is_some() && source.kind(document_path) == DocumentKind::Text {
+        return Err(CommentError::SheetFilterOnText);
+    }
     let document: Option<Document> = source.load(document_path).ok();
+    let threads = list(store, filter)?;
     let threads = threads
         .into_iter()
         .map(|thread| {
-            let context = document
-                .as_ref()
-                .and_then(|d| cell_context(d, &thread.anchor));
+            let context = document.as_ref().and_then(|d| match &thread.anchor {
+                Anchor::Cell { .. } => cell_context(d, &thread.anchor).map(AnchorContext::Cell),
+                Anchor::Line { line } => line_context(d, *line).map(AnchorContext::Line),
+            });
             (thread, context)
         })
         .collect();
@@ -93,6 +128,30 @@ pub fn list_with_context(
         .filter(|(_, c)| filter.author.is_none_or(|a| c.author == a))
         .collect();
     Ok(ContextualList { threads, workbook })
+}
+
+/// `None` for a workbook; a line past the end of the file is `hidden`.
+fn line_context(document: &Document, line: u32) -> Option<LineContext> {
+    let text = document.text()?;
+    let line = line as usize;
+    let Some(anchored) = text.line(line) else {
+        return Some(LineContext {
+            text: String::new(),
+            context: Vec::new(),
+            hidden: true,
+        });
+    };
+    let first = line.saturating_sub(LINE_CONTEXT_RADIUS);
+    let last = (line + LINE_CONTEXT_RADIUS).min(text.len().saturating_sub(1));
+    let context = (first..=last)
+        .filter(|&i| i != line)
+        .filter_map(|i| Some((i as u32 + 1, text.line(i)?.to_string())))
+        .collect();
+    Some(LineContext {
+        text: anchored.to_string(),
+        context,
+        hidden: false,
+    })
 }
 
 fn cell_context(document: &Document, anchor: &Anchor) -> Option<CellContext> {
@@ -224,32 +283,52 @@ pub fn comment_on_line(
     store.comment_on(Anchor::line(line), &existing, body, author)
 }
 
-/// The sheet must exist; the cell may lie outside the used range. A cell that already has a
+/// `cell` is `"Sheet!B3"`, `line` is 1-based; exactly one of them is expected.
+pub fn parse_target(cell: Option<&str>, line: Option<u32>) -> Result<Anchor, CommentError> {
+    match (cell, line) {
+        (Some(cell), _) => {
+            Anchor::parse_ref(cell).ok_or_else(|| CommentError::BadReference(cell.to_string()))
+        }
+        (None, Some(line)) => Anchor::from_line_number(line).ok_or(CommentError::BadLine),
+        (None, None) => Err(CommentError::MissingTarget),
+    }
+}
+
+/// The anchor must fit the document: a cell on a workbook whose sheet exists (the cell may lie
+/// outside the used range), or a line within a text document. A place that already has a
 /// thread gets the body as a reply on it, which reopens a resolved one.
 pub fn add(
     source: &impl DocumentSource,
     store: &mut impl CommentStore,
     document_path: &Path,
-    target: &str,
+    anchor: Anchor,
     body: &str,
     author: &str,
 ) -> Result<CommentThread, CommentError> {
-    let Some(anchor) = Anchor::parse_ref(target) else {
-        return Err(CommentError::BadReference(target.to_string()));
-    };
-    let Anchor::Cell { sheet, row, col } = &anchor else {
-        return Err(CommentError::BadReference(target.to_string()));
-    };
     let document = source.load(document_path).map_err(DocumentError::from)?;
-    let workbook = document.workbook().ok_or(DocumentError::NotAWorkbook)?;
-    let Some(sheet) = workbook.sheets().iter().find(|s| s.name() == sheet) else {
-        return Err(CommentError::Document(DocumentError::SheetNotFound {
-            name: sheet.to_string(),
-            available: workbook.sheet_names().map(str::to_string).collect(),
-        }));
-    };
-    let (row, col) = (*row as usize, *col as usize);
-    Ok(comment_on_cell(store, sheet, row, col, body, author)?)
+    match (&anchor, &document) {
+        (Anchor::Cell { sheet, row, col }, Document::Workbook(workbook)) => {
+            let Some(sheet) = workbook.sheets().iter().find(|s| s.name() == sheet) else {
+                return Err(CommentError::Document(DocumentError::SheetNotFound {
+                    name: sheet.to_string(),
+                    available: workbook.sheet_names().map(str::to_string).collect(),
+                }));
+            };
+            let (row, col) = (*row as usize, *col as usize);
+            Ok(comment_on_cell(store, sheet, row, col, body, author)?)
+        }
+        (Anchor::Line { line }, Document::Text(text)) => {
+            if *line as usize >= text.len() {
+                return Err(CommentError::LineOutOfRange {
+                    line: line.saturating_add(1),
+                    len: text.len(),
+                });
+            }
+            Ok(comment_on_line(store, *line, body, author)?)
+        }
+        (Anchor::Cell { .. }, Document::Text(_)) => Err(CommentError::NoCells),
+        (Anchor::Line { .. }, Document::Workbook(_)) => Err(CommentError::NoLines),
+    }
 }
 
 pub fn reply(
@@ -351,17 +430,53 @@ mod tests {
         PathBuf::from("x.xlsx")
     }
 
+    fn cell(context: &Option<AnchorContext>) -> &CellContext {
+        match context {
+            Some(AnchorContext::Cell(c)) => c,
+            other => panic!("expected a cell context, got {other:?}"),
+        }
+    }
+
     #[test]
     fn add_validates_reference_and_sheet() {
         let mut store = MemoryStore::default();
-        let err = add(&FakeSource, &mut store, &path(), "nope", "b", "agent").unwrap_err();
+        let err = parse_target(Some("nope"), None).unwrap_err();
         assert!(err.to_string().contains("invalid cell reference"));
+        assert!(matches!(
+            parse_target(None, Some(0)),
+            Err(CommentError::BadLine)
+        ));
+        assert!(matches!(
+            parse_target(None, None),
+            Err(CommentError::MissingTarget)
+        ));
+        assert_eq!(parse_target(None, Some(13)).unwrap(), Anchor::line(12));
+        assert_eq!(
+            parse_target(Some("s!B3"), Some(13)).unwrap(),
+            Anchor::cell("s", 2, 1)
+        );
 
-        let err = add(&FakeSource, &mut store, &path(), "架空!B3", "b", "agent").unwrap_err();
+        let err = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("架空!B3").unwrap(),
+            "b",
+            "agent",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("架空"), "{err}");
         assert!(err.to_string().contains("売上, 経費"), "{err}");
 
-        let thread = add(&FakeSource, &mut store, &path(), "売上!B3", "b", "claude").unwrap();
+        let thread = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("売上!B3").unwrap(),
+            "b",
+            "claude",
+        )
+        .unwrap();
         assert_eq!(thread.anchor.position(), "B3");
         assert_eq!(thread.author, "claude");
     }
@@ -386,14 +501,22 @@ mod tests {
     #[test]
     fn add_on_a_commented_cell_continues_its_thread() {
         let mut store = MemoryStore::default();
-        let first = add(&FakeSource, &mut store, &path(), "売上!B3", "first", "user").unwrap();
+        let first = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("売上!B3").unwrap(),
+            "first",
+            "user",
+        )
+        .unwrap();
         resolve(&mut store, &first.id).unwrap();
 
         let again = add(
             &FakeSource,
             &mut store,
             &path(),
-            "売上!B3",
+            Anchor::parse_ref("売上!B3").unwrap(),
             "again",
             "claude",
         )
@@ -403,7 +526,15 @@ mod tests {
         assert_eq!(again.replies[0].body, "again");
         assert_eq!(store.threads.len(), 1, "no second thread on the cell");
 
-        let elsewhere = add(&FakeSource, &mut store, &path(), "売上!C3", "other", "user").unwrap();
+        let elsewhere = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("売上!C3").unwrap(),
+            "other",
+            "user",
+        )
+        .unwrap();
         assert_ne!(elsewhere.id, first.id);
         assert_eq!(store.threads.len(), 2);
     }
@@ -415,7 +546,7 @@ mod tests {
             &MergedSource,
             &mut store,
             &path(),
-            "売上!B1",
+            Anchor::parse_ref("売上!B1").unwrap(),
             "first",
             "user",
         )
@@ -430,7 +561,7 @@ mod tests {
             &MergedSource,
             &mut store,
             &path(),
-            "売上!C1",
+            Anchor::parse_ref("売上!C1").unwrap(),
             "again",
             "user",
         )
@@ -511,28 +642,166 @@ mod tests {
         assert_eq!(store.threads.len(), 2);
     }
 
-    #[test]
-    fn a_text_document_has_no_cells_to_comment_on() {
-        struct TextSource;
-        impl DocumentSource for TextSource {
-            fn load(&self, _: &Path) -> Result<Document, LoadError> {
-                Ok(Document::from_text("a\nb"))
-            }
+    struct TextSource;
+    impl DocumentSource for TextSource {
+        fn load(&self, _: &Path) -> Result<Document, LoadError> {
+            Ok(Document::from_text("# title\n\nfirst\nsecond\nthird\n"))
         }
+        fn kind(&self, _: &Path) -> DocumentKind {
+            DocumentKind::Text
+        }
+    }
+
+    struct BrokenTextSource;
+    impl DocumentSource for BrokenTextSource {
+        fn load(&self, _: &Path) -> Result<Document, LoadError> {
+            Err(LoadError::Open("not UTF-8".into()))
+        }
+        fn kind(&self, _: &Path) -> DocumentKind {
+            DocumentKind::Text
+        }
+    }
+
+    #[test]
+    fn the_anchor_must_fit_the_document() {
         let mut store = MemoryStore::default();
-        let err = add(&TextSource, &mut store, &path(), "s!A1", "x", "user").unwrap_err();
+        let cell = Anchor::cell("s", 0, 0);
+        let err = add(&TextSource, &mut store, &path(), cell, "x", "user").unwrap_err();
+        assert!(matches!(err, CommentError::NoCells), "{err:?}");
+        assert!(err.to_string().contains("--line"), "{err}");
+
+        let err = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::line(0),
+            "x",
+            "user",
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommentError::NoLines), "{err:?}");
+        assert!(err.to_string().contains("--cell"), "{err}");
+        assert!(store.threads.is_empty());
+    }
+
+    #[test]
+    fn add_on_a_line_checks_the_end_of_the_file_and_continues_the_lines_thread() {
+        let mut store = MemoryStore::default();
+        let err = add(
+            &TextSource,
+            &mut store,
+            &path(),
+            Anchor::line(5),
+            "x",
+            "user",
+        )
+        .unwrap_err();
         assert!(
-            matches!(err, CommentError::Document(DocumentError::NotAWorkbook)),
+            matches!(err, CommentError::LineOutOfRange { line: 6, len: 5 }),
             "{err:?}"
         );
+        assert_eq!(
+            err.to_string(),
+            "line 6 is beyond the end of the file (5 lines)"
+        );
         assert!(store.threads.is_empty());
+
+        let first = add(
+            &TextSource,
+            &mut store,
+            &path(),
+            Anchor::line(4),
+            "last line",
+            "user",
+        )
+        .unwrap();
+        let again = add(
+            &TextSource,
+            &mut store,
+            &path(),
+            Anchor::line(4),
+            "again",
+            "claude",
+        )
+        .unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.replies.len(), 1);
+        assert_eq!(store.threads.len(), 1);
+    }
+
+    #[test]
+    fn line_threads_list_with_the_line_and_its_neighbours() {
+        let mut store = MemoryStore::default();
+        for line in [0, 2, 4, 9] {
+            store.add_thread(Anchor::line(line), "l", "user").unwrap();
+        }
+        let listed = list_with_context(&TextSource, &store, &path(), &Filter::default()).unwrap();
+        let contexts: Vec<Option<AnchorContext>> =
+            listed.threads.into_iter().map(|(_, c)| c).collect();
+        let line = |c: &Option<AnchorContext>| match c {
+            Some(AnchorContext::Line(l)) => l.clone(),
+            other => panic!("expected a line context, got {other:?}"),
+        };
+        let top = line(&contexts[0]);
+        assert_eq!(top.text, "# title");
+        assert_eq!(top.context, vec![(2, "".into()), (3, "first".into())]);
+        let middle = line(&contexts[1]);
+        assert_eq!(middle.text, "first");
+        assert_eq!(
+            middle.context,
+            vec![
+                (1, "# title".into()),
+                (2, "".into()),
+                (4, "second".into()),
+                (5, "third".into())
+            ]
+        );
+        let bottom = line(&contexts[2]);
+        assert_eq!(bottom.text, "third");
+        assert_eq!(
+            bottom.context,
+            vec![(3, "first".into()), (4, "second".into())]
+        );
+        let gone = line(&contexts[3]);
+        assert!(gone.hidden);
+        assert!(gone.text.is_empty() && gone.context.is_empty());
+        assert!(listed.workbook.is_empty());
+    }
+
+    #[test]
+    fn a_sheet_filter_is_an_error_on_a_text_document_and_a_cell_thread_there_has_no_context() {
+        let mut store = MemoryStore::default();
+        store
+            .add_thread(Anchor::cell("s", 0, 0), "c", "user")
+            .unwrap();
+        let filter = Filter {
+            sheet: Some("s"),
+            ..Filter::default()
+        };
+        let err = list_with_context(&TextSource, &store, &path(), &filter).unwrap_err();
+        assert!(matches!(err, CommentError::SheetFilterOnText), "{err:?}");
+        let err = list_with_context(&BrokenTextSource, &store, &path(), &filter).unwrap_err();
+        assert!(
+            matches!(err, CommentError::SheetFilterOnText),
+            "an unreadable text file is still a text file: {err:?}"
+        );
+        let listed = list_with_context(&TextSource, &store, &path(), &Filter::default()).unwrap();
+        assert_eq!(listed.threads[0].1, None);
     }
 
     #[test]
     fn the_sheet_filter_leaves_line_threads_out() {
         let mut store = MemoryStore::default();
         store.add_thread(Anchor::line(0), "l", "user").unwrap();
-        add(&FakeSource, &mut store, &path(), "売上!A1", "a", "user").unwrap();
+        add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("売上!A1").unwrap(),
+            "a",
+            "user",
+        )
+        .unwrap();
         let on_sheet = list(
             &store,
             &Filter {
@@ -549,9 +818,33 @@ mod tests {
     #[test]
     fn list_applies_filters() {
         let mut store = MemoryStore::default();
-        add(&FakeSource, &mut store, &path(), "売上!A1", "a", "user").unwrap();
-        add(&FakeSource, &mut store, &path(), "経費!A1", "b", "agent").unwrap();
-        let resolved = add(&FakeSource, &mut store, &path(), "売上!B2", "c", "user").unwrap();
+        add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("売上!A1").unwrap(),
+            "a",
+            "user",
+        )
+        .unwrap();
+        add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("経費!A1").unwrap(),
+            "b",
+            "agent",
+        )
+        .unwrap();
+        let resolved = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("売上!B2").unwrap(),
+            "c",
+            "user",
+        )
+        .unwrap();
         resolve(&mut store, &resolved.id).unwrap();
 
         let all = list(&store, &Filter::default()).unwrap();
@@ -647,7 +940,15 @@ mod tests {
     }
 
     fn thread_at(store: &mut MemoryStore, target: &str) -> CommentThread {
-        add(&RichSource, store, &path(), target, "b", "user").unwrap()
+        add(
+            &RichSource,
+            store,
+            &path(),
+            Anchor::parse_ref(target).unwrap(),
+            "b",
+            "user",
+        )
+        .unwrap()
     }
 
     #[test]
@@ -655,8 +956,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!C2");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let (_, context) = &items.threads[0];
-        let context = context.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(context.value, "ロックの旨が表示される");
         assert_eq!(
             context.row,
@@ -716,7 +1016,7 @@ mod tests {
         thread_at(&mut store, "IT-01!A1");
         let items =
             list_with_context(&MergedHiddenSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert!(!context.hidden, "the region shows on row 2");
         assert_eq!(context.value, "見出し");
         assert_eq!(context.row, vec![("B2".to_string(), "下".to_string())]);
@@ -745,7 +1045,7 @@ mod tests {
         thread_at(&mut store, "IT-01!C2");
         let items =
             list_with_context(&HiddenSheetSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert!(context.hidden);
         assert_eq!(context.value, "ロックの旨が表示される");
         assert!(context.row.is_empty(), "nothing of a hidden sheet is seen");
@@ -756,7 +1056,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!C2");
         let items = list_with_context(&HiddenSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert!(!context.hidden);
         assert_eq!(
             context.row,
@@ -767,7 +1067,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!A4");
         let items = list_with_context(&HiddenSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert!(context.hidden, "row 4 is hidden");
         assert_eq!(
             context.value, "2026年8月31日(月)",
@@ -782,7 +1082,7 @@ mod tests {
         // B3 is covered by the A3:B3 merge
         thread_at(&mut store, "IT-01!B3");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(
             context.value, "結合の値",
             "the region's value, like the viewer"
@@ -799,7 +1099,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!A4");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(context.value, "2026年8月31日(月)");
         assert_eq!(
             context.raw,
@@ -809,7 +1109,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!C2");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(context.raw, None, "plain cells carry no raw");
     }
 
@@ -818,7 +1118,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!B4");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(context.value, "1,234千円");
         assert_eq!(context.raw, Some(RawValue::Number(1_234_000.0)));
         assert_eq!(
@@ -833,7 +1133,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!D2");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(context.value, "3");
         assert_eq!(
             context.raw, None,
@@ -843,7 +1143,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!C4");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(context.raw, None, "a non-finite value has no JSON form");
     }
 
@@ -852,7 +1152,7 @@ mod tests {
         let mut store = MemoryStore::default();
         thread_at(&mut store, "IT-01!H99");
         let items = list_with_context(&RichSource, &store, &path(), &Filter::default()).unwrap();
-        let context = items.threads[0].1.as_ref().unwrap();
+        let context = cell(&items.threads[0].1);
         assert_eq!(context.value, "");
         assert!(context.row.is_empty());
     }
@@ -879,7 +1179,15 @@ mod tests {
     #[test]
     fn resolve_returns_the_updated_thread() {
         let mut store = MemoryStore::default();
-        let thread = add(&FakeSource, &mut store, &path(), "売上!A1", "b", "agent").unwrap();
+        let thread = add(
+            &FakeSource,
+            &mut store,
+            &path(),
+            Anchor::parse_ref("売上!A1").unwrap(),
+            "b",
+            "agent",
+        )
+        .unwrap();
         let updated = resolve(&mut store, &thread.id).unwrap();
         assert!(updated.resolved);
         assert!(resolve(&mut store, "bogus").is_err());
