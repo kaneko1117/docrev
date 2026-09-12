@@ -74,20 +74,8 @@ impl JsonCommentStore {
 }
 
 impl CommentStore for JsonCommentStore {
-    /// mtime mixed with size (mtime alone has one-second granularity); a missing file is `Some(0)`.
     fn revision(&self) -> Option<u64> {
-        let metadata = match std::fs::metadata(&self.sidecar) {
-            Ok(metadata) => metadata,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(0),
-            Err(_) => return None,
-        };
-        let modified = metadata
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_millis() as u64;
-        Some(modified.wrapping_mul(31).wrapping_add(metadata.len()))
+        fs::revision(&self.sidecar)
     }
 
     fn load(&self) -> Result<Vec<CommentThread>, StoreError> {
@@ -243,6 +231,25 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
         hidden: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         cell: Option<CellDto>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        line: Option<LineDto>,
+    }
+    #[derive(Serialize)]
+    struct LineDto {
+        text: String,
+        /// 1-based line number -> text, in line order.
+        context: NumberedDto,
+    }
+    struct NumberedDto(Vec<(u32, String)>);
+    impl Serialize for NumberedDto {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(Some(self.0.len()))?;
+            for (number, text) in &self.0 {
+                map.serialize_entry(&number.to_string(), text)?;
+            }
+            map.end()
+        }
     }
     #[derive(Serialize)]
     struct CellDto {
@@ -292,12 +299,24 @@ pub fn threads_with_context_to_json(list: &comments::ContextualList) -> Result<S
             .iter()
             .map(|(thread, context)| Entry {
                 thread: ThreadDto::from_domain(thread),
-                hidden: context.as_ref().is_some_and(|c| c.hidden),
-                cell: context.as_ref().map(|c| CellDto {
-                    value: c.value.clone(),
-                    raw: c.raw.as_ref().map(RawDto::from_domain),
-                    row: RowDto(c.row.clone()),
-                }),
+                hidden: context
+                    .as_ref()
+                    .is_some_and(comments::AnchorContext::hidden),
+                cell: match context {
+                    Some(comments::AnchorContext::Cell(c)) => Some(CellDto {
+                        value: c.value.clone(),
+                        raw: c.raw.as_ref().map(RawDto::from_domain),
+                        row: RowDto(c.row.clone()),
+                    }),
+                    _ => None,
+                },
+                line: match context {
+                    Some(comments::AnchorContext::Line(l)) if !l.hidden => Some(LineDto {
+                        text: l.text.clone(),
+                        context: NumberedDto(l.context.clone()),
+                    }),
+                    _ => None,
+                },
             })
             .collect(),
         workbook_comments: list
@@ -475,6 +494,58 @@ mod tests {
     }
 
     #[test]
+    fn list_output_carries_a_line_object_for_shown_line_threads() {
+        let thread = |id: &str, line: u32| CommentThread {
+            id: id.into(),
+            anchor: Anchor::line(line),
+            author: "user".into(),
+            body: "b".into(),
+            created_at: "2026-09-11T00:00:00Z".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        let list = comments::ContextualList {
+            threads: vec![
+                (
+                    thread("shown", 12),
+                    Some(comments::AnchorContext::Line(comments::LineContext {
+                        text: "brew install docrev".into(),
+                        // numbers stay in line order, not string order
+                        context: vec![(9, "## Install".into()), (11, "x".into()), (14, "y".into())],
+                        hidden: false,
+                    })),
+                ),
+                (
+                    thread("gone", 40),
+                    Some(comments::AnchorContext::Line(comments::LineContext {
+                        text: String::new(),
+                        context: Vec::new(),
+                        hidden: true,
+                    })),
+                ),
+                (thread("unread", 0), None),
+            ],
+            workbook: Vec::new(),
+        };
+        let json = threads_with_context_to_json(&list).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let shown = &parsed["comments"][0];
+        assert_eq!(
+            shown["anchor"],
+            serde_json::json!({"kind": "line", "line": 13})
+        );
+        assert_eq!(shown["line"]["text"], "brew install docrev");
+        let at = |key: &str| json.find(&format!("\"{key}\"")).unwrap();
+        assert!(at("9") < at("11") && at("11") < at("14"), "insertion order");
+        assert!(shown.get("cell").is_none() && shown.get("hidden").is_none());
+        let gone = &parsed["comments"][1];
+        assert_eq!(gone["hidden"], true);
+        assert!(gone.get("line").is_none());
+        let unread = &parsed["comments"][2];
+        assert!(unread.get("line").is_none() && unread.get("hidden").is_none());
+    }
+
+    #[test]
     fn list_output_carries_derived_cell_content_but_only_when_present() {
         let thread = |id: &str| CommentThread {
             id: id.into(),
@@ -488,50 +559,50 @@ mod tests {
         let items = vec![
             (
                 thread("with"),
-                Some(comments::CellContext {
+                Some(comments::AnchorContext::Cell(comments::CellContext {
                     value: "ロック表示".into(),
                     raw: Some(comments::RawValue::DateTime("2026-08-31 00:00:00".into())),
                     // Z before AA
                     row: vec![("Z2".into(), "先".into()), ("AA2".into(), "後".into())],
                     hidden: false,
-                }),
+                })),
             ),
             (thread("without"), None),
             (
                 thread("empty-row"),
-                Some(comments::CellContext {
+                Some(comments::AnchorContext::Cell(comments::CellContext {
                     value: String::new(),
                     raw: None,
                     row: Vec::new(),
                     hidden: true,
-                }),
+                })),
             ),
             (
                 thread("scaled"),
-                Some(comments::CellContext {
+                Some(comments::AnchorContext::Cell(comments::CellContext {
                     value: "1,234千円".into(),
                     raw: Some(comments::RawValue::Number(1_234_000.0)),
                     row: Vec::new(),
                     hidden: false,
-                }),
+                })),
             ),
             (
                 thread("percent"),
-                Some(comments::CellContext {
+                Some(comments::AnchorContext::Cell(comments::CellContext {
                     value: "15%".into(),
                     raw: Some(comments::RawValue::Number(0.15)),
                     row: Vec::new(),
                     hidden: false,
-                }),
+                })),
             ),
             (
                 thread("huge"),
-                Some(comments::CellContext {
+                Some(comments::AnchorContext::Cell(comments::CellContext {
                     value: "▲9,007,199,254,740,992".into(),
                     raw: Some(comments::RawValue::Number(-9_007_199_254_740_992.0)),
                     row: Vec::new(),
                     hidden: false,
-                }),
+                })),
             ),
         ];
         let list = comments::ContextualList {

@@ -6,11 +6,21 @@ use crate::domain::document::Document;
 
 use super::error::{LoadError, StoreError};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentKind {
+    Workbook,
+    Text,
+}
+
 pub trait DocumentSource {
     fn load(&self, path: &Path) -> Result<Document, LoadError>;
     /// Changes whenever the file changes; `None` disables auto-reload.
     fn revision(&self, _path: &Path) -> Option<u64> {
         None
+    }
+    /// Known from the path alone, so it holds even when the file cannot be read.
+    fn kind(&self, _path: &Path) -> DocumentKind {
+        DocumentKind::Workbook
     }
 }
 

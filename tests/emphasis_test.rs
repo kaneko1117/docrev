@@ -58,8 +58,9 @@ fn loaded_sheets_carry_font_emphasis_but_not_underline() {
 
 #[test]
 fn the_dump_stays_plain_text() {
-    let view = dump(&XlsxSource, &fixture("emphasis.xlsx"), None).unwrap();
-    let out = render(&view.sheet, view.position, view.total, false);
+    let view = dump(&XlsxSource, &fixture("emphasis.xlsx"), None, false).unwrap();
+    let (position, total) = view.place().unwrap();
+    let out = render(view.sheet().unwrap(), position, total, false);
     assert!(out.contains("│ 1 │ 見出し   │"), "{out}");
     assert!(out.contains("│ 2 │ 削除済み │"), "{out}");
     assert!(!out.contains('\u{1b}'), "no escape sequences in the dump");
