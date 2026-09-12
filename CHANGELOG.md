@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/kaneko1117/docrev/compare/v0.5.0...v0.6.0) - 2026-09-12
+
+### Added
+
+- read Markdown files and drive line comments from the CLI
+- [**breaking**] add a line anchor and a text document model, sidecar version 2
+
 ## [0.5.0](https://github.com/kaneko1117/docrev/compare/v0.4.0...v0.5.0) - 2026-09-10
 
 ### Fixed
