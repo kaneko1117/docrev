@@ -111,7 +111,7 @@ pub fn list_with_context(
                 Anchor::Line { line } => line_context(d, *line).map(AnchorContext::Line),
             });
             (thread, context)
-        })                  
+        })
         .collect();
     let workbook = document
         .iter()
