@@ -19,4 +19,4 @@ expression: buffer_text(terminal.backend().buffer())
    14 │ dropped and logo                        │
                                                 │
                                                 │
-                                                                          q:quit
+                                                               c:comment  q:quit

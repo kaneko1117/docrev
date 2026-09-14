@@ -108,7 +108,13 @@ fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView) {
         Some(notice) => format!("⚠ {notice}"),
         None => String::new(),
     };
-    let hint = "q:quit";
+    let hint = if view.document.is_empty() {
+        "q:quit"
+    } else if view.thread.is_some() {
+        "c:reply  q:quit"
+    } else {
+        "c:comment  q:quit"
+    };
     let gap = (area.width as usize).saturating_sub(
         unicode_width::UnicodeWidthStr::width(left.as_str())
             + unicode_width::UnicodeWidthStr::width(hint),
@@ -438,6 +444,10 @@ mod tests {
         assert!(out.contains(" 1 │ only"), "{out}");
         let empty = TextDocument::new("");
         let out = render(&view(&empty, 0), &mut 0, 70, 4);
+        assert!(
+            out.contains("q:quit") && !out.contains("c:comment"),
+            "c does nothing on an empty file, so it is not offered: {out}"
+        );
         assert!(
             out.contains("(empty file)") && !out.contains("line "),
             "{out}"
