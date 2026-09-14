@@ -50,6 +50,37 @@ impl Viewer {
     }
 }
 
+impl Viewer {
+    /// Copies the dragged lines as written in the file; a plain click copies nothing.
+    pub(super) fn end_text_drag(&mut self, copy: bool) {
+        let Some((start, end)) = self.selection.take() else {
+            return;
+        };
+        let Some(document) = self.text().filter(|_| copy) else {
+            return;
+        };
+        let (first, last) = (start.0.min(end.0), start.0.max(end.0));
+        let lines: Vec<&str> = document
+            .lines()
+            .iter()
+            .skip(first)
+            .take(last - first + 1)
+            .map(String::as_str)
+            .collect();
+        let (text, count) = (lines.join("\n"), lines.len());
+        if count == 0 {
+            return;
+        }
+        if text.len() > COPY_LIMIT_BYTES {
+            self.notice = Some(Notice::Copy("Selection too large to copy".to_string()));
+            return;
+        }
+        let noun = if count == 1 { "line" } else { "lines" };
+        self.copy_request = Some(text);
+        self.notice = Some(Notice::Copy(format!("Copied {count} {noun}")));
+    }
+}
+
 /// Full displayed texts; tabs and line breaks inside a cell become spaces.
 /// (rows, cols) of the rectangle that are not hidden.
 fn visible_extent(sheet: &Sheet, a: (usize, usize), b: (usize, usize)) -> (usize, usize) {

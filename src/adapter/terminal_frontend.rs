@@ -60,11 +60,13 @@ impl TerminalFrontend {
     }
 }
 
-/// `dragged` turns true once the drag reaches another cell.
+/// `dragged` turns true once the drag reaches another cell, or on text a line other than the press.
 #[derive(Default)]
 struct DragState {
     pressed: bool,
     dragged: bool,
+    /// The 0-based line a press on text started on.
+    pressed_line: Option<usize>,
 }
 
 /// The click targets of the last drawn screen.
@@ -81,9 +83,15 @@ fn map_mouse(hits: &Hits, mode: InputMode, drag: &mut DragState, mouse: MouseEve
     };
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => match hits {
-            Hits::Text(text) => text
-                .at(mouse.column, mouse.row)
-                .map_or(Event::Noop, Event::SelectLine),
+            Hits::Text(text) => match text.at(mouse.column, mouse.row) {
+                Some(line) => {
+                    drag.pressed = true;
+                    drag.dragged = false;
+                    drag.pressed_line = Some(line);
+                    Event::SelectLine(line)
+                }
+                None => Event::Noop,
+            },
             Hits::Grid(grid) => match grid.at(mouse.column, mouse.row) {
                 Some(Hit::Cell { row, col }) => {
                     drag.pressed = true;
@@ -96,18 +104,22 @@ fn map_mouse(hits: &Hits, mode: InputMode, drag: &mut DragState, mouse: MouseEve
                 None => Event::Noop,
             },
         },
-        MouseEventKind::Drag(MouseButton::Left) if drag.pressed => {
-            let Hits::Grid(grid) = hits else {
-                return Event::Noop;
-            };
-            match grid.at(mouse.column, mouse.row) {
+        MouseEventKind::Drag(MouseButton::Left) if drag.pressed => match hits {
+            Hits::Text(text) => match text.at(mouse.column, mouse.row) {
+                Some(line) => {
+                    drag.dragged |= drag.pressed_line != Some(line);
+                    Event::DragToLine(line)
+                }
+                None => Event::Noop,
+            },
+            Hits::Grid(grid) => match grid.at(mouse.column, mouse.row) {
                 Some(Hit::Cell { row, col }) => {
                     drag.dragged = true;
                     Event::DragTo { row, col }
                 }
                 _ => Event::Noop,
-            }
-        }
+            },
+        },
         MouseEventKind::Up(MouseButton::Left) if drag.pressed => {
             drag.pressed = false;
             // every release must reach the viewer or the selection outlives the press
@@ -264,6 +276,9 @@ impl TerminalFrontend {
             thread: viewer.thread_at_cursor(),
             editor,
             search,
+            selection: viewer
+                .selection()
+                .map(|((a, _), (b, _))| (a.min(b), a.max(b))),
             theme: *theme,
         };
         terminal
@@ -708,8 +723,8 @@ mod tests {
                 &mut drag,
                 mouse(MouseEventKind::Up(MouseButton::Left), 5, 1)
             ),
-            Event::Noop,
-            "a release after a line click is not a drag"
+            Event::DragEnd { copy: false },
+            "a plain click on a line never copies"
         );
         assert_eq!(
             map_mouse(
@@ -719,6 +734,90 @@ mod tests {
                 mouse(MouseEventKind::ScrollDown, 5, 2)
             ),
             Event::Move { rows: 3, cols: 0 }
+        );
+    }
+
+    #[test]
+    fn a_drag_across_lines_ends_in_a_copy() {
+        let hits = Hits::Text(TextHits {
+            pane: ratatui::layout::Rect {
+                x: 0,
+                y: 1,
+                width: 30,
+                height: 5,
+            },
+            lines: vec![0, 1, 1, 2],
+        });
+        let mut drag = DragState::default();
+        let at = |kind: MouseEventKind, y: u16| mouse(kind, 5, y);
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                at(MouseEventKind::Down(MouseButton::Left), 1)
+            ),
+            Event::SelectLine(0)
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                at(MouseEventKind::Drag(MouseButton::Left), 4)
+            ),
+            Event::DragToLine(2)
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                at(MouseEventKind::Up(MouseButton::Left), 4)
+            ),
+            Event::DragEnd { copy: true }
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                at(MouseEventKind::Drag(MouseButton::Left), 2)
+            ),
+            Event::Noop,
+            "no drag after the release"
+        );
+    }
+
+    #[test]
+    fn a_pointer_slip_on_the_same_line_is_still_a_click() {
+        let hits = Hits::Text(TextHits {
+            pane: ratatui::layout::Rect {
+                x: 0,
+                y: 1,
+                width: 30,
+                height: 5,
+            },
+            lines: vec![0, 1, 1, 2],
+        });
+        let mut drag = DragState::default();
+        let mut send = |kind: MouseEventKind, x: u16, y: u16| {
+            map_mouse(&hits, InputMode::Grid, &mut drag, mouse(kind, x, y))
+        };
+        send(MouseEventKind::Down(MouseButton::Left), 5, 2);
+        send(MouseEventKind::Drag(MouseButton::Left), 6, 3);
+        assert_eq!(
+            send(MouseEventKind::Up(MouseButton::Left), 6, 3),
+            Event::DragEnd { copy: false },
+            "moving within the pressed line, even onto its wrapped row, is a click"
+        );
+        send(MouseEventKind::Down(MouseButton::Left), 5, 2);
+        send(MouseEventKind::Drag(MouseButton::Left), 5, 4);
+        send(MouseEventKind::Drag(MouseButton::Left), 5, 2);
+        assert_eq!(
+            send(MouseEventKind::Up(MouseButton::Left), 5, 2),
+            Event::DragEnd { copy: true },
+            "leaving the line and coming back copies it"
         );
     }
 
