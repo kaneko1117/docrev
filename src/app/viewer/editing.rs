@@ -40,7 +40,7 @@ impl Viewer {
             self.notice = Some(Notice::Save(format!("save failed: sheet {name:?} is gone")));
             return;
         };
-        let sheet = self.sheets.get(index);
+        let sheet = self.grid.sheet_at(index);
         let result = comments::comment_on_cell(self.store.as_mut(), sheet, row, col, &body, "user");
         match result {
             Ok(thread) => {

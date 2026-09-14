@@ -83,11 +83,11 @@ impl Viewer {
             return;
         };
         // matches carry the merge anchor, so the cursor must compare as one
-        let scan_origin = match self.sheets.get(self.active).merge_at(origin.0, origin.1) {
+        let scan_origin = match self.grid.sheet().merge_at(origin.0, origin.1) {
             Some(merge) => merge.anchor(),
             None => *origin,
         };
-        let sheet_matches = |query: &str| matches_in(self.sheets.get(self.active), query);
+        let sheet_matches = |query: &str| matches_in(self.grid.sheet(), query);
         let Mode::Search {
             query,
             origin,
@@ -143,15 +143,13 @@ impl Viewer {
     }
 
     pub(super) fn set_cursor(&mut self, position: (usize, usize)) {
-        if let Some(cursor) = self.cursors.get_mut(self.active) {
-            *cursor = position;
-        }
+        self.grid.set_cursor(position);
     }
 
     /// After a reload: matches are recomputed, the origin clamped, the cursor
     /// deliberately left where it is.
     pub(super) fn refresh_search(&mut self) {
-        let sheet = self.sheets.get(self.active);
+        let sheet = self.grid.sheet();
         let (max_row, max_col) = (
             sheet.row_count().saturating_sub(1),
             sheet.col_count().saturating_sub(1),
