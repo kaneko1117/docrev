@@ -50,6 +50,8 @@ pub enum Event {
     SelectSheet(usize),
     /// A click on a line of a text document; 0-based.
     SelectLine(usize),
+    /// The pointer dragged over a line of a text document after a press; 0-based.
+    DragToLine(usize),
     DragTo {
         row: usize,
         col: usize,
@@ -394,7 +396,12 @@ impl Viewer {
         // any event outside the drag dissolves the selection
         if !matches!(
             event,
-            Event::SelectCell { .. } | Event::DragTo { .. } | Event::DragEnd { .. } | Event::Noop
+            Event::SelectCell { .. }
+                | Event::SelectLine(_)
+                | Event::DragTo { .. }
+                | Event::DragToLine(_)
+                | Event::DragEnd { .. }
+                | Event::Noop
         ) {
             self.selection = None;
         }
@@ -436,6 +443,7 @@ impl Viewer {
                 | Event::SelectSheet(_)
                 | Event::SelectLine(_)
                 | Event::DragTo { .. }
+                | Event::DragToLine(_)
                 | Event::DragEnd { .. }
         )
     }
@@ -521,6 +529,10 @@ impl Viewer {
     }
 
     fn apply_text(&mut self, event: Event) {
+        if let Event::DragEnd { copy } = event {
+            self.end_text_drag(copy);
+            return;
+        }
         let Body::Text(text) = &mut self.body else {
             return;
         };
@@ -529,7 +541,17 @@ impl Viewer {
             // there is no horizontal cursor, so Home / End are the file's ends
             Event::Top | Event::RowStart => text.set_line(0),
             Event::Bottom | Event::RowEnd => text.set_line(text.last()),
-            Event::SelectLine(line) => text.set_line(line),
+            Event::SelectLine(line) => {
+                text.set_line(line);
+                let line = (text.line(), 0);
+                self.selection = Some((line, line));
+            }
+            Event::DragToLine(line) => {
+                let line = (line.min(text.last()), 0);
+                if let Some((_, current)) = &mut self.selection {
+                    *current = line;
+                }
+            }
             Event::OpenSearch => {
                 if text.document().is_empty() {
                     return;
@@ -943,6 +965,43 @@ mod tests {
         let state = v.search_state().unwrap();
         assert_eq!((state.current, state.total), (1, 1));
         assert_eq!(v.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn a_drag_over_lines_copies_them_as_written() {
+        let mut v = text_viewer_with("# one\n**two**\nthree\nfour\n", Vec::new());
+        v.apply(Event::SelectLine(2));
+        v.apply(Event::DragToLine(0));
+        assert_eq!(v.selection(), Some(((2, 0), (0, 0))));
+        v.apply(Event::DragEnd { copy: true });
+        assert_eq!(
+            v.take_copy_request().as_deref(),
+            Some("# one\n**two**\nthree"),
+            "an upward drag copies top to bottom, markup included"
+        );
+        assert_eq!(v.notice(), Some("Copied 3 lines"));
+        assert!(v.selection().is_none());
+        v.apply(Event::SelectLine(3));
+        v.apply(Event::DragEnd { copy: true });
+        assert_eq!(v.take_copy_request().as_deref(), Some("four"));
+        assert_eq!(v.notice(), Some("Copied 1 line"));
+    }
+
+    #[test]
+    fn a_plain_click_copies_nothing_and_a_huge_drag_is_refused() {
+        let mut v = text_viewer_with("a\nb\n", Vec::new());
+        v.apply(Event::SelectLine(1));
+        v.apply(Event::DragEnd { copy: false });
+        assert!(v.take_copy_request().is_none());
+        assert!(
+            v.selection().is_none(),
+            "a release always ends the selection"
+        );
+        let mut v = text_viewer_with(&"x".repeat(100_001), Vec::new());
+        v.apply(Event::SelectLine(0));
+        v.apply(Event::DragEnd { copy: true });
+        assert!(v.take_copy_request().is_none());
+        assert_eq!(v.notice(), Some("Selection too large to copy"));
     }
 
     #[test]

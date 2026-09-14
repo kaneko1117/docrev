@@ -12,7 +12,7 @@ use crate::domain::text_document::{Face, Run, TextDocument};
 use super::bars;
 use super::grid::{EditorView, SearchView};
 use super::panel;
-use super::style::{canvas, chrome, header, selected};
+use super::style::{canvas, chrome, header, range_selected, selected};
 use super::text::{clip, sanitize};
 use super::theme::{Palette, Theme};
 
@@ -31,6 +31,8 @@ pub struct TextView<'a> {
     pub thread: Option<&'a CommentThread>,
     pub editor: Option<EditorView<'a>>,
     pub search: Option<SearchView>,
+    /// (first, last) 0-based lines of a drag selection, inclusive.
+    pub selection: Option<(usize, usize)>,
     pub theme: Theme,
 }
 
@@ -179,8 +181,14 @@ fn draw_pane(
         .iter()
         .map(|row| {
             let on_cursor = row.line == view.cursor;
+            let in_selection = view
+                .selection
+                .is_some_and(|(first, last)| (first..=last).contains(&row.line));
+            let highlighted = on_cursor || in_selection;
             let (gutter_style, text_style) = if on_cursor {
                 (selected(p), selected(p))
+            } else if in_selection {
+                (range_selected(p), range_selected(p))
             } else {
                 (header(p), canvas(p))
             };
@@ -204,10 +212,9 @@ fn draw_pane(
                 .iter()
                 .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
                 .sum();
-            spans.extend(
-                runs.iter()
-                    .map(|(text, face)| Span::styled(text.clone(), faced(p, text_style, *face))),
-            );
+            spans.extend(runs.iter().map(|(text, face)| {
+                Span::styled(text.clone(), faced(p, text_style, *face, highlighted))
+            }));
             let padding = text_width.saturating_sub(width);
             spans.push(Span::styled(" ".repeat(padding), text_style));
             Line::from(spans)
@@ -217,8 +224,8 @@ fn draw_pane(
     rows.iter().map(|row| row.line).collect()
 }
 
-/// The face adds to the row's base style, so the cursor row keeps its background.
-fn faced(p: &Palette, base: Style, face: Face) -> Style {
+/// The face adds to the row's base style; a highlighted row keeps its background under code.
+fn faced(p: &Palette, base: Style, face: Face, highlighted: bool) -> Style {
     match face {
         Face::Plain => base,
         Face::Heading(1) => base
@@ -227,7 +234,8 @@ fn faced(p: &Palette, base: Style, face: Face) -> Style {
         Face::Heading(_) => base.fg(p.heading_fg).add_modifier(Modifier::BOLD),
         Face::Bold => base.add_modifier(Modifier::BOLD),
         Face::Italic => base.add_modifier(Modifier::ITALIC),
-        Face::Code | Face::CodeBlock => base.bg(p.header_bg),
+        Face::Code | Face::CodeBlock if !highlighted => base.bg(p.header_bg),
+        Face::Code | Face::CodeBlock => base,
         Face::ListMarker => base.fg(p.marker_fg),
         Face::Link => base.fg(p.user_fg).add_modifier(Modifier::UNDERLINED),
         Face::Quote | Face::FrontMatter => base.add_modifier(Modifier::DIM),
@@ -368,6 +376,7 @@ mod tests {
             thread: None,
             editor: None,
             search: None,
+            selection: None,
             theme: Theme::Sheets,
         }
     }
@@ -500,6 +509,52 @@ mod tests {
             "{status:?}"
         );
         assert!(!out.contains("c:comment"), "{out}");
+    }
+
+    #[test]
+    fn a_drag_selection_is_highlighted() {
+        let document = rendered("one\ntwo\nthree\nfour\n");
+        let mut v = view(&document, 0);
+        v.selection = Some((0, 2));
+        let mut terminal = Terminal::new(TestBackend::new(70, 7)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &v, &mut 0);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let range = Theme::Sheets.palette().range_bg;
+        let bg = |y: u16| buffer.cell((7, y)).map(|c| c.bg);
+        assert_eq!(bg(2), Some(range), "line 2 is inside the selection");
+        assert_eq!(bg(3), Some(range), "line 3 is inside the selection");
+        assert_ne!(bg(4), Some(range), "line 4 is outside it");
+    }
+
+    #[test]
+    fn a_selection_over_code_shows_the_selection_colour() {
+        let document = rendered("```\ncode\n```\nplain `x`\n");
+        let mut v = view(&document, 3);
+        v.selection = Some((0, 2));
+        let mut terminal = Terminal::new(TestBackend::new(70, 7)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &v, &mut 0);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let palette = Theme::Sheets.palette();
+        let bg = |x: u16, y: u16| buffer.cell((x, y)).map(|c| c.bg);
+        assert_eq!(bg(7, 2), Some(palette.range_bg), "a selected code line");
+        assert_eq!(
+            bg(7, 4),
+            Some(palette.selection_bg),
+            "the cursor row keeps its colour"
+        );
+        assert_eq!(
+            bg(13, 4),
+            Some(palette.selection_bg),
+            "inline code on the cursor row"
+        );
     }
 
     #[test]
