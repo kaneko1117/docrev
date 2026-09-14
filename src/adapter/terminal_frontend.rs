@@ -194,9 +194,14 @@ impl Frontend for TerminalFrontend {
             Mode::Search { .. } => InputMode::Search,
             Mode::Notes { .. } => InputMode::Notes,
         };
+        let Some(sheet) = viewer.sheet() else {
+            return Err(FrontendError(
+                "the viewer does not draw text documents yet".to_string(),
+            ));
+        };
         let names = viewer.sheet_names();
         let view = GridView {
-            sheet: viewer.sheet(),
+            sheet,
             tabs: viewer
                 .shown_sheets()
                 .into_iter()
@@ -214,9 +219,7 @@ impl Frontend for TerminalFrontend {
             search,
             selection: viewer.selection(),
             theme: *theme,
-            col_widths: (0..viewer.sheet().col_count())
-                .map(|c| viewer.sheet().col_width(c))
-                .collect(),
+            col_widths: (0..sheet.col_count()).map(|c| sheet.col_width(c)).collect(),
         };
         terminal
             .draw(|frame| {

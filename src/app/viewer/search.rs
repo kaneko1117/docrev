@@ -1,7 +1,7 @@
 use crate::domain::sheet::Sheet;
 
 use super::matching::{contains_folded, fold};
-use super::{Event, Mode, Viewer};
+use super::{Body, Event, Mode, Viewer};
 
 /// `current` is 1-based; 0 means no matches.
 pub struct SearchState<'a> {
@@ -79,15 +79,16 @@ impl Viewer {
     }
 
     pub(super) fn apply_search(&mut self, event: Event) {
-        let Mode::Search { origin, .. } = &self.mode else {
+        let (Mode::Search { origin, .. }, Body::Grid(grid)) = (&self.mode, &self.body) else {
             return;
         };
+        let sheet = grid.sheet();
         // matches carry the merge anchor, so the cursor must compare as one
-        let scan_origin = match self.grid.sheet().merge_at(origin.0, origin.1) {
+        let scan_origin = match sheet.merge_at(origin.0, origin.1) {
             Some(merge) => merge.anchor(),
             None => *origin,
         };
-        let sheet_matches = |query: &str| matches_in(self.grid.sheet(), query);
+        let sheet_matches = |query: &str| matches_in(sheet, query);
         let Mode::Search {
             query,
             origin,
@@ -142,14 +143,12 @@ impl Viewer {
         self.set_cursor(target);
     }
 
-    pub(super) fn set_cursor(&mut self, position: (usize, usize)) {
-        self.grid.set_cursor(position);
-    }
-
     /// After a reload: matches are recomputed, the origin clamped, the cursor
     /// deliberately left where it is.
     pub(super) fn refresh_search(&mut self) {
-        let sheet = self.grid.sheet();
+        let Some(sheet) = self.sheet() else {
+            return;
+        };
         let (max_row, max_col) = (
             sheet.row_count().saturating_sub(1),
             sheet.col_count().saturating_sub(1),
