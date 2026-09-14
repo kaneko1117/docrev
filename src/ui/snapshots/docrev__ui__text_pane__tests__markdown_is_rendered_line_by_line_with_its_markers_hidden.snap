@@ -9,4 +9,4 @@ expression: buffer_text(buffer)
    4 │ let **raw** = 1;     │
    5 │ ```                  │
    6 │ > see docs           │
-                                           c:comment  q:quit
+                                  c:comment  q:quit  ^F:find

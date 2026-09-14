@@ -250,6 +250,11 @@ impl TerminalFrontend {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("(text)");
+        let search = viewer.search_state().map(|state| SearchView {
+            query: state.query.to_string(),
+            current: state.current,
+            total: state.total,
+        });
         let view = TextView {
             name,
             document,
@@ -258,6 +263,7 @@ impl TerminalFrontend {
             notice: viewer.notice(),
             thread: viewer.thread_at_cursor(),
             editor,
+            search,
             theme: *theme,
         };
         terminal

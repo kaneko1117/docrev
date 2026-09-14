@@ -141,7 +141,7 @@ pub(crate) fn draw_status(
     frame.render_widget(Paragraph::new(line).style(chrome(p)), area);
 }
 
-fn draw_search(p: &Palette, frame: &mut Frame, area: Rect, search: &SearchView) {
+pub(crate) fn draw_search(p: &Palette, frame: &mut Frame, area: Rect, search: &SearchView) {
     let label = " Find: ";
     let counter = format!(" {}/{} ", search.current, search.total);
     let width = |s: &str| unicode_width::UnicodeWidthStr::width(s);

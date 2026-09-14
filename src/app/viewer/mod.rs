@@ -530,6 +530,18 @@ impl Viewer {
             Event::Top | Event::RowStart => text.set_line(0),
             Event::Bottom | Event::RowEnd => text.set_line(text.last()),
             Event::SelectLine(line) => text.set_line(line),
+            Event::OpenSearch => {
+                if text.document().is_empty() {
+                    return;
+                }
+                let origin = (text.line(), 0);
+                self.mode = Mode::Search {
+                    query: String::new(),
+                    origin,
+                    matches: Vec::new(),
+                    index: 0,
+                };
+            }
             // one conversation per line: continue it if present, else start one
             Event::StartComment => {
                 if text.document().is_empty() {
@@ -632,9 +644,11 @@ impl Viewer {
         self.set_cursor(next);
     }
 
+    /// On a text document only the row is used, as the line.
     pub(super) fn set_cursor(&mut self, cursor: (usize, usize)) {
-        if let Some(grid) = self.grid_mut() {
-            grid.set_cursor(cursor);
+        match &mut self.body {
+            Body::Grid(grid) => grid.set_cursor(cursor),
+            Body::Text(text) => text.set_line(cursor.0),
         }
     }
 
@@ -875,6 +889,63 @@ mod tests {
     }
 
     #[test]
+    fn find_on_a_text_document_jumps_between_matching_lines() {
+        let mut v = text_viewer_with("alpha\nBeta\nalphabet\ngamma\nALPHA\n", Vec::new());
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        v.apply(Event::OpenSearch);
+        type_text(&mut v, "alpha");
+        let state = v.search_state().unwrap();
+        assert_eq!((state.current, state.total), (2, 3));
+        assert_eq!(
+            v.cursor(),
+            (2, 0),
+            "the first match at or after the starting line"
+        );
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(v.cursor(), (4, 0), "case is folded");
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(v.cursor(), (0, 0), "wraps to the top");
+        v.apply(Event::Move { rows: -1, cols: 0 });
+        assert_eq!(v.cursor(), (4, 0));
+        v.apply(Event::Submit);
+        assert_eq!(*v.mode(), Mode::Grid);
+        assert_eq!(v.cursor(), (4, 0), "Enter keeps the match");
+    }
+
+    #[test]
+    fn escape_returns_to_the_line_the_search_started_on() {
+        let mut v = text_viewer_with("one\ntwo\nthree\n", Vec::new());
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        v.apply(Event::OpenSearch);
+        type_text(&mut v, "three");
+        assert_eq!(v.cursor(), (2, 0));
+        v.apply(Event::CancelEdit);
+        assert_eq!(*v.mode(), Mode::Grid);
+        assert_eq!(v.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn find_does_nothing_on_an_empty_text_document() {
+        let mut v = text_viewer_with("", Vec::new());
+        v.apply(Event::OpenSearch);
+        assert_eq!(*v.mode(), Mode::Grid);
+    }
+
+    #[test]
+    fn a_reload_while_searching_a_text_document_recomputes_the_matches() {
+        let source = text_source("x\nneedle\nx\nneedle\n");
+        let mut v = viewer_on(&source);
+        v.apply(Event::OpenSearch);
+        type_text(&mut v, "needle");
+        assert_eq!(v.search_state().map(|s| s.total), Some(2));
+        source.write_text_from_outside("needle\n");
+        v.apply(Event::Tick);
+        let state = v.search_state().unwrap();
+        assert_eq!((state.current, state.total), (1, 1));
+        assert_eq!(v.cursor(), (0, 0));
+    }
+
+    #[test]
     fn sheet_prompt_and_mouse_events_do_nothing_on_a_text_document() {
         let mut v = text_viewer_with("a\nb\nc\n", Vec::new());
         v.apply(Event::Move { rows: 1, cols: 0 });
@@ -883,7 +954,6 @@ mod tests {
             Event::PrevSheet,
             Event::SelectSheet(1),
             Event::OpenSheetPicker,
-            Event::OpenSearch,
             Event::OpenNotes,
             Event::SelectCell { row: 2, col: 0 },
             Event::DragTo { row: 2, col: 0 },

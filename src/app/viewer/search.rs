@@ -1,4 +1,5 @@
 use crate::domain::sheet::Sheet;
+use crate::domain::text_document::TextDocument;
 
 use super::matching::{contains_folded, fold};
 use super::{Body, Event, Mode, Viewer};
@@ -60,6 +61,25 @@ fn first_at_or_after(matches: &[(usize, usize)], origin: (usize, usize)) -> usiz
         .unwrap_or_default()
 }
 
+/// Lines whose shown text contains the query, as `(line, 0)` in order; an empty query matches none.
+fn line_matches(document: &TextDocument, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let needle = fold(query);
+    (0..document.len())
+        .filter(|&i| contains_folded(&document.shown_text(i), &needle))
+        .map(|i| (i, 0))
+        .collect()
+}
+
+fn matches_on(body: &Body, query: &str) -> Vec<(usize, usize)> {
+    match body {
+        Body::Grid(grid) => matches_in(grid.sheet(), query),
+        Body::Text(text) => line_matches(text.document(), query),
+    }
+}
+
 impl Viewer {
     pub fn search_state(&self) -> Option<SearchState<'_>> {
         let Mode::Search {
@@ -79,16 +99,19 @@ impl Viewer {
     }
 
     pub(super) fn apply_search(&mut self, event: Event) {
-        let (Mode::Search { origin, .. }, Body::Grid(grid)) = (&self.mode, &self.body) else {
+        let Mode::Search { origin, .. } = &self.mode else {
             return;
         };
-        let sheet = grid.sheet();
         // matches carry the merge anchor, so the cursor must compare as one
-        let scan_origin = match sheet.merge_at(origin.0, origin.1) {
-            Some(merge) => merge.anchor(),
-            None => *origin,
+        let scan_origin = match &self.body {
+            Body::Grid(grid) => grid
+                .sheet()
+                .merge_at(origin.0, origin.1)
+                .map_or(*origin, |merge| merge.anchor()),
+            Body::Text(_) => *origin,
         };
-        let sheet_matches = |query: &str| matches_in(sheet, query);
+        let body = &self.body;
+        let find_matches = |query: &str| matches_on(body, query);
         let Mode::Search {
             query,
             origin,
@@ -102,12 +125,12 @@ impl Viewer {
         match event {
             Event::Insert(c) => {
                 query.push(c);
-                *matches = sheet_matches(query);
+                *matches = find_matches(query);
                 *index = first_at_or_after(matches, scan_origin);
             }
             Event::Backspace => {
                 if query.pop().is_some() {
-                    *matches = sheet_matches(query);
+                    *matches = find_matches(query);
                     *index = first_at_or_after(matches, scan_origin);
                 }
             }
@@ -146,17 +169,17 @@ impl Viewer {
     /// After a reload: matches are recomputed, the origin clamped, the cursor
     /// deliberately left where it is.
     pub(super) fn refresh_search(&mut self) {
-        let Some(sheet) = self.sheet() else {
+        let Mode::Search { query, .. } = &self.mode else {
             return;
         };
-        let (max_row, max_col) = (
-            sheet.row_count().saturating_sub(1),
-            sheet.col_count().saturating_sub(1),
-        );
-        let new_matches = match &self.mode {
-            Mode::Search { query, .. } => matches_in(sheet, query),
-            _ => return,
+        let (max_row, max_col) = match &self.body {
+            Body::Grid(grid) => (
+                grid.sheet().row_count().saturating_sub(1),
+                grid.sheet().col_count().saturating_sub(1),
+            ),
+            Body::Text(text) => (text.last(), 0),
         };
+        let new_matches = matches_on(&self.body, query);
         let Mode::Search {
             origin,
             matches,
@@ -432,5 +455,22 @@ mod tests {
     fn search_state_is_none_outside_search_mode() {
         let v = viewer_with(3, 3, Vec::new(), Box::new(NullStore));
         assert!(v.search_state().is_none());
+    }
+    #[test]
+    fn a_text_search_matches_the_shown_text_not_the_markup() {
+        use crate::domain::text_document::{Face, TextDocument};
+        let source = "See [the guide](https://example.com) for **setup**\nplain\n";
+        let document = TextDocument::new(source).with_shown(vec![vec![
+            ("See ".to_string(), Face::Plain),
+            ("the guide".to_string(), Face::Link),
+            (" for ".to_string(), Face::Plain),
+            ("setup".to_string(), Face::Bold),
+        ]]);
+        assert_eq!(
+            super::line_matches(&document, "guide for setup"),
+            vec![(0, 0)]
+        );
+        assert!(super::line_matches(&document, "example.com").is_empty());
+        assert!(super::line_matches(&document, "**setup").is_empty());
     }
 }
