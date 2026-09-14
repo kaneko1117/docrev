@@ -48,6 +48,8 @@ pub enum Event {
         col: usize,
     },
     SelectSheet(usize),
+    /// A click on a line of a text document; 0-based.
+    SelectLine(usize),
     DragTo {
         row: usize,
         col: usize,
@@ -432,6 +434,7 @@ impl Viewer {
             event,
             Event::SelectCell { .. }
                 | Event::SelectSheet(_)
+                | Event::SelectLine(_)
                 | Event::DragTo { .. }
                 | Event::DragEnd { .. }
         )
@@ -526,6 +529,7 @@ impl Viewer {
             // there is no horizontal cursor, so Home / End are the file's ends
             Event::Top | Event::RowStart => text.set_line(0),
             Event::Bottom | Event::RowEnd => text.set_line(text.last()),
+            Event::SelectLine(line) => text.set_line(line),
             // one conversation per line: continue it if present, else start one
             Event::StartComment => {
                 if text.document().is_empty() {
@@ -849,6 +853,24 @@ mod tests {
         let mut v = text_viewer_with("", Vec::new());
         v.apply(Event::Move { rows: 1, cols: 0 });
         v.apply(Event::Bottom);
+        assert_eq!(v.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn a_click_selects_a_line_and_closes_an_open_editor() {
+        let mut v = text_viewer_with("a\nb\nc\n", Vec::new());
+        v.apply(Event::SelectLine(2));
+        assert_eq!(v.cursor(), (2, 0));
+        v.apply(Event::SelectLine(99));
+        assert_eq!(v.cursor(), (2, 0), "past the end clamps to the last line");
+        v.apply(Event::StartComment);
+        type_text(&mut v, "draft");
+        v.apply(Event::SelectLine(0));
+        assert_eq!(
+            *v.mode(),
+            Mode::Grid,
+            "a click closes the editor, as on the grid"
+        );
         assert_eq!(v.cursor(), (0, 0));
     }
 
