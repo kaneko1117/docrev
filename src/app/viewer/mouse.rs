@@ -18,8 +18,8 @@ impl Viewer {
             }
             Event::SelectSheet(index) => {
                 self.selection = None;
-                if index < self.sheets.len() && !self.sheets.get(index).is_hidden() {
-                    self.active = index;
+                if index < self.grid.len() && !self.grid.sheet_at(index).is_hidden() {
+                    self.grid.set_active(index);
                 }
             }
             Event::DragTo { row, col } => {

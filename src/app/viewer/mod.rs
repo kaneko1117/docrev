@@ -1,4 +1,5 @@
 mod editing;
+mod grid;
 mod matching;
 mod mouse;
 mod picker;
@@ -15,7 +16,9 @@ use crate::domain::anchor::Anchor;
 use crate::domain::comment::CommentThread;
 use crate::domain::document::Document;
 use crate::domain::sheet::Sheet;
+
 use crate::domain::workbook_comment::WorkbookComment;
+use grid::Grid;
 
 use super::comments;
 use super::error::{DocumentError, FrontendError};
@@ -125,41 +128,8 @@ pub enum Mode {
     },
 }
 
-/// Non-empty by construction.
-struct Sheets {
-    first: Sheet,
-    rest: Vec<Sheet>,
-}
-
-impl Sheets {
-    fn get(&self, index: usize) -> &Sheet {
-        match index.checked_sub(1) {
-            None => &self.first,
-            Some(i) => self.rest.get(i).unwrap_or(&self.first),
-        }
-    }
-
-    fn len(&self) -> usize {
-        1 + self.rest.len()
-    }
-
-    /// Indices of the sheets that are not hidden; never empty (see `Document::new`).
-    fn shown(&self) -> Vec<usize> {
-        let shown: Vec<usize> = (0..self.len())
-            .filter(|&i| !self.get(i).is_hidden())
-            .collect();
-        if shown.is_empty() { vec![0] } else { shown }
-    }
-
-    fn first_shown(&self) -> usize {
-        self.shown()[0]
-    }
-}
-
 pub struct Viewer {
-    sheets: Sheets,
-    cursors: Vec<(usize, usize)>,
-    active: usize,
+    grid: Grid,
     quit: bool,
     comments: Vec<CommentThread>,
     notice: Option<Notice>,
@@ -211,21 +181,8 @@ impl Viewer {
         let workbook = document
             .into_workbook()
             .ok_or(DocumentError::NotAWorkbook)?;
-        let mut sheets = workbook.into_sheets().into_iter();
-        let Some(first) = sheets.next() else {
-            return Err(DocumentError::EmptyDocument);
-        };
-        let rest: Vec<Sheet> = sheets.collect();
-        let cursors = std::iter::once(&first)
-            .chain(&rest)
-            .map(|sheet| snap_visible(sheet, (0, 0)))
-            .collect();
-        let sheets = Sheets { first, rest };
-        let active = sheets.first_shown();
         Ok(Self {
-            sheets,
-            cursors,
-            active,
+            grid: Grid::new(workbook)?,
             quit: false,
             comments,
             notice,
@@ -276,30 +233,28 @@ impl Viewer {
     }
 
     pub fn sheet(&self) -> &Sheet {
-        self.sheets.get(self.active)
+        self.grid.sheet()
     }
 
     pub fn sheet_names(&self) -> Vec<&str> {
-        std::iter::once(self.sheets.first.name())
-            .chain(self.sheets.rest.iter().map(Sheet::name))
-            .collect()
+        self.grid.sheet_names()
     }
 
     pub fn sheet_count(&self) -> usize {
-        self.sheets.len()
+        self.grid.len()
     }
 
     /// Sheet indices in the tab strip and picker: the ones the workbook does not hide.
     pub fn shown_sheets(&self) -> Vec<usize> {
-        self.sheets.shown()
+        self.grid.shown()
     }
 
     pub fn active(&self) -> usize {
-        self.active
+        self.grid.active()
     }
 
     pub fn cursor(&self) -> (usize, usize) {
-        self.cursors.get(self.active).copied().unwrap_or((0, 0))
+        self.grid.cursor()
     }
 
     pub fn wants_quit(&self) -> bool {
@@ -441,54 +396,22 @@ impl Viewer {
         }
     }
 
-    /// Active sheet and cursors carry over by sheet name, clamped; a document
-    /// with no sheets keeps the old view.
+    /// A document with no sheets keeps the old view.
     fn replace_document(&mut self, document: Document) {
         // the picker's highlight follows its sheet by name across the reload
         let picked = self.picker_state().and_then(|state| {
             let index = *state.candidates.get(state.selected)?;
-            Some(self.sheets.get(index).name().to_string())
+            Some(self.grid.sheet_at(index).name().to_string())
         });
         let Some(workbook) = document.into_workbook() else {
             let reason = DocumentError::NotAWorkbook;
             self.doc_stale = Some(format!("document unavailable: {reason}"));
             return;
         };
-        let mut incoming = workbook.into_sheets().into_iter();
-        let Some(first) = incoming.next() else {
-            let reason = DocumentError::EmptyDocument;
+        if let Err(reason) = self.grid.replace(workbook) {
             self.doc_stale = Some(format!("document unavailable: {reason}"));
             return;
-        };
-        let new = Sheets {
-            first,
-            rest: incoming.collect(),
-        };
-        let old_names: Vec<String> = (0..self.sheets.len())
-            .map(|i| self.sheets.get(i).name().to_string())
-            .collect();
-        let cursors: Vec<(usize, usize)> = (0..new.len())
-            .map(|i| {
-                let sheet = new.get(i);
-                let (row, col) = old_names
-                    .iter()
-                    .position(|name| name == sheet.name())
-                    .and_then(|old| self.cursors.get(old).copied())
-                    .unwrap_or((0, 0));
-                let clamped = (
-                    row.min(sheet.row_count().saturating_sub(1)),
-                    col.min(sheet.col_count().saturating_sub(1)),
-                );
-                snap_visible(sheet, clamped)
-            })
-            .collect();
-        // by name; a sheet that became hidden hands over to the first shown one
-        let active_name = old_names.get(self.active).cloned().unwrap_or_default();
-        self.active = (0..new.len())
-            .position(|i| new.get(i).name() == active_name && !new.get(i).is_hidden())
-            .unwrap_or_else(|| new.first_shown());
-        self.sheets = new;
-        self.cursors = cursors;
+        }
         self.selection = None;
         self.doc_stale = None;
         self.refresh_mode_after_reload(picked.as_deref());
@@ -518,18 +441,19 @@ impl Viewer {
             Event::RowStart => (row, sheet.nearest_visible_col(0).unwrap_or(0)),
             Event::RowEnd => (row, sheet.nearest_visible_col(max_col).unwrap_or(max_col)),
             Event::NextSheet => {
-                self.active = self.neighbour_sheet(1);
+                self.grid.set_active(self.grid.neighbour_sheet(1));
                 return;
             }
             Event::PrevSheet => {
-                self.active = self.neighbour_sheet(-1);
+                self.grid.set_active(self.grid.neighbour_sheet(-1));
                 return;
             }
             Event::OpenSheetPicker => {
-                let shown = self.sheets.shown();
+                let shown = self.grid.shown();
+                let active = self.grid.active();
                 self.mode = Mode::SheetPicker {
                     query: String::new(),
-                    selected: shown.iter().position(|&i| i == self.active).unwrap_or(0),
+                    selected: shown.iter().position(|&i| i == active).unwrap_or(0),
                 };
                 return;
             }
@@ -574,32 +498,12 @@ impl Viewer {
             }
             _ => return,
         };
-        if let Some(cursor) = self.cursors.get_mut(self.active) {
-            *cursor = next;
-        }
-    }
-}
-
-impl Viewer {
-    /// The shown sheet `step` tabs away, wrapping around.
-    fn neighbour_sheet(&self, step: isize) -> usize {
-        let shown = self.sheets.shown();
-        let position = shown.iter().position(|&i| i == self.active).unwrap_or(0);
-        let len = shown.len() as isize;
-        shown[((position as isize + step).rem_euclid(len)) as usize]
+        self.grid.set_cursor(next);
     }
 }
 
 fn add_clamped(value: usize, delta: isize, max: usize) -> usize {
     (value as isize + delta).clamp(0, max as isize) as usize
-}
-
-/// The nearest visible cell; an all-hidden axis keeps the given index.
-fn snap_visible(sheet: &Sheet, (row, col): (usize, usize)) -> (usize, usize) {
-    (
-        sheet.nearest_visible_row(row).unwrap_or(row),
-        sheet.nearest_visible_col(col).unwrap_or(col),
-    )
 }
 
 pub fn run(mut viewer: Viewer, frontend: &mut impl Frontend) -> Result<(), FrontendError> {
