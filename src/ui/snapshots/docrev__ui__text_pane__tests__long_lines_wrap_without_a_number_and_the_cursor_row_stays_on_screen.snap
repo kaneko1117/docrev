@@ -8,4 +8,4 @@ expression: out
     4 │ line 4
     5 │ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
       │ xxxxxxxx
-                       c:comment  q:quit
+              c:comment  q:quit  ^F:find

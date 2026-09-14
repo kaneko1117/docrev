@@ -9,7 +9,8 @@ use ratatui::widgets::Paragraph;
 use crate::domain::comment::CommentThread;
 use crate::domain::text_document::{Face, Run, TextDocument};
 
-use super::grid::EditorView;
+use super::bars;
+use super::grid::{EditorView, SearchView};
 use super::panel;
 use super::style::{canvas, chrome, header, selected};
 use super::text::{clip, sanitize};
@@ -29,6 +30,7 @@ pub struct TextView<'a> {
     pub notice: Option<&'a str>,
     pub thread: Option<&'a CommentThread>,
     pub editor: Option<EditorView<'a>>,
+    pub search: Option<SearchView>,
     pub theme: Theme,
 }
 
@@ -124,6 +126,9 @@ fn draw_title(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView) {
 }
 
 fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView) {
+    if let Some(search) = &view.search {
+        return bars::draw_search(p, frame, area, search);
+    }
     let left = match view.notice {
         Some(notice) => format!("⚠ {notice}"),
         None => String::new(),
@@ -131,9 +136,9 @@ fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView) {
     let hint = if view.document.is_empty() {
         "q:quit"
     } else if view.thread.is_some() {
-        "c:reply  q:quit"
+        "c:reply  q:quit  ^F:find"
     } else {
-        "c:comment  q:quit"
+        "c:comment  q:quit  ^F:find"
     };
     let gap = (area.width as usize).saturating_sub(
         unicode_width::UnicodeWidthStr::width(left.as_str())
@@ -362,6 +367,7 @@ mod tests {
             notice: None,
             thread: None,
             editor: None,
+            search: None,
             theme: Theme::Sheets,
         }
     }
@@ -476,6 +482,24 @@ mod tests {
             .draw(|f| hits = draw(f, &view(&empty, 0), &mut 0))
             .unwrap();
         assert_eq!(hits.at(x, y), None, "an empty file has no lines to click");
+    }
+
+    #[test]
+    fn the_search_bar_replaces_the_status_bar() {
+        let document = rendered("one\ntwo\n");
+        let mut v = view(&document, 1);
+        v.search = Some(SearchView {
+            query: "tw".into(),
+            current: 1,
+            total: 1,
+        });
+        let out = render(&v, &mut 0, 70, 5);
+        let status = out.lines().last().unwrap_or("");
+        assert!(
+            status.contains("Find: tw") && status.contains("1/1"),
+            "{status:?}"
+        );
+        assert!(!out.contains("c:comment"), "{out}");
     }
 
     #[test]

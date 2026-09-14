@@ -60,6 +60,15 @@ impl TextDocument {
         self.shown.get(index).map_or(&[][..], Vec::as_slice)
     }
 
+    /// The line as it reads on screen, leaving out rules since they show no text.
+    pub fn shown_text(&self, index: usize) -> String {
+        self.shown(index)
+            .iter()
+            .filter(|(_, face)| *face != Face::Rule)
+            .map(|(text, _)| text.as_str())
+            .collect()
+    }
+
     pub fn line(&self, index: usize) -> Option<&str> {
         self.lines.get(index).map(String::as_str)
     }
@@ -103,6 +112,21 @@ mod tests {
         assert!(document.shown(2).is_empty());
         let extra = TextDocument::new("x\n").with_shown(vec![Vec::new(); 5]);
         assert_eq!(extra.shown.len(), 1, "extra entries are dropped");
+    }
+
+    #[test]
+    fn shown_text_is_what_reads_on_screen() {
+        let document = TextDocument::new("[a](u) **b**\n---\n").with_shown(vec![
+            vec![
+                ("a".to_string(), Face::Link),
+                (" ".to_string(), Face::Plain),
+                ("b".to_string(), Face::Bold),
+            ],
+            vec![("---".to_string(), Face::Rule)],
+        ]);
+        assert_eq!(document.shown_text(0), "a b");
+        assert_eq!(document.shown_text(1), "", "a rule shows no text");
+        assert_eq!(document.shown_text(2), "");
     }
 
     #[test]
