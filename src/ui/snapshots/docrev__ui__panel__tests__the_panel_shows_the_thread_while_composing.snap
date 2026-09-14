@@ -11,6 +11,6 @@ expression: "render_text(&view, &mut scroll, 76, 12)"
                                             │  確認しました。150円です
                                             ┌ Reply on B2 ─────────────────┐
                                             │█                             │
-                                            └ Ctrl+S:save  Esc:cancel ─────┘
+                                            └ Ctrl+S:save  Esc:close ──────┘
 [売上]
                                           c:reply  q:quit  ^G:sheet  ^F:find

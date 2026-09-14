@@ -98,7 +98,7 @@ fn push_message(p: &Palette, lines: &mut Vec<Line>, author: &str, body: &str, wi
     }
 }
 
-const EDITOR_HINT: &str = " Ctrl+S:save  Esc:cancel ";
+const EDITOR_HINT: &str = " Ctrl+S:save  Esc:close ";
 
 fn editor_inner_width(width: u16) -> usize {
     width.saturating_sub(2).max(1) as usize
@@ -429,7 +429,7 @@ mod tests {
         let text = render_text(&view, &mut Scroll::default(), 50, 10);
         assert!(text.contains('█'), "cursor must stay visible:\n{text}");
         assert!(
-            text.contains("Esc:cancel"),
+            text.contains("Esc:close"),
             "hint must stay visible:\n{text}"
         );
     }

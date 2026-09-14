@@ -362,7 +362,10 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
             KeyCode::Enter => Event::Newline,
             KeyCode::Backspace => Event::Backspace,
             KeyCode::Char(c) if !ctrl => Event::Insert(c),
-            _ => Event::Noop,
+            // a pasted tab arrives as the Tab key and must not switch sheets mid-paste
+            KeyCode::Tab => Event::Insert(' '),
+            KeyCode::BackTab => Event::Noop,
+            code => movement(code, ctrl, page).unwrap_or(Event::Noop),
         };
     }
     if mode == InputMode::Notes {
@@ -396,6 +399,13 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
         KeyCode::F(5) => Event::OpenSheetPicker,
         KeyCode::Char('f') if ctrl => Event::OpenSearch,
         KeyCode::Char('n') => Event::OpenNotes,
+        code => movement(code, ctrl, page).unwrap_or(Event::Noop),
+    }
+}
+
+/// The cursor keys, shared by browsing and the comment editor.
+fn movement(code: KeyCode, ctrl: bool, page: isize) -> Option<Event> {
+    Some(match code {
         KeyCode::Home if ctrl => Event::Top,
         KeyCode::End if ctrl => Event::Bottom,
         KeyCode::Up => Event::Move { rows: -1, cols: 0 },
@@ -414,8 +424,8 @@ fn map_key(key: KeyEvent, page: isize, mode: InputMode) -> Event {
         KeyCode::End => Event::RowEnd,
         KeyCode::Tab => Event::NextSheet,
         KeyCode::BackTab => Event::PrevSheet,
-        _ => Event::Noop,
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -458,9 +468,22 @@ mod tests {
         assert_eq!(map_key_editing(ctrl_s), Event::Submit);
         assert_eq!(
             map_key_editing(key(KeyCode::Up)),
-            Event::Noop,
-            "navigation is off while editing"
+            Event::Move { rows: -1, cols: 0 },
+            "the cursor still moves while editing"
         );
+        assert_eq!(
+            map_key_editing(key(KeyCode::PageDown)),
+            Event::Move { rows: 10, cols: 0 }
+        );
+        assert_eq!(map_key_editing(key(KeyCode::Home)), Event::RowStart);
+        let ctrl_end = KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL);
+        assert_eq!(map_key_editing(ctrl_end), Event::Bottom);
+        assert_eq!(
+            map_key_editing(key(KeyCode::Tab)),
+            Event::Insert(' '),
+            "a pasted tab stays in the text"
+        );
+        assert_eq!(map_key_editing(key(KeyCode::BackTab)), Event::Noop);
     }
 
     #[test]
