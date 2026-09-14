@@ -3,7 +3,8 @@ use std::path::Path;
 use crate::app::error::LoadError;
 use crate::app::ports::{DocumentKind, DocumentSource};
 use crate::domain::document::Document;
-use crate::infra::fs;
+use crate::domain::text_document::TextDocument;
+use crate::infra::{fs, markdown};
 
 /// UTF-8 only; a leading BOM is dropped.
 pub struct MarkdownSource;
@@ -14,9 +15,9 @@ impl DocumentSource for MarkdownSource {
             .map_err(|e| LoadError::Open(format!("cannot open {}: {e}", path.display())))?;
         let text = String::from_utf8(bytes)
             .map_err(|_| LoadError::Open(format!("{} is not a UTF-8 text file", path.display())))?;
-        Ok(Document::from_text(
-            text.strip_prefix('\u{feff}').unwrap_or(&text),
-        ))
+        let source = TextDocument::new(text.strip_prefix('\u{feff}').unwrap_or(&text));
+        let shown = markdown::shown_lines(source.lines());
+        Ok(Document::Text(source.with_shown(shown)))
     }
 
     fn revision(&self, path: &Path) -> Option<u64> {
@@ -31,6 +32,7 @@ impl DocumentSource for MarkdownSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::text_document::Face;
 
     fn temp_file(bytes: &[u8]) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("docrev-md-{}.md", uuid::Uuid::new_v4()));
@@ -44,6 +46,7 @@ mod tests {
         let document = MarkdownSource.load(&path).unwrap();
         let text = document.text().unwrap();
         assert_eq!(text.lines(), ["# title", "body"]);
+        assert_eq!(text.shown(0), [("title".to_string(), Face::Heading(1))]);
         let _ = std::fs::remove_file(path);
     }
 

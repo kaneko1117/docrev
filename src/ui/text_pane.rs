@@ -7,10 +7,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::domain::comment::CommentThread;
-use crate::domain::text_document::TextDocument;
+use crate::domain::text_document::{Face, Run, TextDocument};
 
 use super::grid::EditorView;
-use super::markdown::{self, Face, Run};
 use super::panel;
 use super::style::{canvas, chrome, header, selected};
 use super::text::{clip, sanitize};
@@ -248,10 +247,12 @@ fn layout(
     top: &mut usize,
 ) -> Vec<Row> {
     let len = document.len();
-    let blocks = markdown::blocks(document.lines().iter().map(String::as_str));
     let wrapped = |line: usize| {
-        let text = sanitize(document.line(line).unwrap_or_default());
-        let runs = blocks.render(&text, line);
+        let runs: Vec<Run> = document
+            .shown(line)
+            .iter()
+            .map(|(text, face)| (sanitize(text), *face))
+            .collect();
         // a thematic break spans the pane on one row, whatever its source length
         let runs = if matches!(runs.as_slice(), [(_, Face::Rule)]) {
             vec![("─".repeat(text_width), Face::Rule)]
@@ -336,6 +337,12 @@ mod tests {
 
     use super::*;
 
+    fn rendered(text: &str) -> TextDocument {
+        let document = TextDocument::new(text);
+        let shown = crate::infra::markdown::shown_lines(document.lines());
+        document.with_shown(shown)
+    }
+
     fn render(view: &TextView, top: &mut usize, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
@@ -378,8 +385,7 @@ mod tests {
 
     #[test]
     fn renders_title_gutter_markers_cursor_and_the_panel() {
-        let document =
-            TextDocument::new("# docrev\n\n## Install\nbrew install docrev\n\nCheck it works:\n");
+        let document = rendered("# docrev\n\n## Install\nbrew install docrev\n\nCheck it works:\n");
         let t = thread(3);
         let mut v = view(&document, 3);
         v.markers = HashSet::from([3]);
@@ -391,7 +397,7 @@ mod tests {
 
     #[test]
     fn markdown_is_rendered_line_by_line_with_its_markers_hidden() {
-        let document = TextDocument::new(
+        let document = rendered(
             "# Title\n- run `docrev` **now**\n```\nlet **raw** = 1;\n```\n> see [docs](https://x)\n",
         );
         let v = view(&document, 5);
@@ -433,7 +439,7 @@ mod tests {
 
     #[test]
     fn front_matter_tasks_tables_and_rules_are_drawn() {
-        let document = TextDocument::new(
+        let document = rendered(
             "---\ntitle: notes\n---\n# Plan\n- [x] ship it\n- [ ] write docs\n\n| item | qty |\n|-------|-----|\n| apple | 3   |\n\n---\n\n~~dropped~~ and ![logo](l.png)\n",
         );
         let v = view(&document, 0);
@@ -448,7 +454,7 @@ mod tests {
 
     #[test]
     fn draw_reports_which_line_each_pane_row_shows() {
-        let document = TextDocument::new(&format!("one\n{}\nthree\n", "x".repeat(60)));
+        let document = rendered(&format!("one\n{}\nthree\n", "x".repeat(60)));
         let v = view(&document, 0);
         let mut terminal = Terminal::new(TestBackend::new(70, 8)).unwrap();
         let mut hits = TextHits::default();
@@ -465,7 +471,7 @@ mod tests {
         assert_eq!(hits.at(x, y + 4), None, "below the last row");
         assert_eq!(hits.at(x, 0), None, "the title bar");
         assert_eq!(hits.at(x + hits.pane.width, y), None, "the panel");
-        let empty = TextDocument::new("");
+        let empty = rendered("");
         terminal
             .draw(|f| hits = draw(f, &view(&empty, 0), &mut 0))
             .unwrap();
@@ -474,7 +480,7 @@ mod tests {
 
     #[test]
     fn a_line_without_a_thread_shows_an_empty_panel() {
-        let document = TextDocument::new("one\ntwo\n");
+        let document = rendered("one\ntwo\n");
         let v = view(&document, 1);
         let out = render(&v, &mut 0, 70, 5);
         assert!(out.contains(EMPTY_PANEL), "{out}");
@@ -493,7 +499,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let document = TextDocument::new(&text);
+        let document = rendered(&text);
         let mut top = 0;
         let out = render(&view(&document, 4), &mut top, 40, 7);
         insta::assert_snapshot!(out);
@@ -505,11 +511,11 @@ mod tests {
 
     #[test]
     fn narrow_terminals_drop_the_panel_and_an_empty_file_says_so() {
-        let document = TextDocument::new("only\n");
+        let document = rendered("only\n");
         let out = render(&view(&document, 0), &mut 0, 40, 4);
         assert!(!out.contains(EMPTY_PANEL), "{out}");
         assert!(out.contains(" 1 │ only"), "{out}");
-        let empty = TextDocument::new("");
+        let empty = rendered("");
         let out = render(&view(&empty, 0), &mut 0, 70, 4);
         assert!(
             out.contains("q:quit") && !out.contains("c:comment"),
@@ -523,7 +529,7 @@ mod tests {
 
     #[test]
     fn a_long_name_is_clipped_so_the_position_survives() {
-        let document = TextDocument::new("one\n");
+        let document = rendered("one\n");
         let mut v = view(&document, 0);
         v.name = "日本語ファイル名がとても長い場合のテスト.md";
         let out = render(&v, &mut 0, 40, 3);
@@ -538,7 +544,7 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let document = TextDocument::new(&text);
+        let document = rendered(&text);
         let mut top = 0;
         let started = std::time::Instant::now();
         let rows = layout(&document, 30, 10, 19_999, &mut top);
@@ -553,7 +559,7 @@ mod tests {
             .map(|i| format!("l{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let document = TextDocument::new(&text);
+        let document = rendered(&text);
         let mut top = 90;
         let rows = layout(&document, 30, 20, 9, &mut top);
         assert_eq!(top, 0, "everything fits, so nothing stays hidden above");
@@ -566,10 +572,10 @@ mod tests {
 
     #[test]
     fn a_long_rule_stays_on_one_row() {
-        let document = TextDocument::new(&format!("before\n{}\nafter\n", "-".repeat(50)));
+        let document = rendered(&format!("before\n{}\nafter\n", "-".repeat(50)));
         let rows = layout(&document, 33, 10, 0, &mut 0);
         assert_eq!(rows.iter().filter(|r| r.line == 1).count(), 1);
-        let narrow = layout(&TextDocument::new("---\n"), 1, 5, 0, &mut 0);
+        let narrow = layout(&rendered("---\n"), 1, 5, 0, &mut 0);
         assert_eq!(
             narrow.len(),
             1,
@@ -579,7 +585,7 @@ mod tests {
 
     #[test]
     fn layout_keeps_the_cursor_line_whole_when_it_wraps() {
-        let document = TextDocument::new("a\nb\nccccccccccdddddddddd\ne\n");
+        let document = rendered("a\nb\nccccccccccdddddddddd\ne\n");
         let mut top = 0;
         let rows = layout(&document, 10, 3, 2, &mut top);
         assert_eq!(top, 1, "line 1 scrolls off so both rows of line 3 fit");
