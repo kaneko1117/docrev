@@ -4,6 +4,7 @@ pub(crate) mod dialog;
 pub mod grid;
 pub(crate) mod layout;
 pub mod lines;
+mod markdown;
 pub(crate) mod panel;
 pub(crate) mod picker;
 pub(crate) mod style;
