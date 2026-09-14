@@ -267,14 +267,15 @@ pub(crate) fn text_source(text: &str) -> SharedSource {
 }
 
 pub(crate) fn text_viewer_with(text: &str, comments: Vec<CommentThread>) -> Viewer {
-    Viewer::from_document(
-        Document::from_text(text),
-        comments,
-        None,
-        None,
-        Box::new(NullStore),
-    )
-    .unwrap()
+    text_viewer_with_store(text, comments, Box::new(NullStore))
+}
+
+pub(crate) fn text_viewer_with_store(
+    text: &str,
+    comments: Vec<CommentThread>,
+    store: Box<dyn CommentStore>,
+) -> Viewer {
+    Viewer::from_document(Document::from_text(text), comments, None, None, store).unwrap()
 }
 
 pub(crate) fn viewer_on(source: &SharedSource) -> Viewer {

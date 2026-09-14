@@ -1,5 +1,6 @@
 use crate::app::comments;
 use crate::domain::anchor::Anchor;
+use crate::domain::comment::CommentThread;
 
 use super::{Body, Event, Mode, Notice, Viewer};
 
@@ -21,7 +22,7 @@ impl Viewer {
     }
 
     /// Empty input closes without saving; a failed save keeps the editor open. The thread is
-    /// chosen at save time, so one that appeared on the cell while typing is continued, not forked.
+    /// chosen at save time, so one that appeared on the place while typing is continued, not forked.
     fn submit(&mut self) {
         let Mode::Editing { at, buffer, .. } = &self.mode else {
             return;
@@ -31,22 +32,13 @@ impl Viewer {
             self.mode = Mode::Grid;
             return;
         }
-        let Anchor::Cell { sheet, row, col } = at else {
-            self.notice = Some(Notice::Save("save failed: not a cell".into()));
-            return;
+        let saved = match at.clone() {
+            Anchor::Cell { sheet, row, col } => {
+                self.save_on_cell(&sheet, row as usize, col as usize, &body)
+            }
+            Anchor::Line { line } => self.save_on_line(line as usize, &body),
         };
-        let (name, row, col) = (sheet.clone(), *row as usize, *col as usize);
-        // field borrows: the sheet and the store must be held at once
-        let (Body::Grid(grid), store) = (&self.body, self.store.as_mut()) else {
-            self.notice = Some(Notice::Save("save failed: not a cell".into()));
-            return;
-        };
-        let Some(sheet) = grid.sheet_named(&name) else {
-            self.notice = Some(Notice::Save(format!("save failed: sheet {name:?} is gone")));
-            return;
-        };
-        let result = comments::comment_on_cell(store, sheet, row, col, &body, "user");
-        match result {
+        match saved {
             Ok(thread) => {
                 match self.comments.iter_mut().find(|t| t.id == thread.id) {
                     Some(existing) => *existing = thread,
@@ -57,8 +49,37 @@ impl Viewer {
                 // `revision` is deliberately not refreshed: the next tick must
                 // reload, or a write that landed while typing is lost
             }
-            Err(e) => self.notice = Some(Notice::Save(format!("save failed: {e}"))),
+            Err(reason) => self.notice = Some(Notice::Save(format!("save failed: {reason}"))),
         }
+    }
+
+    /// `Err` carries what to tell the user; the editor stays open.
+    fn save_on_cell(
+        &mut self,
+        name: &str,
+        row: usize,
+        col: usize,
+        body: &str,
+    ) -> Result<CommentThread, String> {
+        // field borrows: the sheet and the store must be held at once
+        let (Body::Grid(grid), store) = (&self.body, self.store.as_mut()) else {
+            return Err("not a cell".to_string());
+        };
+        let sheet = grid
+            .sheet_named(name)
+            .ok_or_else(|| format!("sheet {name:?} is gone"))?;
+        comments::comment_on_cell(store, sheet, row, col, body, "user").map_err(|e| e.to_string())
+    }
+
+    /// The line may have been cut away by a reload while the editor was open.
+    fn save_on_line(&mut self, line: usize, body: &str) -> Result<CommentThread, String> {
+        let (Body::Text(text), store) = (&self.body, self.store.as_mut()) else {
+            return Err("not a line".to_string());
+        };
+        if line >= text.document().len() {
+            return Err(format!("line {} is gone", line + 1));
+        }
+        comments::comment_on_line(store, line as u32, body, "user").map_err(|e| e.to_string())
     }
 }
 
@@ -70,14 +91,14 @@ mod tests {
     use crate::app::error::StoreError;
     use crate::app::ports::CommentStore;
     use crate::domain::cell::CellValue;
-    use crate::domain::comment::{CommentThread, Reply};
+    use crate::domain::comment::Reply;
     use crate::domain::document::Document;
     use crate::domain::sheet::Sheet;
 
     use super::super::EditTarget;
     use super::super::test_support::{
-        LiveStore, NullStore, RecordingStore, SharedSource, thread, type_text, viewer,
-        viewer_on_with, viewer_with,
+        LiveStore, NullStore, RecordingStore, SharedSource, text_source, text_viewer_with_store,
+        thread, type_text, viewer, viewer_on_with, viewer_with,
     };
     use super::*;
 
@@ -646,5 +667,75 @@ mod tests {
             other => panic!("editor should stay open, got {other:?}"),
         }
         assert!(v.notice().unwrap().contains("save failed"));
+    }
+    fn line_thread(line: u32, resolved: bool) -> CommentThread {
+        let mut thread = thread("one", line, 0, resolved);
+        thread.anchor = Anchor::line(line);
+        thread
+    }
+
+    #[test]
+    fn c_on_a_line_starts_a_thread_there() {
+        let store = RecordingStore::default();
+        let log = store.log.clone();
+        let mut v = text_viewer_with_store("a\nb\nc\n", Vec::new(), Box::new(store));
+        v.apply(Event::Move { rows: 2, cols: 0 });
+        v.apply(Event::StartComment);
+        match v.mode() {
+            Mode::Editing { target, at, .. } => {
+                assert_eq!(*target, EditTarget::NewThread);
+                assert_eq!(*at, Anchor::line(2));
+            }
+            other => panic!("expected editing mode, got {other:?}"),
+        }
+        type_text(&mut v, "check this");
+        v.apply(Event::Submit);
+        assert_eq!(*v.mode(), Mode::Grid);
+        assert_eq!(log.borrow().as_slice(), ["thread line 3 check this"]);
+        assert_eq!(v.unresolved_lines(), vec![2]);
+    }
+
+    #[test]
+    fn c_on_a_line_with_a_thread_continues_it_even_when_resolved() {
+        let comments = vec![line_thread(1, true)];
+        let store = RecordingStore::seeded(comments.clone());
+        let log = store.log.clone();
+        let mut v = text_viewer_with_store("a\nb\nc\n", comments, Box::new(store));
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        v.apply(Event::StartComment);
+        assert!(matches!(
+            v.mode(),
+            Mode::Editing {
+                target: EditTarget::Reply,
+                ..
+            }
+        ));
+        type_text(&mut v, "done");
+        v.apply(Event::Submit);
+        assert_eq!(log.borrow().as_slice(), ["reply t-one-1-0 done"]);
+    }
+
+    #[test]
+    fn c_on_an_empty_text_document_does_nothing() {
+        let mut v = text_viewer_with_store("", Vec::new(), Box::new(RecordingStore::default()));
+        v.apply(Event::StartComment);
+        assert_eq!(*v.mode(), Mode::Grid);
+    }
+
+    #[test]
+    fn a_line_cut_away_while_typing_keeps_the_draft_and_reports_it() {
+        let source = text_source("a\nb\nc\nd\n");
+        let store = RecordingStore::default();
+        let log = store.log.clone();
+        let mut v = viewer_on_with(&source, Box::new(store));
+        v.apply(Event::Bottom);
+        v.apply(Event::StartComment);
+        type_text(&mut v, "draft");
+        source.write_text_from_outside("a\nb\n");
+        v.apply(Event::Tick);
+        v.apply(Event::Submit);
+        assert_eq!(v.notice(), Some("save failed: line 4 is gone"));
+        assert!(matches!(v.mode(), Mode::Editing { buffer, .. } if buffer == "draft"));
+        assert!(log.borrow().is_empty());
     }
 }

@@ -526,6 +526,22 @@ impl Viewer {
             // there is no horizontal cursor, so Home / End are the file's ends
             Event::Top | Event::RowStart => text.set_line(0),
             Event::Bottom | Event::RowEnd => text.set_line(text.last()),
+            // one conversation per line: continue it if present, else start one
+            Event::StartComment => {
+                if text.document().is_empty() {
+                    return;
+                }
+                let at = Anchor::line(text.line() as u32);
+                let target = match self.thread_at_cursor() {
+                    Some(_) => EditTarget::Reply,
+                    None => EditTarget::NewThread,
+                };
+                self.mode = Mode::Editing {
+                    target,
+                    at,
+                    buffer: String::new(),
+                };
+            }
             Event::Quit => self.quit = true,
             _ => {}
         }
@@ -847,7 +863,6 @@ mod tests {
             Event::OpenSheetPicker,
             Event::OpenSearch,
             Event::OpenNotes,
-            Event::StartComment,
             Event::SelectCell { row: 2, col: 0 },
             Event::DragTo { row: 2, col: 0 },
             Event::DragEnd { copy: true },
