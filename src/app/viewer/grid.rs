@@ -71,6 +71,12 @@ impl Grid {
         self.sheets.get(index)
     }
 
+    pub(super) fn sheet_named(&self, name: &str) -> Option<&Sheet> {
+        (0..self.len())
+            .map(|i| self.sheet_at(i))
+            .find(|s| s.name() == name)
+    }
+
     pub(super) fn sheet_names(&self) -> Vec<&str> {
         std::iter::once(self.sheets.first.name())
             .chain(self.sheets.rest.iter().map(Sheet::name))

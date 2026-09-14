@@ -235,6 +235,7 @@ impl SharedSource {
 
     pub(crate) fn write_from_outside(&self, sheets: Vec<Sheet>) {
         *self.sheets.borrow_mut() = sheets;
+        *self.text.borrow_mut() = None;
         if let Some(revision) = self.revision.borrow_mut().as_mut() {
             *revision += 1;
         }
@@ -256,6 +257,24 @@ impl DocumentSource for SharedSource {
     fn revision(&self, _: &Path) -> Option<u64> {
         *self.revision.borrow()
     }
+}
+
+/// A source whose loads yield `text` until `write_from_outside` puts sheets back.
+pub(crate) fn text_source(text: &str) -> SharedSource {
+    let source = SharedSource::new(Vec::new());
+    *source.text.borrow_mut() = Some(text.to_string());
+    source
+}
+
+pub(crate) fn text_viewer_with(text: &str, comments: Vec<CommentThread>) -> Viewer {
+    Viewer::from_document(
+        Document::from_text(text),
+        comments,
+        None,
+        None,
+        Box::new(NullStore),
+    )
+    .unwrap()
 }
 
 pub(crate) fn viewer_on(source: &SharedSource) -> Viewer {

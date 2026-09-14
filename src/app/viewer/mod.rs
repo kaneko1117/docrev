@@ -6,6 +6,7 @@ mod picker;
 mod search;
 #[cfg(test)]
 mod test_support;
+mod text;
 
 pub use picker::PickerState;
 pub use search::SearchState;
@@ -16,9 +17,11 @@ use crate::domain::anchor::Anchor;
 use crate::domain::comment::CommentThread;
 use crate::domain::document::Document;
 use crate::domain::sheet::Sheet;
+use crate::domain::text_document::TextDocument;
 
 use crate::domain::workbook_comment::WorkbookComment;
 use grid::Grid;
+use text::TextState;
 
 use super::comments;
 use super::error::{DocumentError, FrontendError};
@@ -128,8 +131,14 @@ pub enum Mode {
     },
 }
 
+/// What the viewer shows: a workbook's sheets or a text file's lines.
+enum Body {
+    Grid(Box<Grid>),
+    Text(TextState),
+}
+
 pub struct Viewer {
-    grid: Grid,
+    body: Body,
     quit: bool,
     comments: Vec<CommentThread>,
     notice: Option<Notice>,
@@ -178,11 +187,12 @@ impl Viewer {
         revision: Option<u64>,
         store: Box<dyn CommentStore>,
     ) -> Result<Self, DocumentError> {
-        let workbook = document
-            .into_workbook()
-            .ok_or(DocumentError::NotAWorkbook)?;
+        let body = match document {
+            Document::Workbook(workbook) => Body::Grid(Box::new(Grid::new(workbook)?)),
+            Document::Text(text) => Body::Text(TextState::new(text)),
+        };
         Ok(Self {
-            grid: Grid::new(workbook)?,
+            body,
             quit: false,
             comments,
             notice,
@@ -209,16 +219,45 @@ impl Viewer {
         &self.mode
     }
 
-    /// The cursor cell's conversation, as `comments::thread_on` picks it.
-    pub fn thread_at_cursor(&self) -> Option<&CommentThread> {
-        let (row, col) = self.cursor();
-        comments::thread_on(&self.comments, self.sheet(), row, col)
+    fn grid(&self) -> Option<&Grid> {
+        match &self.body {
+            Body::Grid(grid) => Some(grid),
+            Body::Text(_) => None,
+        }
     }
 
-    /// (row, col) per unresolved thread.
+    fn grid_mut(&mut self) -> Option<&mut Grid> {
+        match &mut self.body {
+            Body::Grid(grid) => Some(grid),
+            Body::Text(_) => None,
+        }
+    }
+
+    /// `None` for a workbook.
+    pub fn text(&self) -> Option<&TextDocument> {
+        match &self.body {
+            Body::Grid(_) => None,
+            Body::Text(text) => Some(text.document()),
+        }
+    }
+
+    /// The conversation at the cursor: the cell's, as `comments::thread_on` picks it, or the line's.
+    pub fn thread_at_cursor(&self) -> Option<&CommentThread> {
+        match &self.body {
+            Body::Grid(grid) => {
+                let (row, col) = grid.cursor();
+                comments::thread_on(&self.comments, grid.sheet(), row, col)
+            }
+            Body::Text(text) => comments::thread_on_line(&self.comments, text.line() as u32),
+        }
+    }
+
+    /// (row, col) per unresolved thread; empty for a text document.
     /// Threads on hidden cells are left out: nothing on screen could carry their marker.
     pub fn unresolved_on_active_sheet(&self) -> Vec<(usize, usize)> {
-        let active = self.sheet();
+        let Some(active) = self.sheet() else {
+            return Vec::new();
+        };
         self.comments
             .iter()
             .filter(|t| !t.resolved)
@@ -232,29 +271,37 @@ impl Viewer {
             .collect()
     }
 
-    pub fn sheet(&self) -> &Sheet {
-        self.grid.sheet()
+    /// `None` for a text document.
+    pub fn sheet(&self) -> Option<&Sheet> {
+        self.grid().map(Grid::sheet)
     }
 
+    /// Empty for a text document.
     pub fn sheet_names(&self) -> Vec<&str> {
-        self.grid.sheet_names()
+        self.grid().map(Grid::sheet_names).unwrap_or_default()
     }
 
+    /// 0 for a text document.
     pub fn sheet_count(&self) -> usize {
-        self.grid.len()
+        self.grid().map_or(0, Grid::len)
     }
 
     /// Sheet indices in the tab strip and picker: the ones the workbook does not hide.
     pub fn shown_sheets(&self) -> Vec<usize> {
-        self.grid.shown()
+        self.grid().map(Grid::shown).unwrap_or_default()
     }
 
+    /// 0 for a text document.
     pub fn active(&self) -> usize {
-        self.grid.active()
+        self.grid().map_or(0, Grid::active)
     }
 
+    /// (row, col) on a sheet; (line, 0) in a text document.
     pub fn cursor(&self) -> (usize, usize) {
-        self.grid.cursor()
+        match &self.body {
+            Body::Grid(grid) => grid.cursor(),
+            Body::Text(text) => (text.line(), 0),
+        }
     }
 
     pub fn wants_quit(&self) -> bool {
@@ -272,16 +319,20 @@ impl Viewer {
             return None;
         };
         let (row, col) = self.cursor();
-        Some((self.sheet().workbook_comments_at(row, col), *scroll))
+        Some((self.sheet()?.workbook_comments_at(row, col), *scroll))
     }
 
     pub fn has_notes_at_cursor(&self) -> bool {
         let (row, col) = self.cursor();
-        !self.sheet().workbook_comments_at(row, col).is_empty()
+        self.sheet()
+            .is_some_and(|sheet| !sheet.workbook_comments_at(row, col).is_empty())
     }
 
+    /// Empty for a text document.
     pub fn workbook_comment_cells(&self) -> Vec<(usize, usize)> {
-        let sheet = self.sheet();
+        let Some(sheet) = self.sheet() else {
+            return Vec::new();
+        };
         sheet
             .workbook_comments()
             .iter()
@@ -316,7 +367,10 @@ impl Viewer {
             self.mode = Mode::Grid;
         }
         match self.mode {
-            Mode::Grid => self.apply_grid(event),
+            Mode::Grid => match self.body {
+                Body::Grid(_) => self.apply_grid(event),
+                Body::Text(_) => self.apply_text(event),
+            },
             Mode::Editing { .. } => self.apply_editing(event),
             Mode::SheetPicker { .. } => self.apply_picker(event),
             Mode::Search { .. } => self.apply_search(event),
@@ -396,19 +450,23 @@ impl Viewer {
         }
     }
 
-    /// A document with no sheets keeps the old view.
+    /// A document with no sheets, or of the other kind, keeps the old view.
     fn replace_document(&mut self, document: Document) {
         // the picker's highlight follows its sheet by name across the reload
         let picked = self.picker_state().and_then(|state| {
             let index = *state.candidates.get(state.selected)?;
-            Some(self.grid.sheet_at(index).name().to_string())
+            Some(self.grid()?.sheet_at(index).name().to_string())
         });
-        let Some(workbook) = document.into_workbook() else {
-            let reason = DocumentError::NotAWorkbook;
-            self.doc_stale = Some(format!("document unavailable: {reason}"));
-            return;
+        let replaced = match (&mut self.body, document) {
+            (Body::Grid(grid), Document::Workbook(workbook)) => grid.replace(workbook),
+            (Body::Text(text), Document::Text(document)) => {
+                text.replace(document);
+                Ok(())
+            }
+            (Body::Grid(_), Document::Text(_)) => Err(DocumentError::NotAWorkbook),
+            (Body::Text(_), Document::Workbook(_)) => Err(DocumentError::NotAText),
         };
-        if let Err(reason) = self.grid.replace(workbook) {
+        if let Err(reason) = replaced {
             self.doc_stale = Some(format!("document unavailable: {reason}"));
             return;
         }
@@ -425,9 +483,26 @@ impl Viewer {
         }
     }
 
+    fn apply_text(&mut self, event: Event) {
+        let Body::Text(text) = &mut self.body else {
+            return;
+        };
+        match event {
+            Event::Move { rows, .. } => text.step(rows),
+            // there is no horizontal cursor, so Home / End are the file's ends
+            Event::Top | Event::RowStart => text.set_line(0),
+            Event::Bottom | Event::RowEnd => text.set_line(text.last()),
+            Event::Quit => self.quit = true,
+            _ => {}
+        }
+    }
+
     fn apply_grid(&mut self, event: Event) {
-        let (row, col) = self.cursor();
-        let sheet = self.sheet();
+        let Some(grid) = self.grid() else {
+            return;
+        };
+        let (row, col) = grid.cursor();
+        let sheet = grid.sheet();
         let max_row = sheet.row_count().saturating_sub(1);
         let max_col = sheet.col_count().saturating_sub(1);
         // hidden rows and columns are stepped over, never landed on
@@ -441,16 +516,18 @@ impl Viewer {
             Event::RowStart => (row, sheet.nearest_visible_col(0).unwrap_or(0)),
             Event::RowEnd => (row, sheet.nearest_visible_col(max_col).unwrap_or(max_col)),
             Event::NextSheet => {
-                self.grid.set_active(self.grid.neighbour_sheet(1));
+                let next = grid.neighbour_sheet(1);
+                self.set_active_sheet(next);
                 return;
             }
             Event::PrevSheet => {
-                self.grid.set_active(self.grid.neighbour_sheet(-1));
+                let next = grid.neighbour_sheet(-1);
+                self.set_active_sheet(next);
                 return;
             }
             Event::OpenSheetPicker => {
-                let shown = self.grid.shown();
-                let active = self.grid.active();
+                let shown = grid.shown();
+                let active = grid.active();
                 self.mode = Mode::SheetPicker {
                     query: String::new(),
                     selected: shown.iter().position(|&i| i == active).unwrap_or(0),
@@ -467,7 +544,7 @@ impl Viewer {
                 return;
             }
             Event::OpenNotes => {
-                if !self.sheet().workbook_comments_at(row, col).is_empty() {
+                if !sheet.workbook_comments_at(row, col).is_empty() {
                     self.mode = Mode::Notes { scroll: 0 };
                 }
                 return;
@@ -480,7 +557,7 @@ impl Viewer {
                 };
                 self.mode = Mode::Editing {
                     target,
-                    at: Anchor::cell(self.sheet().name(), row as u32, col as u32),
+                    at: Anchor::cell(sheet.name(), row as u32, col as u32),
                     buffer: String::new(),
                 };
                 return;
@@ -498,7 +575,23 @@ impl Viewer {
             }
             _ => return,
         };
-        self.grid.set_cursor(next);
+        self.set_cursor(next);
+    }
+
+    pub(super) fn set_cursor(&mut self, cursor: (usize, usize)) {
+        if let Some(grid) = self.grid_mut() {
+            grid.set_cursor(cursor);
+        }
+    }
+
+    pub(super) fn sheet_named(&self, name: &str) -> Option<&Sheet> {
+        self.grid()?.sheet_named(name)
+    }
+
+    pub(super) fn set_active_sheet(&mut self, index: usize) {
+        if let Some(grid) = self.grid_mut() {
+            grid.set_active(index);
+        }
     }
 }
 
@@ -523,8 +616,8 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::test_support::{
-        NullStore, SharedSource, SharedStore, thread, type_text, viewer, viewer_on, viewer_on_with,
-        viewer_with,
+        NullStore, SharedSource, SharedStore, text_source, text_viewer_with, thread, type_text,
+        viewer, viewer_on, viewer_on_with, viewer_with,
     };
     use super::*;
     use crate::domain::cell::CellValue;
@@ -660,16 +753,117 @@ mod tests {
     }
 
     #[test]
-    fn a_text_document_is_rejected() {
-        let err = Viewer::from_document(
-            Document::from_text("a\nb"),
-            Vec::new(),
-            None,
-            None,
-            Box::new(NullStore),
-        )
-        .err();
-        assert!(matches!(err, Some(DocumentError::NotAWorkbook)), "{err:?}");
+    fn a_text_document_opens_on_line_one_with_no_sheets() {
+        let v = text_viewer_with("# title\n\nbody\n", Vec::new());
+        assert_eq!(v.text().map(|t| t.len()), Some(3));
+        assert!(v.sheet().is_none());
+        assert!(v.sheet_names().is_empty() && v.shown_sheets().is_empty());
+        assert_eq!((v.sheet_count(), v.active()), (0, 0));
+        assert_eq!(v.cursor(), (0, 0));
+        assert!(v.thread_at_cursor().is_none());
+        assert!(v.unresolved_on_active_sheet().is_empty());
+        assert!(v.workbook_comment_cells().is_empty());
+        assert!(!v.has_notes_at_cursor());
+    }
+
+    #[test]
+    fn the_line_cursor_moves_within_the_file_and_home_end_are_its_ends() {
+        let mut v = text_viewer_with(&"x\n".repeat(10), Vec::new());
+        v.apply(Event::Move { rows: 3, cols: 5 });
+        assert_eq!(v.cursor(), (3, 0), "columns are ignored");
+        v.apply(Event::Move { rows: 100, cols: 0 });
+        assert_eq!(
+            v.cursor(),
+            (9, 0),
+            "a page past the end stops on the last line"
+        );
+        v.apply(Event::Move {
+            rows: -100,
+            cols: 0,
+        });
+        assert_eq!(v.cursor(), (0, 0));
+        v.apply(Event::RowEnd);
+        assert_eq!(v.cursor(), (9, 0));
+        v.apply(Event::RowStart);
+        assert_eq!(v.cursor(), (0, 0));
+        v.apply(Event::Bottom);
+        assert_eq!(v.cursor(), (9, 0));
+        v.apply(Event::Top);
+        assert_eq!(v.cursor(), (0, 0));
+        v.apply(Event::Quit);
+        assert!(v.wants_quit());
+    }
+
+    #[test]
+    fn an_empty_text_document_keeps_the_cursor_at_zero() {
+        let mut v = text_viewer_with("", Vec::new());
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        v.apply(Event::Bottom);
+        assert_eq!(v.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn sheet_prompt_and_mouse_events_do_nothing_on_a_text_document() {
+        let mut v = text_viewer_with("a\nb\nc\n", Vec::new());
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        for event in [
+            Event::NextSheet,
+            Event::PrevSheet,
+            Event::SelectSheet(1),
+            Event::OpenSheetPicker,
+            Event::OpenSearch,
+            Event::OpenNotes,
+            Event::StartComment,
+            Event::SelectCell { row: 2, col: 0 },
+            Event::DragTo { row: 2, col: 0 },
+            Event::DragEnd { copy: true },
+        ] {
+            v.apply(event);
+            assert_eq!(*v.mode(), Mode::Grid, "{event:?}");
+            assert_eq!(v.cursor(), (1, 0), "{event:?}");
+        }
+        assert!(v.picker_state().is_none() && v.search_state().is_none());
+        assert!(v.notes_state().is_none() && v.selection().is_none());
+        assert!(v.take_copy_request().is_none());
+    }
+
+    #[test]
+    fn the_cursor_line_has_a_thread() {
+        let mut line_thread = thread("one", 0, 0, false);
+        line_thread.anchor = Anchor::line(2);
+        let mut v = text_viewer_with("a\nb\nc\n", vec![line_thread.clone()]);
+        assert!(v.thread_at_cursor().is_none());
+        v.apply(Event::Move { rows: 2, cols: 0 });
+        assert_eq!(v.thread_at_cursor(), Some(&line_thread));
+    }
+
+    #[test]
+    fn a_text_reload_keeps_the_line_and_clamps_when_the_file_shrank() {
+        let source = text_source(&"x\n".repeat(6));
+        let mut v = viewer_on(&source);
+        v.apply(Event::Move { rows: 4, cols: 0 });
+        source.write_text_from_outside("a\nb\n");
+        v.apply(Event::Tick);
+        assert_eq!(v.cursor(), (1, 0), "clamped to the last line");
+        assert_eq!(v.text().and_then(|t| t.line(1)), Some("b"));
+        assert_eq!(v.notice(), None);
+        source.write_text_from_outside(&"y\n".repeat(9));
+        v.apply(Event::Tick);
+        assert_eq!(v.cursor(), (1, 0), "a longer file keeps the line");
+    }
+
+    #[test]
+    fn a_text_reload_that_turned_into_a_workbook_keeps_the_old_view() {
+        let source = text_source("a\nb\n");
+        let mut v = viewer_on(&source);
+        source.write_from_outside(vec![one_cell("one", "cell")]);
+        v.apply(Event::Tick);
+        assert_eq!(v.text().map(|t| t.len()), Some(2));
+        assert!(v.sheet().is_none());
+        assert_eq!(
+            v.notice(),
+            Some("document unavailable: document has no lines: it is a workbook")
+        );
     }
 
     #[test]
@@ -678,7 +872,7 @@ mod tests {
         let mut v = viewer_on(&source);
         source.write_text_from_outside("# heading");
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "old");
+        assert_eq!(v.sheet().unwrap().cell(0, 0).display_text(), "old");
         assert_eq!(
             v.notice(),
             Some("document unavailable: document has no sheets: it is a text file")
@@ -772,9 +966,13 @@ mod tests {
         let source = SharedSource::new(vec![one_cell("one", "old")]);
         let mut v = viewer_on(&source);
         source.write_from_outside(vec![one_cell("one", "new")]);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "old", "not yet");
+        assert_eq!(
+            v.sheet().unwrap().cell(0, 0).display_text(),
+            "old",
+            "not yet"
+        );
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "new");
+        assert_eq!(v.sheet().unwrap().cell(0, 0).display_text(), "new");
         assert_eq!(v.notice(), None);
     }
 
@@ -789,9 +987,9 @@ mod tests {
         v.apply(Event::NextSheet);
         source.write_from_outside(vec![one_cell("two", "b"), one_cell("one", "shrunk")]);
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().name(), "two", "active follows the name");
+        assert_eq!(v.sheet().unwrap().name(), "two", "active follows the name");
         v.apply(Event::NextSheet);
-        assert_eq!(v.sheet().name(), "one");
+        assert_eq!(v.sheet().unwrap().name(), "one");
         assert_eq!(v.cursor(), (0, 0), "cursor clamped into the smaller sheet");
     }
 
@@ -800,10 +998,10 @@ mod tests {
         let source = SharedSource::new(vec![one_cell("one", "a"), one_cell("two", "b")]);
         let mut v = viewer_on(&source);
         v.apply(Event::NextSheet);
-        assert_eq!(v.sheet().name(), "two");
+        assert_eq!(v.sheet().unwrap().name(), "two");
         source.write_from_outside(vec![one_cell("uno", "a")]);
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().name(), "uno");
+        assert_eq!(v.sheet().unwrap().name(), "uno");
         assert_eq!(v.cursor(), (0, 0));
     }
 
@@ -814,7 +1012,11 @@ mod tests {
         *source.broken.borrow_mut() = true;
         source.write_from_outside(vec![one_cell("one", "new")]);
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "old", "old view kept");
+        assert_eq!(
+            v.sheet().unwrap().cell(0, 0).display_text(),
+            "old",
+            "old view kept"
+        );
         assert_eq!(v.notice(), Some("document unavailable: mid-write"));
         let parses = *source.loads.borrow();
         v.apply(Event::Tick);
@@ -826,7 +1028,7 @@ mod tests {
         *source.broken.borrow_mut() = false;
         source.write_from_outside(vec![one_cell("one", "new")]);
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "new");
+        assert_eq!(v.sheet().unwrap().cell(0, 0).display_text(), "new");
         assert_eq!(v.notice(), None, "recovery clears the warning");
     }
 
@@ -880,7 +1082,7 @@ mod tests {
         let mut v = viewer_on(&source);
         *source.sheets.borrow_mut() = vec![one_cell("one", "new")];
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "old");
+        assert_eq!(v.sheet().unwrap().cell(0, 0).display_text(), "old");
     }
 
     #[test]
@@ -889,14 +1091,14 @@ mod tests {
         let mut v = viewer_on(&source);
         source.write_from_outside(Vec::new());
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "old");
+        assert_eq!(v.sheet().unwrap().cell(0, 0).display_text(), "old");
         assert_eq!(
             v.notice(),
             Some("document unavailable: document has no sheets")
         );
         source.write_from_outside(vec![one_cell("one", "back")]);
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "back");
+        assert_eq!(v.sheet().unwrap().cell(0, 0).display_text(), "back");
         assert_eq!(v.notice(), None);
     }
 
@@ -908,7 +1110,7 @@ mod tests {
         type_text(&mut v, "draft");
         source.write_from_outside(vec![one_cell("one", "new")]);
         v.apply(Event::Tick);
-        assert_eq!(v.sheet().cell(0, 0).display_text(), "new");
+        assert_eq!(v.sheet().unwrap().cell(0, 0).display_text(), "new");
         assert!(
             matches!(v.mode(), Mode::Editing { buffer, .. } if buffer == "draft"),
             "the draft survives the reload"
@@ -946,13 +1148,13 @@ mod tests {
         let mut v = viewer(5, 5);
         v.apply(Event::Move { rows: 2, cols: 2 });
         v.apply(Event::NextSheet);
-        assert_eq!(v.sheet().name(), "two");
+        assert_eq!(v.sheet().unwrap().name(), "two");
         assert_eq!(v.cursor(), (0, 0));
         v.apply(Event::NextSheet);
-        assert_eq!(v.sheet().name(), "one");
+        assert_eq!(v.sheet().unwrap().name(), "one");
         assert_eq!(v.cursor(), (2, 2), "cursor remembered per sheet");
         v.apply(Event::PrevSheet);
-        assert_eq!(v.sheet().name(), "two");
+        assert_eq!(v.sheet().unwrap().name(), "two");
     }
 
     #[test]

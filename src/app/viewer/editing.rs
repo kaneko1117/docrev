@@ -1,7 +1,7 @@
 use crate::app::comments;
 use crate::domain::anchor::Anchor;
 
-use super::{Event, Mode, Notice, Viewer};
+use super::{Body, Event, Mode, Notice, Viewer};
 
 impl Viewer {
     pub(super) fn apply_editing(&mut self, event: Event) {
@@ -36,12 +36,16 @@ impl Viewer {
             return;
         };
         let (name, row, col) = (sheet.clone(), *row as usize, *col as usize);
-        let Some(index) = self.sheet_names().iter().position(|n| *n == name) else {
+        // field borrows: the sheet and the store must be held at once
+        let (Body::Grid(grid), store) = (&self.body, self.store.as_mut()) else {
+            self.notice = Some(Notice::Save("save failed: not a cell".into()));
+            return;
+        };
+        let Some(sheet) = grid.sheet_named(&name) else {
             self.notice = Some(Notice::Save(format!("save failed: sheet {name:?} is gone")));
             return;
         };
-        let sheet = self.grid.sheet_at(index);
-        let result = comments::comment_on_cell(self.store.as_mut(), sheet, row, col, &body, "user");
+        let result = comments::comment_on_cell(store, sheet, row, col, &body, "user");
         match result {
             Ok(thread) => {
                 match self.comments.iter_mut().find(|t| t.id == thread.id) {

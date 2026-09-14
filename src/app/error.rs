@@ -26,6 +26,8 @@ pub enum DocumentError {
     EmptyDocument,
     #[error("document has no sheets: it is a text file")]
     NotAWorkbook,
+    #[error("document has no lines: it is a workbook")]
+    NotAText,
     #[error("--formulas does not apply to a text file")]
     NoFormulas,
 }

@@ -7,8 +7,11 @@ const COPY_LIMIT_BYTES: usize = 100_000;
 
 impl Viewer {
     pub(super) fn apply_mouse(&mut self, event: Event) {
-        let max_row = self.sheet().row_count().saturating_sub(1);
-        let max_col = self.sheet().col_count().saturating_sub(1);
+        let Some(sheet) = self.sheet() else {
+            return;
+        };
+        let max_row = sheet.row_count().saturating_sub(1);
+        let max_col = sheet.col_count().saturating_sub(1);
         let clamp = |row: usize, col: usize| (row.min(max_row), col.min(max_col));
         match event {
             Event::SelectCell { row, col } => {
@@ -18,8 +21,9 @@ impl Viewer {
             }
             Event::SelectSheet(index) => {
                 self.selection = None;
-                if index < self.grid.len() && !self.grid.sheet_at(index).is_hidden() {
-                    self.grid.set_active(index);
+                let shown = self.shown_sheets().contains(&index);
+                if shown {
+                    self.set_active_sheet(index);
                 }
             }
             Event::DragTo { row, col } => {
@@ -28,9 +32,11 @@ impl Viewer {
                 }
             }
             Event::DragEnd { copy } => {
-                if let (Some((start, end)), true) = (self.selection.take(), copy) {
-                    let (rows, cols) = visible_extent(self.sheet(), start, end);
-                    let text = tsv(self.sheet(), start, end);
+                if let (Some((start, end)), true, Some(sheet)) =
+                    (self.selection.take(), copy, self.sheet())
+                {
+                    let (rows, cols) = visible_extent(sheet, start, end);
+                    let text = tsv(sheet, start, end);
                     if text.len() > COPY_LIMIT_BYTES {
                         self.notice = Some(Notice::Copy("Selection too large to copy".to_string()));
                     } else {

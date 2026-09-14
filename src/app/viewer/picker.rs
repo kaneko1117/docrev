@@ -16,11 +16,11 @@ impl Viewer {
             return None;
         };
         let needle = fold(query);
+        let names = self.sheet_names();
         let candidates = self
-            .grid
-            .shown()
+            .shown_sheets()
             .into_iter()
-            .filter(|&i| contains_folded(self.grid.sheet_at(i).name(), &needle))
+            .filter(|&i| names.get(i).is_some_and(|n| contains_folded(n, &needle)))
             .collect();
         Some(PickerState {
             query,
@@ -44,10 +44,9 @@ impl Viewer {
                 continue;
             };
             if let Some(&i) = index.get(sheet.as_str())
-                && !self
-                    .grid
-                    .sheet_at(i)
-                    .cell_hidden(*row as usize, *col as usize)
+                && self
+                    .sheet_named(sheet)
+                    .is_some_and(|s| !s.cell_hidden(*row as usize, *col as usize))
             {
                 counts[i] += 1;
             }
@@ -62,10 +61,11 @@ impl Viewer {
             return;
         };
         let position_of = |index: usize| state.candidates.iter().position(|&i| i == index);
+        let names = self.sheet_names();
         let reseated = picked
-            .and_then(|name| (0..self.grid.len()).find(|&i| self.grid.sheet_at(i).name() == name))
+            .and_then(|name| names.iter().position(|n| *n == name))
             .and_then(position_of)
-            .or_else(|| position_of(self.grid.active()))
+            .or_else(|| position_of(self.active()))
             .unwrap_or(state.selected.min(state.candidates.len().saturating_sub(1)));
         if let Mode::SheetPicker { selected, .. } = &mut self.mode {
             *selected = reseated;
@@ -99,7 +99,7 @@ impl Viewer {
             }
             Event::Submit => {
                 if let Some(&sheet) = candidates.get(*selected) {
-                    self.grid.set_active(sheet);
+                    self.set_active_sheet(sheet);
                     self.mode = Mode::Grid;
                 }
             }
