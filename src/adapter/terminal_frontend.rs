@@ -8,13 +8,16 @@ use ratatui::crossterm::event::{
 };
 
 use crate::app::error::FrontendError;
-use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Viewer};
+use crate::app::viewer::{EditTarget, Event, Frontend, Mode, Shown, Viewer};
 use crate::domain::anchor::Anchor;
+use crate::domain::sheet::Sheet;
+use crate::domain::text_document::TextDocument;
 use crate::infra::clipboard;
 use crate::ui::grid::{
     self, EditorView, GridView, Hit, HitMap, NoteView, NotesView, PickerItem, PickerView, Scroll,
     SearchView,
 };
+use crate::ui::text_pane::{self, TextView};
 use crate::ui::theme::Theme;
 
 /// Input wait before a `Tick`.
@@ -34,6 +37,8 @@ pub struct TerminalFrontend {
     terminal: DefaultTerminal,
     theme: Theme,
     scrolls: Vec<Scroll>,
+    /// First line on screen of a text document.
+    text_top: usize,
     page_rows: usize,
     input_mode: InputMode,
     hits: HitMap,
@@ -46,6 +51,7 @@ impl TerminalFrontend {
             terminal,
             theme,
             scrolls: Vec::new(),
+            text_top: 0,
             page_rows: 1,
             input_mode: InputMode::Grid,
             hits: HitMap::default(),
@@ -115,14 +121,18 @@ fn map_mouse(hits: &HitMap, mode: InputMode, drag: &mut DragState, mouse: MouseE
     }
 }
 
-impl Frontend for TerminalFrontend {
-    fn draw(&mut self, viewer: &Viewer) -> Result<(), FrontendError> {
+impl TerminalFrontend {
+    fn draw_grid(
+        &mut self,
+        viewer: &Viewer,
+        sheet: &Sheet,
+        editor: Option<EditorView>,
+    ) -> Result<(), FrontendError> {
         let Self {
             terminal,
             theme,
             scrolls,
             page_rows,
-            input_mode,
             hits,
             ..
         } = self;
@@ -131,17 +141,6 @@ impl Frontend for TerminalFrontend {
         }
         let mut fallback = Scroll::default();
         let scroll = scrolls.get_mut(viewer.active()).unwrap_or(&mut fallback);
-        let editor = match viewer.mode() {
-            Mode::Editing { target, at, buffer } => Some(EditorView {
-                kind: match target {
-                    EditTarget::NewThread => grid::EditorKind::Comment,
-                    EditTarget::Reply => grid::EditorKind::Reply,
-                },
-                address: at.position(),
-                buffer,
-            }),
-            _ => None,
-        };
         let picker = viewer.picker_state().map(|state| {
             let names = viewer.sheet_names();
             let counts = viewer.unresolved_counts();
@@ -187,18 +186,6 @@ impl Frontend for TerminalFrontend {
                 scroll,
             }
         });
-        *input_mode = match viewer.mode() {
-            Mode::Grid => InputMode::Grid,
-            Mode::Editing { .. } => InputMode::Editing,
-            Mode::SheetPicker { .. } => InputMode::Picker,
-            Mode::Search { .. } => InputMode::Search,
-            Mode::Notes { .. } => InputMode::Notes,
-        };
-        let Some(sheet) = viewer.sheet() else {
-            return Err(FrontendError(
-                "the viewer does not draw text documents yet".to_string(),
-            ));
-        };
         let names = viewer.sheet_names();
         let view = GridView {
             sheet,
@@ -226,8 +213,79 @@ impl Frontend for TerminalFrontend {
                 *page_rows = frame.area().height.saturating_sub(grid::CHROME_ROWS).max(1) as usize;
                 *hits = grid::draw(frame, &view, scroll);
             })
-            .map_err(|e| FrontendError(e.to_string()))?;
-        Ok(())
+            .map(|_| ())
+            .map_err(|e| FrontendError(e.to_string()))
+    }
+
+    /// Mouse hits are cleared: nothing on the text screen resolves to a cell yet.
+    fn draw_text(
+        &mut self,
+        viewer: &Viewer,
+        document: &TextDocument,
+        editor: Option<EditorView>,
+    ) -> Result<(), FrontendError> {
+        let Self {
+            terminal,
+            theme,
+            text_top,
+            page_rows,
+            hits,
+            ..
+        } = self;
+        let name = viewer
+            .path()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("(text)");
+        let view = TextView {
+            name,
+            document,
+            cursor: viewer.cursor().0,
+            markers: viewer.unresolved_lines().into_iter().collect(),
+            notice: viewer.notice(),
+            thread: viewer.thread_at_cursor(),
+            editor,
+            theme: *theme,
+        };
+        *hits = HitMap::default();
+        terminal
+            .draw(|frame| {
+                *page_rows = frame
+                    .area()
+                    .height
+                    .saturating_sub(text_pane::CHROME_ROWS)
+                    .max(1) as usize;
+                text_pane::draw(frame, &view, text_top);
+            })
+            .map(|_| ())
+            .map_err(|e| FrontendError(e.to_string()))
+    }
+}
+
+impl Frontend for TerminalFrontend {
+    fn draw(&mut self, viewer: &Viewer) -> Result<(), FrontendError> {
+        self.input_mode = match viewer.mode() {
+            Mode::Grid => InputMode::Grid,
+            Mode::Editing { .. } => InputMode::Editing,
+            Mode::SheetPicker { .. } => InputMode::Picker,
+            Mode::Search { .. } => InputMode::Search,
+            Mode::Notes { .. } => InputMode::Notes,
+        };
+        let editor = match viewer.mode() {
+            Mode::Editing { target, at, buffer } => Some(EditorView {
+                kind: match target {
+                    EditTarget::NewThread => grid::EditorKind::Comment,
+                    EditTarget::Reply => grid::EditorKind::Reply,
+                },
+                address: at.position(),
+                buffer,
+            }),
+            _ => None,
+        };
+        match viewer.shown() {
+            Shown::Sheet(sheet) => self.draw_grid(viewer, sheet, editor),
+            Shown::Text(document) => self.draw_text(viewer, document, editor),
+        }
     }
 
     fn next_event(&mut self) -> Result<Event, FrontendError> {

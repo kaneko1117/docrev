@@ -147,7 +147,15 @@ pub fn draw(frame: &mut Frame, view: &GridView, scroll: &mut Scroll) -> HitMap {
     let docked = view.editor.is_some()
         && panel_area.is_some_and(|panel| panel.height >= panel::MIN_DOCKED_EDITOR);
     if let Some(area) = panel_area {
-        panel::draw_panel(p, frame, area, view, docked);
+        panel::draw_panel(
+            p,
+            frame,
+            area,
+            view.thread,
+            view.editor.as_ref(),
+            docked,
+            None,
+        );
     }
     if !docked {
         if let Some(editor) = &view.editor {

@@ -1,0 +1,11 @@
+---
+source: src/ui/text_pane.rs
+expression: out
+---
+ README.md                    line 5/12
+    2 │ line 2
+    3 │ line 3
+    4 │ line 4
+    5 │ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      │ xxxxxxxx
+                                  q:quit

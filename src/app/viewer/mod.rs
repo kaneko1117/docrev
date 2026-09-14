@@ -137,6 +137,12 @@ enum Body {
     Text(TextState),
 }
 
+/// What the viewer shows, for a frontend to draw.
+pub enum Shown<'a> {
+    Sheet(&'a Sheet),
+    Text(&'a TextDocument),
+}
+
 pub struct Viewer {
     body: Body,
     quit: bool,
@@ -233,6 +239,13 @@ impl Viewer {
         }
     }
 
+    pub fn shown(&self) -> Shown<'_> {
+        match &self.body {
+            Body::Grid(grid) => Shown::Sheet(grid.sheet()),
+            Body::Text(text) => Shown::Text(text.document()),
+        }
+    }
+
     /// `None` for a workbook.
     pub fn text(&self) -> Option<&TextDocument> {
         match &self.body {
@@ -250,6 +263,27 @@ impl Viewer {
             }
             Body::Text(text) => comments::thread_on_line(&self.comments, text.line() as u32),
         }
+    }
+
+    /// The document's path; `None` for a viewer built without a source.
+    pub fn path(&self) -> Option<&Path> {
+        self.source.as_ref().map(|(_, path)| path.as_path())
+    }
+
+    /// Lines with an unresolved thread; empty for a workbook, and a line past the end is left out.
+    pub fn unresolved_lines(&self) -> Vec<usize> {
+        let Some(text) = self.text() else {
+            return Vec::new();
+        };
+        self.comments
+            .iter()
+            .filter(|t| !t.resolved)
+            .filter_map(|t| match t.anchor {
+                Anchor::Line { line } => Some(line as usize),
+                Anchor::Cell { .. } => None,
+            })
+            .filter(|&line| line < text.len())
+            .collect()
     }
 
     /// (row, col) per unresolved thread; empty for a text document.

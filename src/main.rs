@@ -9,7 +9,6 @@ use docrev::adapter::json_comment_store::{self, JsonCommentStore};
 use docrev::adapter::terminal_frontend::TerminalFrontend;
 use docrev::app::comments;
 use docrev::app::dump::{DumpView, dump};
-use docrev::app::ports::{DocumentKind, DocumentSource};
 use docrev::app::viewer::{self, Viewer};
 use docrev::infra::terminal;
 use docrev::ui::theme::Theme;
@@ -18,7 +17,7 @@ use docrev::ui::{comment_list, lines, table};
 #[derive(Parser)]
 #[command(name = "docrev", version, about)]
 struct Cli {
-    /// Open a document (.xlsx) in the TUI viewer
+    /// Open a document (.xlsx, .md) in the TUI viewer
     file: Option<PathBuf>,
     /// Viewer colors: `sheets` or `terminal` [env: DOCREV_THEME]
     #[arg(long, value_parser = parse_theme)]
@@ -228,12 +227,6 @@ fn print_stdout(text: &str) -> ExitCode {
 }
 
 fn run_viewer(file: &Path, theme: Theme) -> ExitCode {
-    // the text pane is not drawn yet, so a text document is refused before the terminal opens
-    if ByExtension.kind(file) == DocumentKind::Text {
-        return fail(
-            &"the viewer does not open text documents yet; use `docrev dump` and `docrev comment`",
-        );
-    }
     let store = JsonCommentStore::for_document(file);
     let viewer = match Viewer::open(Box::new(ByExtension), Box::new(store), file) {
         Ok(viewer) => viewer,
