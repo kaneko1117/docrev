@@ -363,26 +363,54 @@ fn delimited(chars: &[char], open: &[char], close: &[char]) -> Option<(String, u
     None
 }
 
-/// `[label](url)` -> `(label, chars consumed)`.
-fn link(chars: &[char]) -> Option<(String, usize)> {
+/// `[label](url)` -> `(label, url, chars consumed)`.
+fn bracketed(chars: &[char]) -> Option<(String, String, usize)> {
     if chars.first() != Some(&'[') {
         return None;
     }
     let close = chars.iter().position(|&c| c == ']')?;
-    if close == 0 || chars.get(close + 1) != Some(&'(') {
+    if chars.get(close + 1) != Some(&'(') {
         return None;
     }
     let end = chars[close + 2..].iter().position(|&c| c == ')')? + close + 2;
-    Some((chars[1..close].iter().collect(), end + 1))
+    Some((
+        chars[1..close].iter().collect(),
+        chars[close + 2..end].iter().collect(),
+        end + 1,
+    ))
 }
 
-/// `![alt](url)` -> `(alt, chars consumed)`; the `!` is dropped with the rest of the markers.
+/// `[label](url)` -> `(label, chars consumed)`.
+fn link(chars: &[char]) -> Option<(String, usize)> {
+    let (label, _, len) = bracketed(chars)?;
+    Some((label, len))
+}
+
+/// `![alt](url)` -> `(alt, chars consumed)`; an empty alt shows `[image: <file name>]` instead.
 fn image(chars: &[char]) -> Option<(String, usize)> {
     if chars.first() != Some(&'!') {
         return None;
     }
-    let (label, len) = link(&chars[1..])?;
+    let (alt, url, len) = bracketed(&chars[1..])?;
+    let label = if alt.trim().is_empty() {
+        match file_name(&url) {
+            Some(name) => format!("[image: {name}]"),
+            None => "[image]".to_string(),
+        }
+    } else {
+        alt
+    };
     Some((label, len + 1))
+}
+
+/// The last path segment of a link target, its title, query and fragment aside.
+fn file_name(url: &str) -> Option<&str> {
+    let target = url.split_whitespace().next()?;
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 #[cfg(test)]
@@ -515,6 +543,32 @@ mod tests {
         assert_eq!(
             runs("> quoted"),
             vec![(">", Face::Quote), (" quoted", Face::Plain)]
+        );
+    }
+
+    #[test]
+    fn an_image_without_alt_text_shows_its_file_name() {
+        assert_eq!(
+            runs("![](empty.png)"),
+            vec![("[image: empty.png]", Face::Link)]
+        );
+        assert_eq!(
+            runs("see ![ ](https://x.com/a/b.png?v=1#top) here"),
+            vec![
+                ("see ", Face::Plain),
+                ("[image: b.png]", Face::Link),
+                (" here", Face::Plain)
+            ]
+        );
+        assert_eq!(
+            runs(r#"![](pics/c.png "a title")"#),
+            vec![("[image: c.png]", Face::Link)]
+        );
+        assert_eq!(runs("![]()"), vec![("[image]", Face::Link)]);
+        assert_eq!(
+            runs("![named](d.png)"),
+            vec![("named", Face::Link)],
+            "alt text still wins"
         );
     }
 
