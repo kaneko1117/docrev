@@ -1,15 +1,63 @@
+/// How a run of text is shown; the markup that produced it is not part of the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    Plain,
+    /// 1 to 6.
+    Heading(u8),
+    Bold,
+    Italic,
+    Strike,
+    Code,
+    /// A whole line inside a fenced block, or the fence itself.
+    CodeBlock,
+    /// The `•`, `☐` or `☑` put in place of a list marker.
+    ListMarker,
+    Link,
+    /// The `>` of a quote, kept but dimmed.
+    Quote,
+    /// A line of the leading `---` block.
+    FrontMatter,
+    /// A thematic break, drawn across the whole width whatever its text.
+    Rule,
+    /// A table's `│` borders and its header separator.
+    TableEdge,
+}
+
+/// (text as shown, how it is shown).
+pub type Run = (String, Face);
+
 /// 0-based lines of a text file; a trailing newline does not open an empty last line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextDocument {
     lines: Vec<String>,
+    /// Line `i` as it is shown, one entry per line.
+    shown: Vec<Vec<Run>>,
 }
 
 impl TextDocument {
-    /// `\r` before a newline is dropped.
+    /// `\r` before a newline is dropped; every line is shown as written.
     pub fn new(text: &str) -> Self {
-        Self {
-            lines: text.lines().map(str::to_string).collect(),
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let shown = lines
+            .iter()
+            .map(|line| vec![(line.clone(), Face::Plain)])
+            .collect();
+        Self { lines, shown }
+    }
+
+    /// Missing entries are shown as written and extra ones are dropped, so each line keeps one.
+    pub fn with_shown(mut self, mut shown: Vec<Vec<Run>>) -> Self {
+        shown.truncate(self.lines.len());
+        for line in &self.lines[shown.len()..] {
+            shown.push(vec![(line.clone(), Face::Plain)]);
         }
+        self.shown = shown;
+        self
+    }
+
+    /// Empty past the last line.
+    pub fn shown(&self, index: usize) -> &[Run] {
+        self.shown.get(index).map_or(&[][..], Vec::as_slice)
     }
 
     pub fn line(&self, index: usize) -> Option<&str> {
@@ -39,6 +87,22 @@ mod tests {
         assert_eq!(TextDocument::new("a\nb\n").len(), 2);
         assert_eq!(TextDocument::new("a\n\nb\n").lines(), ["a", "", "b"]);
         assert!(TextDocument::new("").is_empty());
+    }
+
+    #[test]
+    fn every_line_keeps_exactly_one_shown_line() {
+        let document = TextDocument::new("# a\nb\n");
+        assert_eq!(document.shown(0), [("# a".to_string(), Face::Plain)]);
+        let document = document.with_shown(vec![vec![("a".to_string(), Face::Heading(1))]]);
+        assert_eq!(document.shown(0), [("a".to_string(), Face::Heading(1))]);
+        assert_eq!(
+            document.shown(1),
+            [("b".to_string(), Face::Plain)],
+            "a missing entry is shown as written"
+        );
+        assert!(document.shown(2).is_empty());
+        let extra = TextDocument::new("x\n").with_shown(vec![Vec::new(); 5]);
+        assert_eq!(extra.shown.len(), 1, "extra entries are dropped");
     }
 
     #[test]

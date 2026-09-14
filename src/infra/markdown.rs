@@ -1,31 +1,6 @@
 //! Line-preserving Markdown: one source line always yields one styled line.
 
-/// How a run of text is drawn; markers that produced it are dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Face {
-    Plain,
-    /// 1 to 6.
-    Heading(u8),
-    Bold,
-    Italic,
-    Strike,
-    Code,
-    /// A whole line inside a fenced block, or the fence itself.
-    CodeBlock,
-    /// The `•`, `☐` or `☑` put in place of the list marker.
-    ListMarker,
-    Link,
-    /// The `>` of a quote, kept but dimmed.
-    Quote,
-    /// A line of the leading `---` block.
-    FrontMatter,
-    /// A thematic break; the pane draws it across its width.
-    Rule,
-    /// A table's `│` borders and its header separator.
-    TableEdge,
-}
-
-pub(crate) type Run = (String, Face);
+use crate::domain::text_document::{Face, Run};
 
 /// What a line is, decided by looking at the lines around it; a table line carries its table's id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +41,23 @@ impl Blocks {
     pub(crate) fn render(&self, text: &str, line: usize) -> Vec<Run> {
         render_line(text, self.kind(line), self.columns(line))
     }
+}
+
+/// Every line as it is shown, one entry per line; blocks are read from the source as written and
+/// only the shown text has control characters turned into spaces.
+pub fn shown_lines(lines: &[String]) -> Vec<Vec<Run>> {
+    let blocks = blocks(lines.iter().map(String::as_str));
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let clean: String = line
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            blocks.render(&clean, i)
+        })
+        .collect()
 }
 
 /// One entry per line; blocks are decided in order, so a fence wins over a table.
@@ -445,6 +437,46 @@ mod tests {
         runs.into_iter()
             .map(|(text, face)| (Box::leak(text.into_boxed_str()) as &str, face))
             .collect()
+    }
+
+    #[test]
+    fn shown_lines_render_every_line_with_its_block() {
+        let lines: Vec<String> = "# T\n|a|\n|-|\n\tx".lines().map(str::to_string).collect();
+        let shown = shown_lines(&lines);
+        assert_eq!(shown.len(), 4);
+        assert_eq!(shown[0], vec![("T".to_string(), Face::Heading(1))]);
+        assert_eq!(shown[2], vec![("├───┤".to_string(), Face::TableEdge)]);
+        assert_eq!(
+            shown[3],
+            vec![
+                (" ".to_string(), Face::Plain),
+                ("x".to_string(), Face::Plain)
+            ],
+            "a tab is shown as a space"
+        );
+    }
+
+    #[test]
+    fn blocks_are_read_before_control_characters_are_blanked() {
+        let lines = |text: &str| text.lines().map(str::to_string).collect::<Vec<_>>();
+        let table = shown_lines(&lines("| a | b |\n|-\t-|---|\n| 1 | 2 |"));
+        assert_eq!(
+            table[1],
+            vec![("|- -|---|".to_string(), Face::Plain)],
+            "a tab in the separator row means there is no table"
+        );
+        let fence = shown_lines(&lines("a\n\0```\n**x**\n\0```"));
+        assert_eq!(
+            fence[2],
+            vec![("x".to_string(), Face::Bold)],
+            "a control character before ``` means there is no fence"
+        );
+        let front = shown_lines(&lines("---\x1b\ntitle: x\n---\n# H"));
+        assert_eq!(
+            front[1],
+            vec![("title: x".to_string(), Face::Plain)],
+            "a control character after --- means there is no front matter"
+        );
     }
 
     #[test]
