@@ -17,7 +17,7 @@ use crate::ui::grid::{
     self, EditorView, GridView, Hit, HitMap, NoteView, NotesView, PickerItem, PickerView, Scroll,
     SearchView,
 };
-use crate::ui::text_pane::{self, TextView};
+use crate::ui::text_pane::{self, TextHits, TextView};
 use crate::ui::theme::Theme;
 
 /// Input wait before a `Tick`.
@@ -41,7 +41,7 @@ pub struct TerminalFrontend {
     text_top: usize,
     page_rows: usize,
     input_mode: InputMode,
-    hits: HitMap,
+    hits: Hits,
     drag: DragState,
 }
 
@@ -54,7 +54,7 @@ impl TerminalFrontend {
             text_top: 0,
             page_rows: 1,
             input_mode: InputMode::Grid,
-            hits: HitMap::default(),
+            hits: Hits::Grid(HitMap::default()),
             drag: DragState::default(),
         }
     }
@@ -67,26 +67,40 @@ struct DragState {
     dragged: bool,
 }
 
-fn map_mouse(hits: &HitMap, mode: InputMode, drag: &mut DragState, mouse: MouseEvent) -> Event {
+/// The click targets of the last drawn screen.
+enum Hits {
+    Grid(HitMap),
+    Text(TextHits),
+}
+
+fn map_mouse(hits: &Hits, mode: InputMode, drag: &mut DragState, mouse: MouseEvent) -> Event {
     let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
     let step: isize = match mode {
         InputMode::Picker | InputMode::Search => 1,
         _ => 3,
     };
     match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => match hits.at(mouse.column, mouse.row) {
-            Some(Hit::Cell { row, col }) => {
-                drag.pressed = true;
-                drag.dragged = false;
-                Event::SelectCell { row, col }
-            }
-            Some(Hit::Tab(index)) => Event::SelectSheet(index),
-            Some(Hit::PrevTabs) => Event::PrevSheet,
-            Some(Hit::NextTabs) => Event::NextSheet,
-            None => Event::Noop,
+        MouseEventKind::Down(MouseButton::Left) => match hits {
+            Hits::Text(text) => text
+                .at(mouse.column, mouse.row)
+                .map_or(Event::Noop, Event::SelectLine),
+            Hits::Grid(grid) => match grid.at(mouse.column, mouse.row) {
+                Some(Hit::Cell { row, col }) => {
+                    drag.pressed = true;
+                    drag.dragged = false;
+                    Event::SelectCell { row, col }
+                }
+                Some(Hit::Tab(index)) => Event::SelectSheet(index),
+                Some(Hit::PrevTabs) => Event::PrevSheet,
+                Some(Hit::NextTabs) => Event::NextSheet,
+                None => Event::Noop,
+            },
         },
         MouseEventKind::Drag(MouseButton::Left) if drag.pressed => {
-            match hits.at(mouse.column, mouse.row) {
+            let Hits::Grid(grid) = hits else {
+                return Event::Noop;
+            };
+            match grid.at(mouse.column, mouse.row) {
                 Some(Hit::Cell { row, col }) => {
                     drag.dragged = true;
                     Event::DragTo { row, col }
@@ -211,13 +225,12 @@ impl TerminalFrontend {
         terminal
             .draw(|frame| {
                 *page_rows = frame.area().height.saturating_sub(grid::CHROME_ROWS).max(1) as usize;
-                *hits = grid::draw(frame, &view, scroll);
+                *hits = Hits::Grid(grid::draw(frame, &view, scroll));
             })
             .map(|_| ())
             .map_err(|e| FrontendError(e.to_string()))
     }
 
-    /// Mouse hits are cleared: nothing on the text screen resolves to a cell yet.
     fn draw_text(
         &mut self,
         viewer: &Viewer,
@@ -247,7 +260,6 @@ impl TerminalFrontend {
             editor,
             theme: *theme,
         };
-        *hits = HitMap::default();
         terminal
             .draw(|frame| {
                 *page_rows = frame
@@ -255,7 +267,7 @@ impl TerminalFrontend {
                     .height
                     .saturating_sub(text_pane::CHROME_ROWS)
                     .max(1) as usize;
-                text_pane::draw(frame, &view, text_top);
+                *hits = Hits::Text(text_pane::draw(frame, &view, text_top));
             })
             .map(|_| ())
             .map_err(|e| FrontendError(e.to_string()))
@@ -559,7 +571,7 @@ mod tests {
 
     #[test]
     fn a_click_resolves_to_a_cell_and_a_plain_click_never_copies() {
-        let hits = hitmap();
+        let hits = Hits::Grid(hitmap());
         let mut drag = DragState::default();
         // y=1 is the column header, y=2 the first body line
         assert_eq!(
@@ -585,7 +597,7 @@ mod tests {
 
     #[test]
     fn a_drag_crosses_cells_and_release_ends_it() {
-        let hits = hitmap();
+        let hits = Hits::Grid(hitmap());
         let mut drag = DragState::default();
         map_mouse(
             &hits,
@@ -624,7 +636,7 @@ mod tests {
 
     #[test]
     fn tabs_arrows_and_dead_zones_resolve() {
-        let hits = hitmap();
+        let hits = Hits::Grid(hitmap());
         let mut drag = DragState::default();
         let down = |x, y| mouse(MouseEventKind::Down(MouseButton::Left), x, y);
         assert_eq!(
@@ -652,8 +664,61 @@ mod tests {
     }
 
     #[test]
+    fn a_click_on_the_text_pane_selects_the_line_under_it() {
+        let hits = Hits::Text(TextHits {
+            pane: ratatui::layout::Rect {
+                x: 0,
+                y: 1,
+                width: 30,
+                height: 5,
+            },
+            lines: vec![0, 1, 1, 2],
+        });
+        let mut drag = DragState::default();
+        let down = |x, y| mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(5, 1)),
+            Event::SelectLine(0)
+        );
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(5, 3)),
+            Event::SelectLine(1),
+            "a wrapped row belongs to its line"
+        );
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(5, 5)),
+            Event::Noop,
+            "below the last row"
+        );
+        assert_eq!(
+            map_mouse(&hits, InputMode::Grid, &mut drag, down(35, 2)),
+            Event::Noop,
+            "the panel is not the pane"
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::Up(MouseButton::Left), 5, 1)
+            ),
+            Event::Noop,
+            "a release after a line click is not a drag"
+        );
+        assert_eq!(
+            map_mouse(
+                &hits,
+                InputMode::Grid,
+                &mut drag,
+                mouse(MouseEventKind::ScrollDown, 5, 2)
+            ),
+            Event::Move { rows: 3, cols: 0 }
+        );
+    }
+
+    #[test]
     fn the_wheel_moves_the_cursor_and_prompts_step_by_one() {
-        let hits = HitMap::default();
+        let hits = Hits::Grid(HitMap::default());
         let mut drag = DragState::default();
         assert_eq!(
             map_mouse(

@@ -33,6 +33,23 @@ pub struct TextView<'a> {
     pub theme: Theme,
 }
 
+/// Click targets of the last drawn pane; `lines[i]` is the 0-based line on the pane's row `i`.
+#[derive(Debug, Default, Clone)]
+pub struct TextHits {
+    pub(crate) pane: Rect,
+    pub(crate) lines: Vec<usize>,
+}
+
+impl TextHits {
+    /// `None` outside the pane or below its last drawn row.
+    pub fn at(&self, x: u16, y: u16) -> Option<usize> {
+        if !self.pane.contains(ratatui::layout::Position { x, y }) {
+            return None;
+        }
+        self.lines.get((y - self.pane.y) as usize).copied()
+    }
+}
+
 /// One screen row of the pane: `first` marks the row that carries the line number.
 struct Row {
     line: usize,
@@ -40,7 +57,7 @@ struct Row {
     runs: Vec<Run>,
 }
 
-pub fn draw(frame: &mut Frame, view: &TextView, top: &mut usize) {
+pub fn draw(frame: &mut Frame, view: &TextView, top: &mut usize) -> TextHits {
     let p = &view.theme.palette();
     let [title_area, main_area, status_area] = Layout::vertical([
         Constraint::Length(1),
@@ -60,7 +77,7 @@ pub fn draw(frame: &mut Frame, view: &TextView, top: &mut usize) {
         None => (main_area, None),
     };
     draw_title(p, frame, title_area, view);
-    draw_pane(p, frame, pane_area, view, top);
+    let lines = draw_pane(p, frame, pane_area, view, top);
     let docked = view.editor.is_some()
         && panel_area.is_some_and(|panel| panel.height >= panel::MIN_DOCKED_EDITOR);
     if let Some(area) = panel_area {
@@ -79,6 +96,10 @@ pub fn draw(frame: &mut Frame, view: &TextView, top: &mut usize) {
         panel::draw_editor_overlay(p, frame, editor);
     }
     draw_status(p, frame, status_area, view);
+    TextHits {
+        pane: pane_area,
+        lines,
+    }
 }
 
 /// The position always fits; a long name is clipped to make room.
@@ -127,10 +148,17 @@ fn draw_status(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView) {
     frame.render_widget(Paragraph::new(line).style(chrome(p)), area);
 }
 
-fn draw_pane(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView, top: &mut usize) {
+/// The 0-based line drawn on each row of the pane, top to bottom.
+fn draw_pane(
+    p: &Palette,
+    frame: &mut Frame,
+    area: Rect,
+    view: &TextView,
+    top: &mut usize,
+) -> Vec<usize> {
     if view.document.is_empty() {
         frame.render_widget(Paragraph::new("(empty file)").style(canvas(p)), area);
-        return;
+        return Vec::new();
     }
     let number_width = view.document.len().to_string().len();
     // " ● " + number + " │ "
@@ -182,6 +210,7 @@ fn draw_pane(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView, top: &
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).style(canvas(p)), area);
+    rows.iter().map(|row| row.line).collect()
 }
 
 /// The face adds to the row's base style, so the cursor row keeps its background.
@@ -309,7 +338,11 @@ mod tests {
 
     fn render(view: &TextView, top: &mut usize, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| draw(f, view, top)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, view, top);
+            })
+            .unwrap();
         buffer_text(terminal.backend().buffer())
     }
 
@@ -363,7 +396,11 @@ mod tests {
         );
         let v = view(&document, 5);
         let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
-        terminal.draw(|f| draw(f, &v, &mut 0)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &v, &mut 0);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer();
         insta::assert_snapshot!(buffer_text(buffer));
         let cell = |x: u16, y: u16| buffer.cell((x, y)).unwrap();
@@ -401,8 +438,38 @@ mod tests {
         );
         let v = view(&document, 0);
         let mut terminal = Terminal::new(TestBackend::new(80, 18)).unwrap();
-        terminal.draw(|f| draw(f, &v, &mut 0)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, &v, &mut 0);
+            })
+            .unwrap();
         insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    #[test]
+    fn draw_reports_which_line_each_pane_row_shows() {
+        let document = TextDocument::new(&format!("one\n{}\nthree\n", "x".repeat(60)));
+        let v = view(&document, 0);
+        let mut terminal = Terminal::new(TestBackend::new(70, 8)).unwrap();
+        let mut hits = TextHits::default();
+        terminal.draw(|f| hits = draw(f, &v, &mut 0)).unwrap();
+        let (x, y) = (hits.pane.x, hits.pane.y);
+        assert_eq!(hits.lines, vec![0, 1, 1, 2]);
+        assert_eq!(hits.at(x, y + 1), Some(1));
+        assert_eq!(
+            hits.at(x, y + 2),
+            Some(1),
+            "a wrapped row belongs to its line"
+        );
+        assert_eq!(hits.at(x, y + 3), Some(2));
+        assert_eq!(hits.at(x, y + 4), None, "below the last row");
+        assert_eq!(hits.at(x, 0), None, "the title bar");
+        assert_eq!(hits.at(x + hits.pane.width, y), None, "the panel");
+        let empty = TextDocument::new("");
+        terminal
+            .draw(|f| hits = draw(f, &view(&empty, 0), &mut 0))
+            .unwrap();
+        assert_eq!(hits.at(x, y), None, "an empty file has no lines to click");
     }
 
     #[test]
