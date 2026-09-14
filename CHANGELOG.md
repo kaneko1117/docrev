@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/kaneko1117/docrev/compare/v0.5.0...v0.6.0) - 2026-09-14
+
+### Added
+
+- keep comment drafts per cell and line while moving the cursor
+- drag across lines of a text document to copy them
+- search a text document with Ctrl+F
+- select a line of a text document with a mouse click
+- comment on a line of a text document with c
+- render tables, task lists, rules, images, strikethrough and front matter
+- render Markdown line by line in the text pane
+- draw text documents in the viewer
+- give the viewer a text body with a line cursor
+- read Markdown files and drive line comments from the CLI
+- [**breaking**] add a line anchor and a text document model, sidecar version 2
+
+### Changed
+
+- interpret Markdown once at load and keep how each line is shown
+- move the sheet-bound viewer state into Grid
+
+### Documentation
+
+- document Markdown support in the README and the review skill
+
+### Fixed
+
+- show the file name for an image without alt text
+
 ## [0.5.0](https://github.com/kaneko1117/docrev/compare/v0.4.0...v0.5.0) - 2026-09-10
 
 ### Fixed
