@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -10,9 +10,10 @@ use crate::domain::comment::CommentThread;
 use crate::domain::text_document::TextDocument;
 
 use super::grid::EditorView;
+use super::markdown::{self, Face, Run};
 use super::panel;
 use super::style::{canvas, chrome, header, selected};
-use super::text::{clip, sanitize, wrap};
+use super::text::{clip, sanitize};
 use super::theme::{Palette, Theme};
 
 /// Title bar + status bar.
@@ -36,7 +37,16 @@ pub struct TextView<'a> {
 struct Row {
     line: usize,
     first: bool,
-    text: String,
+    runs: Vec<Run>,
+}
+
+impl Row {
+    fn width(&self) -> usize {
+        self.runs
+            .iter()
+            .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
+            .sum()
+    }
 }
 
 pub fn draw(frame: &mut Frame, view: &TextView, top: &mut usize) {
@@ -155,18 +165,39 @@ fn draw_pane(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView, top: &
             } else {
                 " ".repeat(number_width)
             };
-            let padding =
-                text_width.saturating_sub(unicode_width::UnicodeWidthStr::width(row.text.as_str()));
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(" ", gutter_style),
                 Span::styled(marker, gutter_style.fg(p.marker_fg)),
                 Span::styled(format!(" {number} │ "), gutter_style),
-                Span::styled(row.text.clone(), text_style),
-                Span::styled(" ".repeat(padding), text_style),
-            ])
+            ];
+            spans.extend(
+                row.runs
+                    .iter()
+                    .map(|(text, face)| Span::styled(text.clone(), faced(p, text_style, *face))),
+            );
+            let padding = text_width.saturating_sub(row.width());
+            spans.push(Span::styled(" ".repeat(padding), text_style));
+            Line::from(spans)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).style(canvas(p)), area);
+}
+
+/// The face adds to the row's base style, so the cursor row keeps its background.
+fn faced(p: &Palette, base: Style, face: Face) -> Style {
+    match face {
+        Face::Plain => base,
+        Face::Heading(1) => base
+            .fg(p.heading_fg)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        Face::Heading(_) => base.fg(p.heading_fg).add_modifier(Modifier::BOLD),
+        Face::Bold => base.add_modifier(Modifier::BOLD),
+        Face::Italic => base.add_modifier(Modifier::ITALIC),
+        Face::Code | Face::CodeBlock => base.bg(p.header_bg),
+        Face::ListMarker => base.fg(p.marker_fg),
+        Face::Link => base.fg(p.user_fg).add_modifier(Modifier::UNDERLINED),
+        Face::Quote => base.add_modifier(Modifier::DIM),
+    }
 }
 
 /// Rows from `top`, with `top` moved so every row of the cursor line is on screen and the pane
@@ -179,11 +210,11 @@ fn layout(
     top: &mut usize,
 ) -> Vec<Row> {
     let len = document.len();
+    let fenced = markdown::fenced_lines(document.lines().iter().map(String::as_str));
     let wrapped = |line: usize| {
-        wrap(
-            &sanitize(document.line(line).unwrap_or_default()),
-            text_width,
-        )
+        let text = sanitize(document.line(line).unwrap_or_default());
+        let runs = markdown::render_line(&text, fenced.get(line).copied().unwrap_or(false));
+        wrap_runs(runs, text_width)
     };
     let rows_in = |line: usize| wrapped(line).len();
     let cursor = cursor.min(len.saturating_sub(1));
@@ -212,13 +243,41 @@ fn layout(
         if rows.len() >= height {
             break;
         }
-        rows.extend(wrapped(line).into_iter().enumerate().map(|(i, text)| Row {
+        rows.extend(wrapped(line).into_iter().enumerate().map(|(i, runs)| Row {
             line,
             first: i == 0,
-            text,
+            runs,
         }));
     }
     rows.truncate(height);
+    rows
+}
+
+/// Breaks runs into rows of at most `width` cells; a char wider than `width` still gets a row so
+/// the loop makes progress, and an empty line is one empty row.
+fn wrap_runs(runs: Vec<Run>, width: usize) -> Vec<Vec<Run>> {
+    let mut rows: Vec<Vec<Run>> = Vec::new();
+    let mut row: Vec<Run> = Vec::new();
+    let mut used = 0;
+    for (text, face) in runs {
+        let mut piece = String::new();
+        for ch in text.chars() {
+            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + w > width.max(1) && used > 0 {
+                if !piece.is_empty() {
+                    row.push((std::mem::take(&mut piece), face));
+                }
+                rows.push(std::mem::take(&mut row));
+                used = 0;
+            }
+            piece.push(ch);
+            used += w;
+        }
+        if !piece.is_empty() {
+            row.push((piece, face));
+        }
+    }
+    rows.push(row);
     rows
 }
 
@@ -280,6 +339,44 @@ mod tests {
         v.notice = Some("comments unavailable: boom");
         let mut top = 0;
         insta::assert_snapshot!(render(&v, &mut top, 70, 9));
+    }
+
+    #[test]
+    fn markdown_is_rendered_line_by_line_with_its_markers_hidden() {
+        let document = TextDocument::new(
+            "# Title\n- run `docrev` **now**\n```\nlet **raw** = 1;\n```\n> see [docs](https://x)\n",
+        );
+        let v = view(&document, 5);
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        terminal.draw(|f| draw(f, &v, &mut 0)).unwrap();
+        let buffer = terminal.backend().buffer();
+        insta::assert_snapshot!(buffer_text(buffer));
+        let cell = |x: u16, y: u16| buffer.cell((x, y)).unwrap();
+        // " ● 1 │ " is 7 cells wide, so text starts at x = 7
+        assert!(
+            cell(7, 1).modifier.contains(Modifier::BOLD),
+            "heading is bold"
+        );
+        assert_eq!(cell(7, 1).fg, Theme::Sheets.palette().heading_fg);
+        assert_eq!(cell(7, 2).symbol(), "•");
+        assert_eq!(
+            cell(13, 2).bg,
+            Theme::Sheets.palette().header_bg,
+            "inline code"
+        );
+        assert!(cell(20, 2).modifier.contains(Modifier::BOLD), "**now**");
+        assert_eq!(cell(7, 4).symbol(), "l", "fenced code keeps its markers");
+        assert_eq!(cell(11, 4).symbol(), "*");
+        assert_eq!(
+            cell(7, 4).bg,
+            Theme::Sheets.palette().header_bg,
+            "code block"
+        );
+        assert!(
+            cell(13, 6).modifier.contains(Modifier::UNDERLINED),
+            "link label"
+        );
+        assert_eq!(cell(7, 6).symbol(), ">", "quote mark kept");
     }
 
     #[test]
@@ -376,16 +473,22 @@ mod tests {
         let mut top = 0;
         let rows = layout(&document, 10, 3, 2, &mut top);
         assert_eq!(top, 1, "line 1 scrolls off so both rows of line 3 fit");
-        let shape: Vec<(usize, bool, &str)> = rows
+        let shape: Vec<(usize, bool, String)> = rows
             .iter()
-            .map(|r| (r.line, r.first, r.text.as_str()))
+            .map(|r| {
+                (
+                    r.line,
+                    r.first,
+                    r.runs.iter().map(|(t, _)| t.as_str()).collect(),
+                )
+            })
             .collect();
         assert_eq!(
             shape,
             vec![
-                (1, true, "b"),
-                (2, true, "cccccccccc"),
-                (2, false, "dddddddddd")
+                (1, true, "b".to_string()),
+                (2, true, "cccccccccc".to_string()),
+                (2, false, "dddddddddd".to_string())
             ]
         );
     }
