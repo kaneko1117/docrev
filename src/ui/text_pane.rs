@@ -40,15 +40,6 @@ struct Row {
     runs: Vec<Run>,
 }
 
-impl Row {
-    fn width(&self) -> usize {
-        self.runs
-            .iter()
-            .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
-            .sum()
-    }
-}
-
 pub fn draw(frame: &mut Frame, view: &TextView, top: &mut usize) {
     let p = &view.theme.palette();
     let [title_area, main_area, status_area] = Layout::vertical([
@@ -170,12 +161,16 @@ fn draw_pane(p: &Palette, frame: &mut Frame, area: Rect, view: &TextView, top: &
                 Span::styled(marker, gutter_style.fg(p.marker_fg)),
                 Span::styled(format!(" {number} │ "), gutter_style),
             ];
+            let runs = &row.runs;
+            let width: usize = runs
+                .iter()
+                .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
+                .sum();
             spans.extend(
-                row.runs
-                    .iter()
+                runs.iter()
                     .map(|(text, face)| Span::styled(text.clone(), faced(p, text_style, *face))),
             );
-            let padding = text_width.saturating_sub(row.width());
+            let padding = text_width.saturating_sub(width);
             spans.push(Span::styled(" ".repeat(padding), text_style));
             Line::from(spans)
         })
@@ -196,7 +191,15 @@ fn faced(p: &Palette, base: Style, face: Face) -> Style {
         Face::Code | Face::CodeBlock => base.bg(p.header_bg),
         Face::ListMarker => base.fg(p.marker_fg),
         Face::Link => base.fg(p.user_fg).add_modifier(Modifier::UNDERLINED),
-        Face::Quote => base.add_modifier(Modifier::DIM),
+        Face::Quote | Face::FrontMatter => base.add_modifier(Modifier::DIM),
+        Face::Strike => base.add_modifier(Modifier::CROSSED_OUT),
+        Face::Rule | Face::TableEdge => {
+            if p.dim_chrome {
+                base.add_modifier(Modifier::DIM)
+            } else {
+                base.fg(p.gridline)
+            }
+        }
     }
 }
 
@@ -210,10 +213,16 @@ fn layout(
     top: &mut usize,
 ) -> Vec<Row> {
     let len = document.len();
-    let fenced = markdown::fenced_lines(document.lines().iter().map(String::as_str));
+    let blocks = markdown::blocks(document.lines().iter().map(String::as_str));
     let wrapped = |line: usize| {
         let text = sanitize(document.line(line).unwrap_or_default());
-        let runs = markdown::render_line(&text, fenced.get(line).copied().unwrap_or(false));
+        let runs = blocks.render(&text, line);
+        // a thematic break spans the pane on one row, whatever its source length
+        let runs = if matches!(runs.as_slice(), [(_, Face::Rule)]) {
+            vec![("─".repeat(text_width), Face::Rule)]
+        } else {
+            runs
+        };
         wrap_runs(runs, text_width)
     };
     let rows_in = |line: usize| wrapped(line).len();
@@ -380,6 +389,17 @@ mod tests {
     }
 
     #[test]
+    fn front_matter_tasks_tables_and_rules_are_drawn() {
+        let document = TextDocument::new(
+            "---\ntitle: notes\n---\n# Plan\n- [x] ship it\n- [ ] write docs\n\n| item | qty |\n|-------|-----|\n| apple | 3   |\n\n---\n\n~~dropped~~ and ![logo](l.png)\n",
+        );
+        let v = view(&document, 0);
+        let mut terminal = Terminal::new(TestBackend::new(80, 18)).unwrap();
+        terminal.draw(|f| draw(f, &v, &mut 0)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    #[test]
     fn a_line_without_a_thread_shows_an_empty_panel() {
         let document = TextDocument::new("one\ntwo\n");
         let v = view(&document, 1);
@@ -465,6 +485,19 @@ mod tests {
         let rows = layout(&document, 30, 4, 9, &mut top);
         assert_eq!(top, 6, "the last four lines fill the pane");
         assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn a_long_rule_stays_on_one_row() {
+        let document = TextDocument::new(&format!("before\n{}\nafter\n", "-".repeat(50)));
+        let rows = layout(&document, 33, 10, 0, &mut 0);
+        assert_eq!(rows.iter().filter(|r| r.line == 1).count(), 1);
+        let narrow = layout(&TextDocument::new("---\n"), 1, 5, 0, &mut 0);
+        assert_eq!(
+            narrow.len(),
+            1,
+            "a one-cell pane still draws the rule on one row"
+        );
     }
 
     #[test]

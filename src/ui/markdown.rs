@@ -8,39 +8,168 @@ pub(crate) enum Face {
     Heading(u8),
     Bold,
     Italic,
+    Strike,
     Code,
     /// A whole line inside a fenced block, or the fence itself.
     CodeBlock,
-    /// The `•` put in place of `-`, `*`, `+` or `1.`.
+    /// The `•`, `☐` or `☑` put in place of the list marker.
     ListMarker,
     Link,
     /// The `>` of a quote, kept but dimmed.
     Quote,
+    /// A line of the leading `---` block.
+    FrontMatter,
+    /// A thematic break; the pane draws it across its width.
+    Rule,
+    /// A table's `│` borders and its header separator.
+    TableEdge,
 }
 
 pub(crate) type Run = (String, Face);
 
-/// Which lines sit inside ``` fences, fence lines included.
-pub(crate) fn fenced_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<bool> {
-    let mut inside = false;
-    lines
-        .map(|line| {
-            if line.trim_start().starts_with("```") {
-                inside = !inside;
-                true
-            } else {
-                inside
-            }
-        })
-        .collect()
+/// What a line is, decided by looking at the lines around it; a table line carries its table's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Block {
+    Normal,
+    /// Inside a ``` fence, the fence lines included.
+    Code,
+    /// Inside the leading `---` block, the delimiters included.
+    FrontMatter,
+    /// The row above a table's separator.
+    TableHeader(usize),
+    TableRow(usize),
+    /// The `|---|---|` under the header.
+    TableRule(usize),
 }
 
-/// `fenced` lines are code verbatim; everything else is block markup then inline markup.
-pub(crate) fn render_line(line: &str, fenced: bool) -> Vec<Run> {
-    if fenced {
-        return vec![(line.to_string(), Face::CodeBlock)];
+/// Every line's block, plus the rendered column widths of each table found.
+pub(crate) struct Blocks {
+    kinds: Vec<Block>,
+    tables: Vec<Vec<usize>>,
+}
+
+impl Blocks {
+    pub(crate) fn kind(&self, line: usize) -> Block {
+        self.kinds.get(line).copied().unwrap_or(Block::Normal)
+    }
+
+    /// Empty unless the line belongs to a table.
+    fn columns(&self, line: usize) -> &[usize] {
+        match self.kind(line) {
+            Block::TableHeader(id) | Block::TableRow(id) | Block::TableRule(id) => {
+                self.tables.get(id).map_or(&[][..], Vec::as_slice)
+            }
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn render(&self, text: &str, line: usize) -> Vec<Run> {
+        render_line(text, self.kind(line), self.columns(line))
+    }
+}
+
+/// One entry per line; blocks are decided in order, so a fence wins over a table.
+pub(crate) fn blocks<'a>(lines: impl Iterator<Item = &'a str>) -> Blocks {
+    let lines: Vec<&str> = lines.collect();
+    let mut blocks = vec![Block::Normal; lines.len()];
+    let mut tables: Vec<Vec<usize>> = Vec::new();
+    let mut start = 0;
+    // front matter only counts when the file opens with it and closes it
+    let closing = lines
+        .first()
+        .filter(|line| line.trim_end() == "---")
+        .and_then(|_| lines[1..].iter().position(|line| line.trim_end() == "---"));
+    if let Some(close) = closing {
+        let end = close + 1;
+        for block in &mut blocks[..=end] {
+            *block = Block::FrontMatter;
+        }
+        start = end + 1;
+    }
+    let mut fenced = false;
+    for i in start..lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            fenced = !fenced;
+            blocks[i] = Block::Code;
+        } else if fenced {
+            blocks[i] = Block::Code;
+        }
+    }
+    for i in 0..lines.len() {
+        if blocks[i] != Block::Normal || !is_table_rule(lines[i]) {
+            continue;
+        }
+        let Some(header) = i.checked_sub(1) else {
+            continue;
+        };
+        if blocks[header] != Block::Normal || !lines[header].contains('|') {
+            continue;
+        }
+        let id = tables.len();
+        blocks[header] = Block::TableHeader(id);
+        blocks[i] = Block::TableRule(id);
+        let mut rows = vec![lines[header]];
+        for (j, line) in lines.iter().enumerate().skip(i + 1) {
+            if blocks[j] != Block::Normal || !line.contains('|') {
+                break;
+            }
+            blocks[j] = Block::TableRow(id);
+            rows.push(line);
+        }
+        tables.push(column_widths(&rows));
+    }
+    Blocks {
+        kinds: blocks,
+        tables,
+    }
+}
+
+/// The widest rendered cell of each column; the separator row is not measured.
+fn column_widths(rows: &[&str]) -> Vec<usize> {
+    let mut widths: Vec<usize> = Vec::new();
+    for row in rows {
+        for (i, cell) in cells(row).enumerate() {
+            let width = rendered_width(cell);
+            match widths.get_mut(i) {
+                Some(current) => *current = (*current).max(width),
+                None => widths.push(width),
+            }
+        }
+    }
+    widths
+}
+
+/// The width a cell takes once its markers are hidden.
+fn rendered_width(cell: &str) -> usize {
+    inline(cell.trim(), Face::Plain)
+        .iter()
+        .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
+        .sum()
+}
+
+/// The cells of a row, outer pipes aside; the text is not trimmed.
+fn cells(row: &str) -> impl Iterator<Item = &str> {
+    let trimmed = row.trim();
+    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
+    trimmed.split('|')
+}
+
+/// `columns` are the table's rendered column widths, empty outside a table.
+pub(crate) fn render_line(line: &str, block: Block, columns: &[usize]) -> Vec<Run> {
+    match block {
+        Block::Code => return vec![(line.to_string(), Face::CodeBlock)],
+        Block::FrontMatter => return vec![(line.to_string(), Face::FrontMatter)],
+        Block::TableRule(_) => return vec![(table_rule(columns), Face::TableEdge)],
+        Block::TableHeader(_) => return table_row(line, columns, Face::Bold),
+        Block::TableRow(_) => return table_row(line, columns, Face::Plain),
+        Block::Normal => {}
     }
     let (indent, rest) = split_indent(line);
+    // the pane fills the row, so a rule drops its indent
+    if is_rule(rest) {
+        return vec![(rest.to_string(), Face::Rule)];
+    }
     let mut runs: Vec<Run> = Vec::new();
     if !indent.is_empty() {
         runs.push((indent.to_string(), Face::Plain));
@@ -55,7 +184,12 @@ pub(crate) fn render_line(line: &str, fenced: bool) -> Vec<Run> {
         return runs;
     }
     if let Some(text) = list_item(rest) {
-        runs.push(("• ".to_string(), Face::ListMarker));
+        let (marker, text) = match task(text) {
+            Some((true, rest)) => ("☑ ", rest),
+            Some((false, rest)) => ("☐ ", rest),
+            None => ("• ", text),
+        };
+        runs.push((marker.to_string(), Face::ListMarker));
         runs.extend(inline(text, Face::Plain));
         return runs;
     }
@@ -66,6 +200,52 @@ pub(crate) fn render_line(line: &str, fenced: bool) -> Vec<Run> {
 fn split_indent(line: &str) -> (&str, &str) {
     let end = line.len() - line.trim_start().len();
     line.split_at(end)
+}
+
+/// Three or more of the same `-`, `*` or `_`, spaces aside.
+fn is_rule(text: &str) -> bool {
+    let marks: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    marks.len() >= 3
+        && matches!(marks[0], '-' | '*' | '_')
+        && marks.iter().all(|mark| *mark == marks[0])
+}
+
+/// A separator of dashes, colons and at least one `|`.
+fn is_table_rule(text: &str) -> bool {
+    let text = text.trim();
+    text.contains('|')
+        && text.contains('-')
+        && text.chars().all(|c| matches!(c, '-' | ':' | '|' | ' '))
+}
+
+/// Built from the column widths, so it lines up with the rows.
+fn table_rule(columns: &[usize]) -> String {
+    let mut out = String::from("├");
+    for (i, width) in columns.iter().enumerate() {
+        out.push_str(&"─".repeat(width + 2));
+        out.push(if i + 1 == columns.len() { '┤' } else { '┼' });
+    }
+    out
+}
+
+/// Every cell is padded to its column's width, so all rows of a table line up; cells keep their
+/// inline markup and `cell` is the face they start from.
+fn table_row(line: &str, columns: &[usize], cell: Face) -> Vec<Run> {
+    let mut runs = vec![("│".to_string(), Face::TableEdge)];
+    let mut contents = cells(line);
+    for width in columns {
+        let text = contents.next().unwrap_or("");
+        let inner = inline(text.trim(), cell);
+        let used: usize = inner
+            .iter()
+            .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
+            .sum();
+        runs.push((" ".to_string(), cell));
+        runs.extend(inner);
+        runs.push((" ".repeat(width.saturating_sub(used) + 1), cell));
+        runs.push(("│".to_string(), Face::TableEdge));
+    }
+    runs
 }
 
 /// `"## Title"` -> `(2, "Title")`; a `#` run without a space is not a heading.
@@ -93,8 +273,21 @@ fn list_item(text: &str) -> Option<&str> {
     text[digits..].strip_prefix(". ")
 }
 
-/// Inline markers toggle `**bold**`, `*italic*` / `_italic_`, `` `code` `` and `[text](url)`; an
-/// unmatched marker is kept as text.
+/// `"[x] done"` -> `(true, "done")`.
+fn task(text: &str) -> Option<(bool, &str)> {
+    let rest = text.strip_prefix('[')?;
+    let mut chars = rest.chars();
+    let mark = chars.next()?;
+    let rest = chars.as_str().strip_prefix("] ")?;
+    match mark {
+        ' ' => Some((false, rest)),
+        'x' | 'X' => Some((true, rest)),
+        _ => None,
+    }
+}
+
+/// Inline markers toggle `**bold**`, `*italic*` / `_italic_`, `~~strike~~`, `` `code` ``,
+/// `[text](url)` and `![alt](url)`; an unmatched marker is kept as text.
 fn inline(text: &str, base: Face) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     let mut plain = String::new();
@@ -115,13 +308,17 @@ fn inline(text: &str, base: Face) -> Vec<Run> {
             push(&mut runs, &mut plain);
             runs.push((body, emphasis(base, Face::Bold)));
             i += len;
+        } else if let Some((body, len)) = delimited(rest, &['~', '~'], &['~', '~']) {
+            push(&mut runs, &mut plain);
+            runs.push((body, emphasis(base, Face::Strike)));
+            i += len;
         } else if let Some((body, len)) = delimited(rest, &['*'], &['*'])
             .or_else(|| delimited(rest, &['_'], &['_']).filter(|_| word_boundary(&chars, i)))
         {
             push(&mut runs, &mut plain);
             runs.push((body, emphasis(base, Face::Italic)));
             i += len;
-        } else if let Some((label, len)) = link(rest) {
+        } else if let Some((label, len)) = image(rest).or_else(|| link(rest)) {
             push(&mut runs, &mut plain);
             runs.push((label, Face::Link));
             i += len;
@@ -179,13 +376,45 @@ fn link(chars: &[char]) -> Option<(String, usize)> {
     Some((chars[1..close].iter().collect(), end + 1))
 }
 
+/// `![alt](url)` -> `(alt, chars consumed)`; the `!` is dropped with the rest of the markers.
+fn image(chars: &[char]) -> Option<(String, usize)> {
+    if chars.first() != Some(&'!') {
+        return None;
+    }
+    let (label, len) = link(&chars[1..])?;
+    Some((label, len + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn runs(line: &str) -> Vec<(&'static str, Face)> {
-        render_line(line, false)
-            .into_iter()
+        faces(render_line(line, Block::Normal, &[]))
+    }
+
+    /// Every line of `text` rendered as one string, the way the pane draws it.
+    fn drawn(text: &str) -> Vec<String> {
+        let blocks = blocks(text.lines());
+        text.lines()
+            .enumerate()
+            .map(|(i, line)| {
+                blocks
+                    .render(line, i)
+                    .into_iter()
+                    .map(|(run, _)| run)
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn kinds(text: &str) -> Vec<Block> {
+        let blocks = blocks(text.lines());
+        (0..text.lines().count()).map(|i| blocks.kind(i)).collect()
+    }
+
+    fn faces(runs: Vec<Run>) -> Vec<(&'static str, Face)> {
+        runs.into_iter()
             .map(|(text, face)| (Box::leak(text.into_boxed_str()) as &str, face))
             .collect()
     }
@@ -220,6 +449,26 @@ mod tests {
     }
 
     #[test]
+    fn task_items_become_boxes() {
+        assert_eq!(
+            runs("- [ ] todo"),
+            vec![("☐ ", Face::ListMarker), ("todo", Face::Plain)]
+        );
+        assert_eq!(
+            runs("- [x] done"),
+            vec![("☑ ", Face::ListMarker), ("done", Face::Plain)]
+        );
+        assert_eq!(
+            runs("- [X] done"),
+            vec![("☑ ", Face::ListMarker), ("done", Face::Plain)]
+        );
+        assert_eq!(
+            runs("- [y] not a box"),
+            vec![("• ", Face::ListMarker), ("[y] not a box", Face::Plain)]
+        );
+    }
+
+    #[test]
     fn inline_markers_are_hidden_and_unmatched_ones_stay() {
         assert_eq!(
             runs("run `docrev` **now** or *later*"),
@@ -231,6 +480,10 @@ mod tests {
                 (" or ", Face::Plain),
                 ("later", Face::Italic),
             ]
+        );
+        assert_eq!(
+            runs("~~gone~~ soon"),
+            vec![("gone", Face::Strike), (" soon", Face::Plain)]
         );
         assert_eq!(runs("2 * 3 = 6"), vec![("2 * 3 = 6", Face::Plain)]);
         assert_eq!(runs("a ** b"), vec![("a ** b", Face::Plain)]);
@@ -245,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn links_show_their_label_and_quotes_keep_their_mark() {
+    fn links_and_images_show_their_label_and_quotes_keep_their_mark() {
         assert_eq!(
             runs("see [the docs](https://x.y) now"),
             vec![
@@ -254,10 +507,29 @@ mod tests {
                 (" now", Face::Plain)
             ]
         );
+        assert_eq!(
+            runs("![a diagram](d.png) below"),
+            vec![("a diagram", Face::Link), (" below", Face::Plain)]
+        );
         assert_eq!(runs("[broken](nope"), vec![("[broken](nope", Face::Plain)]);
         assert_eq!(
             runs("> quoted"),
             vec![(">", Face::Quote), (" quoted", Face::Plain)]
+        );
+    }
+
+    #[test]
+    fn thematic_breaks_are_one_rule_run_without_their_indent() {
+        for line in ["---", "***", "___", "- - -", "  ----"] {
+            let rendered = render_line(line, Block::Normal, &[]);
+            assert_eq!(rendered.len(), 1, "{line}");
+            assert_eq!(rendered[0].1, Face::Rule, "{line}");
+        }
+        assert_eq!(runs("--"), vec![("--", Face::Plain)]);
+        assert_eq!(
+            runs("-*-"),
+            vec![("-*-", Face::Plain)],
+            "mixed marks are not a rule"
         );
     }
 
@@ -274,15 +546,106 @@ mod tests {
     }
 
     #[test]
-    fn fences_cover_their_lines_and_render_verbatim() {
+    fn fences_and_front_matter_cover_their_lines_and_render_verbatim() {
         let text = "a\n```rust\nlet **x** = 1;\n```\nb\n```\nopen";
         assert_eq!(
-            fenced_lines(text.lines()),
-            vec![false, true, true, true, false, true, true]
+            kinds(text),
+            vec![
+                Block::Normal,
+                Block::Code,
+                Block::Code,
+                Block::Code,
+                Block::Normal,
+                Block::Code,
+                Block::Code
+            ]
         );
         assert_eq!(
-            render_line("let **x** = 1;", true),
+            render_line("let **x** = 1;", Block::Code, &[]),
             vec![("let **x** = 1;".to_string(), Face::CodeBlock)]
         );
+
+        let front = "---\nname: x\n---\n# Title\n---";
+        assert_eq!(
+            kinds(front),
+            vec![
+                Block::FrontMatter,
+                Block::FrontMatter,
+                Block::FrontMatter,
+                Block::Normal,
+                Block::Normal
+            ],
+            "only the leading block counts"
+        );
+        assert_eq!(
+            render_line("name: x", Block::FrontMatter, &[]),
+            vec![("name: x".to_string(), Face::FrontMatter)]
+        );
+    }
+
+    #[test]
+    fn an_unclosed_leading_rule_is_not_front_matter() {
+        assert_eq!(
+            kinds("---\n# Title\n- item"),
+            vec![Block::Normal, Block::Normal, Block::Normal]
+        );
+        assert_eq!(kinds("---"), vec![Block::Normal]);
+        assert_eq!(runs("# Title"), vec![("Title", Face::Heading(1))]);
+    }
+
+    #[test]
+    fn a_table_is_its_header_its_rule_and_its_rows() {
+        let text = "before\n| a | b |\n|---|:--|\n| 1 | 2 |\n\nafter";
+        assert_eq!(
+            kinds(text),
+            vec![
+                Block::Normal,
+                Block::TableHeader(0),
+                Block::TableRule(0),
+                Block::TableRow(0),
+                Block::Normal,
+                Block::Normal
+            ]
+        );
+        assert_eq!(
+            kinds("| a | b |\nnot a rule"),
+            vec![Block::Normal, Block::Normal],
+            "a row without a rule under it is not a table"
+        );
+    }
+
+    #[test]
+    fn every_column_is_as_wide_as_its_widest_rendered_cell() {
+        let drawn = drawn("|item|qty|\n|-|-|\n|**apple**|3|\n|fig|12|");
+        assert_eq!(
+            drawn,
+            vec![
+                "│ item  │ qty │",
+                "├───────┼─────┤",
+                "│ apple │ 3   │",
+                "│ fig   │ 12  │",
+            ]
+        );
+        for line in &drawn {
+            assert_eq!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()),
+                15,
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_characters_and_ragged_rows_still_line_up() {
+        let drawn = drawn("| 項目 | 数 |\n|---|---|\n| りんご |\n| a | b | c |");
+        for line in &drawn {
+            assert_eq!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()),
+                unicode_width::UnicodeWidthStr::width(drawn[0].as_str()),
+                "{line}"
+            );
+        }
+        assert!(drawn[2].starts_with("│ りんご"), "{}", drawn[2]);
+        assert!(drawn[3].ends_with("c │"), "a ragged row keeps every cell");
     }
 }
