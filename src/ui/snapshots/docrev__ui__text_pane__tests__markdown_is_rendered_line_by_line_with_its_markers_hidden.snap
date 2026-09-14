@@ -1,0 +1,12 @@
+---
+source: src/ui/text_pane.rs
+expression: buffer_text(buffer)
+---
+ README.md                                         line 6/6
+   1 │ Title                │ (no comment on this line)
+   2 │ • run docrev now     │
+   3 │ ```                  │
+   4 │ let **raw** = 1;     │
+   5 │ ```                  │
+   6 │ > see docs           │
+                                                      q:quit

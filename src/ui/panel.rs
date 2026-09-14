@@ -4,7 +4,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::grid::{EditorKind, EditorView, GridView};
+use crate::domain::comment::CommentThread;
+
+use super::grid::{EditorKind, EditorView};
 use super::style::{canvas, chrome};
 use super::text::{sanitize, wrap};
 use super::theme::Palette;
@@ -24,14 +26,17 @@ pub(crate) fn panel_width(total: u16, wanted: bool) -> Option<u16> {
     (total >= width + GRID_MIN_WIDTH).then_some(width)
 }
 
+/// `empty` is shown, dimmed, when there is no thread.
 pub(crate) fn draw_panel(
     p: &Palette,
     frame: &mut Frame,
     area: Rect,
-    view: &GridView,
+    thread: Option<&CommentThread>,
+    editor: Option<&EditorView>,
     docked: bool,
+    empty: Option<&str>,
 ) {
-    let (thread_area, editor_area) = match view.editor.as_ref().filter(|_| docked) {
+    let (thread_area, editor_area) = match editor.filter(|_| docked) {
         Some(editor) => {
             let height = editor_height(editor, editor_inner_width(area.width), area.height);
             let [t, e] =
@@ -44,7 +49,13 @@ pub(crate) fn draw_panel(
     // wrapped by us, not ratatui: the height must be known to follow the tail
     let inner_width = thread_area.width.saturating_sub(1).max(1) as usize;
     let mut lines = Vec::new();
-    if let Some(thread) = view.thread {
+    if let (None, Some(empty)) = (thread, empty) {
+        lines.push(Line::styled(
+            format!(" {empty}"),
+            canvas(p).add_modifier(Modifier::DIM),
+        ));
+    }
+    if let Some(thread) = thread {
         let title = if thread.resolved {
             format!("{} (resolved)", thread.anchor.position())
         } else {
@@ -65,7 +76,7 @@ pub(crate) fn draw_panel(
         .block(Block::new().borders(Borders::LEFT).border_style(chrome(p)));
     frame.render_widget(panel, thread_area);
 
-    if let (Some(rect), Some(editor)) = (editor_area, view.editor.as_ref()) {
+    if let (Some(rect), Some(editor)) = (editor_area, editor) {
         draw_editor(p, frame, rect, editor);
     }
 }
