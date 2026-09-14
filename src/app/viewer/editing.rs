@@ -1,11 +1,25 @@
 use crate::app::comments;
 use crate::domain::anchor::Anchor;
 use crate::domain::comment::CommentThread;
+use crate::domain::sheet::MergedRange;
 
-use super::{Body, Event, Mode, Notice, Viewer};
+use super::{Body, EditTarget, Event, Mode, Notice, Viewer};
 
 impl Viewer {
     pub(super) fn apply_editing(&mut self, event: Event) {
+        if Self::moves_cursor(event) {
+            // an emptied text document leaves the cursor nowhere to go
+            if self.text().is_some_and(|text| text.is_empty()) {
+                return;
+            }
+            self.close_editor();
+            match self.body {
+                Body::Grid(_) => self.apply_grid(event),
+                Body::Text(_) => self.apply_text(event),
+            }
+            self.start_comment();
+            return;
+        }
         let Mode::Editing { buffer, .. } = &mut self.mode else {
             return;
         };
@@ -15,8 +29,87 @@ impl Viewer {
             Event::Backspace => {
                 buffer.pop();
             }
-            Event::CancelEdit => self.mode = Mode::Grid,
+            Event::CancelEdit => self.close_editor(),
             Event::Submit => self.submit(),
+            _ => {}
+        }
+    }
+
+    fn moves_cursor(event: Event) -> bool {
+        Self::is_mouse(event)
+            || matches!(
+                event,
+                Event::Move { .. }
+                    | Event::Top
+                    | Event::Bottom
+                    | Event::RowStart
+                    | Event::RowEnd
+                    | Event::NextSheet
+                    | Event::PrevSheet
+            )
+    }
+
+    /// Opens the editor on the cursor's place with that place's draft; does nothing on an empty text document.
+    pub(super) fn start_comment(&mut self) {
+        let at = match &self.body {
+            Body::Grid(grid) => {
+                let (row, col) = grid.cursor();
+                let sheet = grid.sheet();
+                // a merged region is one place, so it holds one draft
+                let (row, col) = sheet
+                    .merge_at(row, col)
+                    .map_or((row, col), MergedRange::anchor);
+                Anchor::cell(sheet.name(), row as u32, col as u32)
+            }
+            Body::Text(text) if text.document().is_empty() => return,
+            Body::Text(text) => Anchor::line(text.line() as u32),
+        };
+        let target = match self.thread_at_cursor() {
+            Some(_) => EditTarget::Reply,
+            None => EditTarget::NewThread,
+        };
+        let buffer = self.take_drafts(&at);
+        self.mode = Mode::Editing { target, at, buffer };
+    }
+
+    /// The place's own draft, after the text of every draft whose place a reload cut away.
+    fn take_drafts(&mut self, at: &Anchor) -> String {
+        let mut places: Vec<Anchor> = self
+            .drafts
+            .keys()
+            .filter(|place| !self.still_exists(place))
+            .cloned()
+            .collect();
+        places.sort_by_key(Anchor::label);
+        places.push(at.clone());
+        places
+            .iter()
+            .filter_map(|place| self.drafts.remove(place))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// False once the sheet, row, column or line is gone; a hidden or merged cell still exists.
+    fn still_exists(&self, at: &Anchor) -> bool {
+        match (at, &self.body) {
+            (Anchor::Cell { sheet, row, col }, Body::Grid(grid)) => {
+                // the cursor sits at (0, 0) even on an empty sheet
+                grid.sheet_named(sheet).is_some_and(|sheet| {
+                    (*row as usize) < sheet.row_count().max(1)
+                        && (*col as usize) < sheet.col_count().max(1)
+                })
+            }
+            (Anchor::Line { line }, Body::Text(text)) => (*line as usize) < text.document().len(),
+            _ => false,
+        }
+    }
+
+    /// Blank text leaves no draft behind.
+    fn close_editor(&mut self) {
+        match std::mem::replace(&mut self.mode, Mode::Grid) {
+            Mode::Editing { at, buffer, .. } if !buffer.trim().is_empty() => {
+                self.drafts.insert(at, buffer);
+            }
             _ => {}
         }
     }
@@ -114,8 +207,16 @@ mod tests {
         }
     }
 
+    /// (anchor label, buffer) of the open editor.
+    fn editor(v: &Viewer) -> (String, &str) {
+        match v.mode() {
+            Mode::Editing { at, buffer, .. } => (at.label(), buffer),
+            other => panic!("expected editing mode, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn escape_cancels_without_saving() {
+    fn escape_closes_without_saving_and_keeps_the_draft() {
         let store = RecordingStore::default();
         let log = store.log.clone();
         let mut v = viewer_with(3, 3, Vec::new(), Box::new(store));
@@ -124,6 +225,68 @@ mod tests {
         v.apply(Event::CancelEdit);
         assert_eq!(*v.mode(), Mode::Grid);
         assert!(log.borrow().is_empty());
+        v.apply(Event::StartComment);
+        assert_eq!(editor(&v), ("one!A1".to_string(), "draft"));
+    }
+
+    #[test]
+    fn the_editor_follows_the_cursor_and_each_cell_keeps_its_draft() {
+        let store = RecordingStore::default();
+        let log = store.log.clone();
+        let mut v = viewer_with(4, 3, Vec::new(), Box::new(store));
+        v.apply(Event::Move { rows: 2, cols: 1 });
+        v.apply(Event::StartComment);
+        type_text(&mut v, "単価が古い?");
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(v.cursor(), (3, 1));
+        assert_eq!(editor(&v), ("one!B4".to_string(), ""));
+        type_text(&mut v, "合計ずれ");
+        v.apply(Event::Move { rows: -1, cols: 0 });
+        assert_eq!(editor(&v), ("one!B3".to_string(), "単価が古い?"));
+        v.apply(Event::Submit);
+        assert_eq!(*v.mode(), Mode::Grid);
+        assert_eq!(log.borrow().as_slice(), ["thread B3 単価が古い?"]);
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        v.apply(Event::StartComment);
+        assert_eq!(editor(&v), ("one!B4".to_string(), "合計ずれ"));
+        v.apply(Event::Move { rows: -1, cols: 0 });
+        assert_eq!(
+            editor(&v),
+            ("one!B3".to_string(), ""),
+            "a saved draft is gone"
+        );
+    }
+
+    #[test]
+    fn moving_onto_a_thread_turns_the_editor_into_a_reply_and_blank_text_is_no_draft() {
+        let comments = vec![thread("one", 1, 0, false)];
+        let mut v = viewer_with(3, 3, comments, Box::new(NullStore));
+        v.apply(Event::StartComment);
+        type_text(&mut v, " \n");
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert!(matches!(
+            v.mode(),
+            Mode::Editing {
+                target: EditTarget::Reply,
+                ..
+            }
+        ));
+        v.apply(Event::Move { rows: -1, cols: 0 });
+        assert!(matches!(
+            v.mode(),
+            Mode::Editing { target: EditTarget::NewThread, buffer, .. } if buffer.is_empty()
+        ));
+    }
+
+    #[test]
+    fn switching_sheets_while_editing_keeps_a_draft_per_sheet() {
+        let mut v = viewer(3, 3);
+        v.apply(Event::StartComment);
+        type_text(&mut v, "on one");
+        v.apply(Event::NextSheet);
+        assert_eq!(editor(&v), ("two!A1".to_string(), ""));
+        v.apply(Event::PrevSheet);
+        assert_eq!(editor(&v), ("one!A1".to_string(), "on one"));
     }
 
     #[test]
@@ -334,11 +497,25 @@ mod tests {
     }
 
     #[test]
-    fn navigation_is_ignored_while_editing() {
-        let mut v = viewer(3, 3);
+    fn a_merged_region_holds_one_draft() {
+        use crate::domain::sheet::MergedRange;
+        let sheet =
+            Sheet::new("one", vec![vec![CellValue::Text("t".into()); 3]; 2]).with_merges(vec![
+                MergedRange {
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 0,
+                    end_col: 2,
+                },
+            ]);
+        let doc = Document::from_sheets(vec![sheet]);
+        let mut v =
+            Viewer::from_document(doc, Vec::new(), None, None, Box::new(NullStore)).unwrap();
         v.apply(Event::StartComment);
-        v.apply(Event::Move { rows: 1, cols: 1 });
-        assert_eq!(v.cursor(), (0, 0));
+        type_text(&mut v, "whole title");
+        v.apply(Event::Move { rows: 0, cols: 1 });
+        assert_eq!(v.cursor(), (0, 1));
+        assert_eq!(editor(&v), ("one!A1".to_string(), "whole title"));
     }
 
     #[test]
@@ -713,6 +890,79 @@ mod tests {
         type_text(&mut v, "done");
         v.apply(Event::Submit);
         assert_eq!(log.borrow().as_slice(), ["reply t-one-1-0 done"]);
+    }
+
+    #[test]
+    fn the_editor_follows_the_line_cursor_and_each_line_keeps_its_draft() {
+        let mut v = text_viewer_with_store("a\nb\nc\n", Vec::new(), Box::new(NullStore));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "first");
+        v.apply(Event::Bottom);
+        assert_eq!(editor(&v), ("line 3".to_string(), ""));
+        type_text(&mut v, "last");
+        v.apply(Event::Top);
+        assert_eq!(editor(&v), ("line 1".to_string(), "first"));
+        v.apply(Event::CancelEdit);
+        v.apply(Event::Bottom);
+        v.apply(Event::StartComment);
+        assert_eq!(editor(&v), ("line 3".to_string(), "last"));
+    }
+
+    #[test]
+    fn a_draft_whose_line_was_cut_away_comes_along_to_the_next_line() {
+        let source = text_source(&"x\n".repeat(6));
+        let mut v = viewer_on_with(&source, Box::new(NullStore));
+        v.apply(Event::Bottom);
+        v.apply(Event::StartComment);
+        type_text(&mut v, "long draft");
+        source.write_text_from_outside("a\nb\n");
+        v.apply(Event::Tick);
+        v.apply(Event::Move { rows: -1, cols: 0 });
+        assert_eq!(editor(&v), ("line 1".to_string(), "long draft"));
+    }
+
+    #[test]
+    fn the_editor_stays_put_when_the_text_file_was_emptied() {
+        let source = text_source("a\nb\n");
+        let mut v = viewer_on_with(&source, Box::new(NullStore));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "draft");
+        source.write_text_from_outside("");
+        v.apply(Event::Tick);
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(editor(&v), ("line 1".to_string(), "draft"));
+    }
+
+    #[test]
+    fn a_failed_draft_on_a_renamed_sheet_comes_along_when_the_cursor_moves() {
+        let cells = || vec![vec![CellValue::Number(1.0)]; 2];
+        let source = SharedSource::new(vec![Sheet::new("one", cells())]);
+        let mut v = viewer_on_with(&source, Box::new(LiveStore::default()));
+        v.apply(Event::StartComment);
+        type_text(&mut v, "precious");
+        source.write_from_outside(vec![Sheet::new("renamed", cells())]);
+        v.apply(Event::Tick);
+        v.apply(Event::Submit);
+        assert!(v.notice().is_some_and(|n| n.contains("is gone")));
+        v.apply(Event::Move { rows: 1, cols: 0 });
+        assert_eq!(editor(&v), ("renamed!A2".to_string(), "precious"));
+    }
+
+    #[test]
+    fn a_draft_on_an_empty_sheet_stays_with_that_sheet() {
+        let doc = Document::from_sheets(vec![
+            Sheet::new("data", vec![vec![CellValue::Number(1.0)]]),
+            Sheet::new("blank", Vec::new()),
+        ]);
+        let mut v =
+            Viewer::from_document(doc, Vec::new(), None, None, Box::new(NullStore)).unwrap();
+        v.apply(Event::NextSheet);
+        v.apply(Event::StartComment);
+        type_text(&mut v, "note on blank");
+        v.apply(Event::NextSheet);
+        assert_eq!(editor(&v), ("data!A1".to_string(), ""));
+        v.apply(Event::PrevSheet);
+        assert_eq!(editor(&v), ("blank!A1".to_string(), "note on blank"));
     }
 
     #[test]

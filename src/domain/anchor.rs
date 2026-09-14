@@ -1,5 +1,5 @@
 /// 0-based; the 1-based forms (A1 notation, line numbers) are converted only by the methods here.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Anchor {
     Cell { sheet: String, row: u32, col: u32 },
     Line { line: u32 },

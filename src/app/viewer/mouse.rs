@@ -240,8 +240,17 @@ mod tests {
         v.apply(Event::StartComment);
         type_text(&mut v, "half-typed");
         v.apply(Event::SelectCell { row: 2, col: 1 });
-        assert_eq!(*v.mode(), Mode::Grid);
         assert_eq!(v.cursor(), (2, 1));
+        assert!(
+            matches!(v.mode(), Mode::Editing { buffer, .. } if buffer.is_empty()),
+            "the editor moves to the clicked cell"
+        );
+        v.apply(Event::SelectCell { row: 0, col: 0 });
+        assert!(
+            matches!(v.mode(), Mode::Editing { buffer, .. } if buffer == "half-typed"),
+            "and the first cell's draft is still there"
+        );
+        v.apply(Event::CancelEdit);
 
         v.apply(Event::OpenSheetPicker);
         v.apply(Event::SelectCell { row: 0, col: 0 });

@@ -11,6 +11,7 @@ mod text;
 pub use picker::PickerState;
 pub use search::SearchState;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::domain::anchor::Anchor;
@@ -164,6 +165,8 @@ pub struct Viewer {
     selection: Option<((usize, usize), (usize, usize))>,
     /// TSV waiting for the frontend.
     copy_request: Option<String>,
+    /// Unsaved editor text per place, kept in memory only.
+    drafts: HashMap<Anchor, String>,
 }
 
 impl Viewer {
@@ -214,6 +217,7 @@ impl Viewer {
             doc_stale: None,
             selection: None,
             copy_request: None,
+            drafts: HashMap::new(),
         })
     }
 
@@ -405,8 +409,8 @@ impl Viewer {
         ) {
             self.selection = None;
         }
-        // a click closes any prompt (discarding a draft) and then acts
-        if Self::is_mouse(event) && !matches!(self.mode, Mode::Grid) {
+        // a click closes any other prompt and then acts; the editor follows it instead
+        if Self::is_mouse(event) && !matches!(self.mode, Mode::Grid | Mode::Editing { .. }) {
             self.mode = Mode::Grid;
         }
         match self.mode {
@@ -564,22 +568,7 @@ impl Viewer {
                     index: 0,
                 };
             }
-            // one conversation per line: continue it if present, else start one
-            Event::StartComment => {
-                if text.document().is_empty() {
-                    return;
-                }
-                let at = Anchor::line(text.line() as u32);
-                let target = match self.thread_at_cursor() {
-                    Some(_) => EditTarget::Reply,
-                    None => EditTarget::NewThread,
-                };
-                self.mode = Mode::Editing {
-                    target,
-                    at,
-                    buffer: String::new(),
-                };
-            }
+            Event::StartComment => self.start_comment(),
             Event::Quit => self.quit = true,
             _ => {}
         }
@@ -637,17 +626,8 @@ impl Viewer {
                 }
                 return;
             }
-            // one conversation per cell: continue it if present, else start one
             Event::StartComment => {
-                let target = match self.thread_at_cursor() {
-                    Some(_) => EditTarget::Reply,
-                    None => EditTarget::NewThread,
-                };
-                self.mode = Mode::Editing {
-                    target,
-                    at: Anchor::cell(sheet.name(), row as u32, col as u32),
-                    buffer: String::new(),
-                };
+                self.start_comment();
                 return;
             }
             Event::SelectCell { .. }
@@ -893,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_selects_a_line_and_closes_an_open_editor() {
+    fn a_click_selects_a_line_and_carries_an_open_editor_there() {
         let mut v = text_viewer_with("a\nb\nc\n", Vec::new());
         v.apply(Event::SelectLine(2));
         assert_eq!(v.cursor(), (2, 0));
@@ -902,12 +882,15 @@ mod tests {
         v.apply(Event::StartComment);
         type_text(&mut v, "draft");
         v.apply(Event::SelectLine(0));
-        assert_eq!(
-            *v.mode(),
-            Mode::Grid,
-            "a click closes the editor, as on the grid"
-        );
         assert_eq!(v.cursor(), (0, 0));
+        assert!(
+            matches!(v.mode(), Mode::Editing { at, buffer, .. } if *at == Anchor::line(0) && buffer.is_empty())
+        );
+        v.apply(Event::SelectLine(2));
+        assert!(
+            matches!(v.mode(), Mode::Editing { buffer, .. } if buffer == "draft"),
+            "the line's draft comes back"
+        );
     }
 
     #[test]
