@@ -6,12 +6,13 @@ A terminal document viewer with inline review comments, designed for AI agent wo
 
 Open a document in your terminal, leave comments anchored to its content, and let an
 AI agent read them through a CLI, act on them, and reply — think code review, but for
-documents. The viewer paints a spreadsheet-style grid (white canvas, gridlines,
-formula bar) right in your terminal.
+documents. A workbook gets a spreadsheet-style grid (white canvas, gridlines, formula
+bar); a Markdown file is shown line by line with line numbers — both right in your
+terminal.
 
 ![Comment on a cell in the viewer, Claude picks it up over the CLI, and the reply lands back in the viewer on its own](demo/demo.gif)
 
-> Excel (`.xlsx`), read-only. Word (`.docx`) support is planned.
+> Excel (`.xlsx`) and Markdown (`.md`), read-only. Word (`.docx`) support is planned.
 
 ## Installation
 
@@ -34,8 +35,10 @@ Prebuilt binaries for macOS, Linux and Windows are attached to every
 
 ```text
 docrev file.xlsx                   # browse the workbook in a TUI
+docrev notes.md                    # read a Markdown file in a TUI
 docrev dump file.xlsx              # print a sheet as a text table (--sheet <name> to pick one)
 docrev dump file.xlsx --formulas   # formulas instead of results, like Excel's Ctrl+`
+docrev dump notes.md               # print the file with line numbers, like cat -n
 ```
 
 ### Viewer keys
@@ -77,6 +80,30 @@ read them. Frozen
 panes saved in the workbook are honored: pinned rows and columns stay on
 screen while the rest scrolls.
 
+### Markdown
+
+![One comment on a Markdown heading asks Claude to check schedule.xlsx; Claude fixes the lines and the viewer shows the edit and the reply on its own](demo/demo-markdown.gif)
+
+A Markdown file opens as its source lines, numbered the way `cat -n` numbers
+them. Headings, emphasis, inline code, lists, tables and fenced code are styled
+in place, but one line of the file always stays one line on screen (a long
+line wraps under a single number), so the numbers you see are the ones an
+agent uses. The side panel is always open (when the terminal is wide enough)
+and shows the cursor line's thread.
+
+| Key | Action |
+|-----|--------|
+| ↑ / ↓ | Move the cursor line |
+| PgUp / PgDn | Page up / down |
+| Home / End, Ctrl+Home / Ctrl+End | First / last line |
+| Ctrl+F | Find in the file (same keys as on a sheet) |
+| c | Comment on the line (continues the line's thread when it has one, reopening a resolved one) |
+| q / Ctrl+C | Quit |
+
+Click a line to select it; the wheel scrolls. **Drag across lines to copy
+them** as written in the file, markup included. Lines with an open thread are
+marked with `●`.
+
 ### Colors
 
 The viewer paints a spreadsheet-style white canvas by default. To keep your
@@ -97,6 +124,7 @@ The other half of the loop — an AI agent reads your comments, acts, and replie
 ```text
 docrev comment list file.xlsx --json [--unresolved] [--author <name>] [--sheet <name>]
 docrev comment add file.xlsx --cell "Sheet1!B3" --body "..." [--author <name>]
+docrev comment add notes.md --line 13 --body "..." [--author <name>]
 docrev comment reply file.xlsx --thread <id> --body "..." [--author <name>]
 docrev comment resolve file.xlsx --thread <id>
 ```
@@ -109,6 +137,11 @@ appends to it instead of starting a second one. Comments live in a sidecar file
 (`file.xlsx.docrev.json`); the original document is never modified, and
 concurrent TUI/CLI writes are serialized through a `.lock` file.
 
+On a Markdown file, `--line` takes the 1-based line number the viewer shows,
+and each thread in `list --json` carries the line's text with the two lines on
+each side instead of a cell and its row. A comment stays on its line number
+when the file is edited; it does not follow the text.
+
 ## Using with Claude (or any agent)
 
 [`skills/docrev-review/SKILL.md`](skills/docrev-review/SKILL.md) teaches an agent the
@@ -119,8 +152,9 @@ mkdir -p ~/.claude/skills/docrev-review
 cp skills/docrev-review/SKILL.md ~/.claude/skills/docrev-review/
 ```
 
-Then comment on cells in the viewer, tell Claude "I commented on budget.xlsx",
-and watch the replies appear — the viewer picks them up on its own.
+Then comment on cells or lines in the viewer, tell Claude "I commented on
+budget.xlsx" (or "on notes.md"), and watch the replies appear — the viewer
+picks them up on its own.
 
 ## License
 

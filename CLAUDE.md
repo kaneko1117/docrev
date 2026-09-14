@@ -2,9 +2,9 @@
 
 docrev — a terminal document viewer with inline review comments, designed for AI agent workflows.
 
-A user opens a document in a TUI, leaves comments anchored to locations in it (cells, later paragraphs), and an AI agent reads those comments through a CLI, acts on them, and replies. Think "hunk, but for documents instead of diffs".
+A user opens a document in a TUI, leaves comments anchored to locations in it (cells, lines of a text file, later paragraphs), and an AI agent reads those comments through a CLI, acts on them, and replies. Think "hunk, but for documents instead of diffs".
 
-Scope: Excel (`.xlsx`) only, read-only viewer, comments stored in a sidecar JSON file, agent-facing CLI. Word (`.docx`) support is planned — never let that door close. (No version numbers or progress snapshots in docs — that state lives in GitHub issues and milestones, see Roadmap.)
+Scope: Excel (`.xlsx`) and Markdown (`.md`), read-only viewer, comments stored in a sidecar JSON file, agent-facing CLI. Word (`.docx`) support is planned — never let that door close. (No version numbers or progress snapshots in docs — that state lives in GitHub issues and milestones, see Roadmap.)
 
 ## Architecture
 
@@ -38,13 +38,15 @@ src/
 ## Domain decisions
 
 - `Anchor` is an enum from day one:
-  `Anchor::Cell { sheet: String, row: u32, col: u32 }` now;
+  `Anchor::Cell { sheet: String, row: u32, col: u32 }` for workbooks and
+  `Anchor::Line { line: u32 }` for text documents;
   a paragraph/range variant will be added for Word later. Everything that
   touches comments goes through `Anchor`, never through raw cell strings.
 - Coordinates are **0-based** everywhere internally. A1-notation ("Sheet1!B12")
-  exists only at the edges: CLI arguments, JSON sidecar, and UI display.
-  Conversion lives in one place: the methods on `domain::anchor::Anchor`
-  (`cell_ref`, `parse_cell_ref`, `column_label`).
+  and 1-based line numbers exist only at the edges: CLI arguments, JSON
+  sidecar, and UI display. Parsing and formatting references belong to the
+  methods on `domain::anchor::Anchor` (`a1`, `parse_ref`, `parse_cell_ref`,
+  `column_label`, `from_line_number`, `line_number`).
 - What belongs in `domain` is decided by subject matter, never by purity, and
   the line is **whose contract a thing is**. A1 notation is docrev's own — the
   sidecar and the CLI speak it — so `Anchor` owns it (see the bullet above).
