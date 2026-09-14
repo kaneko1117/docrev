@@ -1,0 +1,22 @@
+---
+source: src/ui/text_pane.rs
+expression: buffer_text(terminal.backend().buffer())
+---
+ README.md                                                            line 1/14
+    1 │ ---                                     │ (no comment on this line)
+    2 │ title: notes                            │
+    3 │ ---                                     │
+    4 │ Plan                                    │
+    5 │ ☑ ship it                               │
+    6 │ ☐ write docs                            │
+    7 │                                         │
+    8 │ │ item  │ qty │                         │
+    9 │ ├───────┼─────┤                         │
+   10 │ │ apple │ 3   │                         │
+   11 │                                         │
+   12 │ ────────────────────────────────────────│
+   13 │                                         │
+   14 │ dropped and logo                        │
+                                                │
+                                                │
+                                                                          q:quit
