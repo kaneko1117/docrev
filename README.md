@@ -151,7 +151,16 @@ serialized through a `.lock` file.
 ## Using with Claude (or any agent)
 
 [`skills/docrev-review/SKILL.md`](skills/docrev-review/SKILL.md) teaches an agent the
-full loop. For Claude Code, copy it into your skills directory:
+full loop. For Claude Code, install it as a plugin — the repository is its own
+marketplace:
+
+```text
+/plugin marketplace add kaneko1117/docrev
+/plugin install docrev@docrev
+```
+
+Any other agent can use the skill file directly; for Claude Code that means
+copying it into your skills directory:
 
 ```text
 mkdir -p ~/.claude/skills/docrev-review
