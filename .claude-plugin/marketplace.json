@@ -1,0 +1,15 @@
+{
+  "name": "docrev",
+  "description": "The docrev review skill: lets an agent read, act on, and reply to comments left in the docrev viewer.",
+  "owner": {
+    "name": "kaneko1117",
+    "url": "https://github.com/kaneko1117"
+  },
+  "plugins": [
+    {
+      "name": "docrev",
+      "source": "./",
+      "description": "Handle review comments left on Excel or Markdown files through the docrev CLI: read the open threads, act on them, and reply."
+    }
+  ]
+}

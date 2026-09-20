@@ -1,0 +1,12 @@
+{
+  "name": "docrev",
+  "description": "Handle review comments left on Excel or Markdown files through the docrev CLI: read the open threads, act on them, and reply.",
+  "author": {
+    "name": "kaneko1117",
+    "url": "https://github.com/kaneko1117"
+  },
+  "homepage": "https://github.com/kaneko1117/docrev",
+  "repository": "https://github.com/kaneko1117/docrev",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["docrev", "review", "excel", "xlsx", "markdown", "tui", "agent"]
+}

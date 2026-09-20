@@ -109,7 +109,14 @@ docrev comment resolve <ファイル> --thread <id>
 
 ## Claude と使う
 
-[`skills/docrev-review/SKILL.md`](skills/docrev-review/SKILL.md) にエージェント向けの手順書があります。Claude Code なら skills ディレクトリにコピーしてください:
+[`skills/docrev-review/SKILL.md`](skills/docrev-review/SKILL.md) にエージェント向けの手順書があります。Claude Code なら、このリポジトリを配布元として登録し、プラグインとして入れるだけです:
+
+```text
+/plugin marketplace add kaneko1117/docrev
+/plugin install docrev@docrev
+```
+
+ほかのエージェントでは手順書のファイルをそのまま使えます。Claude Code で手動で入れる場合は skills ディレクトリにコピーしてください:
 
 ```text
 mkdir -p ~/.claude/skills/docrev-review
