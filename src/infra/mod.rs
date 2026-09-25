@@ -1,8 +1,10 @@
 pub mod clipboard;
 pub mod datetime;
+pub mod docx;
 pub mod fs;
 pub mod markdown;
 pub mod number_format;
+mod ooxml;
 pub mod terminal;
 pub mod xlsx;
 pub mod xlsx_meta;
