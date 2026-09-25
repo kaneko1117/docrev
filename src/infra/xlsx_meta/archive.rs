@@ -1,19 +1,18 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesRef, BytesText};
 
 use super::MetaError;
+use crate::infra::ooxml;
+
+pub(super) use crate::infra::ooxml::attr_value;
 
 pub(super) fn open_archive(document: &Path) -> Result<zip::ZipArchive<File>, MetaError> {
-    let file =
-        File::open(document).map_err(|e| MetaError(format!("{}: {e}", document.display())))?;
-    zip::ZipArchive::new(file).map_err(|e| MetaError(e.to_string()))
+    ooxml::open_archive(document).map_err(MetaError)
 }
 
 /// Targets are relative to `xl/`, or absolute with a leading `/`.
@@ -28,42 +27,15 @@ pub(super) fn read_entry(
     archive: &mut zip::ZipArchive<File>,
     name: &str,
 ) -> Result<String, MetaError> {
-    let mut entry = archive
-        .by_name(name)
-        .map_err(|e| MetaError(format!("{name}: {e}")))?;
-    let mut text = String::new();
-    entry
-        .read_to_string(&mut text)
-        .map_err(|e| MetaError(format!("{name}: {e}")))?;
-    Ok(text)
+    ooxml::read_entry(archive, name).map_err(MetaError)
 }
 
-pub(super) fn attr_value(attr: &Attribute, decoder: quick_xml::Decoder) -> String {
-    attr.decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
-        .map(|v| v.into_owned())
-        .unwrap_or_default()
-}
-
-/// A text node arrives in pieces: plain text and each `&…;` reference as its own event.
 pub(super) fn text_piece(text: &BytesText) -> Result<String, MetaError> {
-    text.xml_content(quick_xml::XmlVersion::Implicit1_0)
-        .map(|t| t.into_owned())
-        .map_err(|e| MetaError(e.to_string()))
+    ooxml::text_piece(text).map_err(MetaError)
 }
 
-/// `&#x30;` and the predefined entities; an unknown entity is kept verbatim.
 pub(super) fn reference_piece(reference: &BytesRef) -> Result<String, MetaError> {
-    if let Some(ch) = reference
-        .resolve_char_ref()
-        .map_err(|e| MetaError(e.to_string()))?
-    {
-        return Ok(ch.to_string());
-    }
-    let name = reference.decode().map_err(|e| MetaError(e.to_string()))?;
-    let raw = format!("&{name};");
-    Ok(quick_xml::escape::unescape(&raw)
-        .map(|t| t.into_owned())
-        .unwrap_or(raw))
+    ooxml::reference_piece(reference).map_err(MetaError)
 }
 
 /// `<sheet name="売上" r:id="rId1"/>` → (name, rId).
