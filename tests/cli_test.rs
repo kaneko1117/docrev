@@ -318,3 +318,104 @@ fn markdown_rejects_targets_that_do_not_fit() {
     cleanup(&doc);
     cleanup(&xlsx);
 }
+
+fn temp_docx(body: &str) -> PathBuf {
+    use std::io::Write;
+    let dest = std::env::temp_dir().join(format!("docrev-cli-{}.docx", uuid::Uuid::new_v4()));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&dest).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("word/document.xml", options).unwrap();
+    zip.write_all(
+        format!(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    zip.start_file("word/styles.xml", options).unwrap();
+    zip.write_all(
+        br#"<w:styles><w:style w:type="paragraph" w:styleId="1"><w:name w:val="heading 1"/></w:style></w:styles>"#,
+    )
+    .unwrap();
+    zip.finish().unwrap();
+    let _ = std::fs::remove_file(sidecar_of(&dest));
+    dest
+}
+
+#[test]
+fn word_agent_loop() {
+    let doc = temp_docx(concat!(
+        r#"<w:p><w:pPr><w:pStyle w:val="1"/></w:pPr><w:r><w:t>議事録</w:t></w:r></w:p>"#,
+        r#"<w:p><w:r><w:t>今日は</w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>晴れ</w:t></w:r></w:p>"#,
+        "<w:p/>",
+        r#"<w:tbl><w:tr><w:tc><w:p><w:r><w:t>気温</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>25</w:t></w:r></w:p></w:tc></w:tr>"#,
+        r#"<w:tr><w:tc><w:p><w:r><w:t>湿度</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>60</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#,
+    ));
+
+    let out = run(&["dump"], &doc);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "     1\t議事録\n     2\t今日は晴れ\n     3\t\n     4\t気温\t25\n     5\t湿度\t60\n"
+    );
+
+    let out = run(
+        &[
+            "comment",
+            "add",
+            "--line",
+            "4",
+            "--body",
+            "単位は?",
+            "--author",
+            "user",
+        ],
+        &doc,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let thread: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        thread["anchor"],
+        serde_json::json!({"kind": "line", "line": 4})
+    );
+
+    let out = run(&["comment", "list", "--json"], &doc);
+    let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let first = &listed["comments"][0];
+    assert_eq!(first["line"]["text"], "気温\t25");
+    assert_eq!(
+        first["line"]["context"],
+        serde_json::json!({"2": "今日は晴れ", "3": "", "5": "湿度\t60"})
+    );
+    assert!(first.get("cell").is_none() && first.get("hidden").is_none());
+    assert_eq!(listed["workbook_comments"], serde_json::json!([]));
+
+    let stderr = |out: std::process::Output| {
+        assert!(!out.status.success());
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+    let err = stderr(run(
+        &["comment", "add", "--cell", "s!A1", "--body", "x"],
+        &doc,
+    ));
+    assert!(err.contains("use --line"), "{err}");
+    let err = stderr(run(&["comment", "list", "--sheet", "s"], &doc));
+    assert!(err.contains("--sheet does not apply"), "{err}");
+    let err = stderr(run(&["dump", "--formulas"], &doc));
+    assert!(err.contains("--formulas does not apply"), "{err}");
+    let err = stderr(run(&["comment", "add", "--line", "6", "--body", "x"], &doc));
+    assert!(
+        err.contains("line 6 is beyond the end of the file (5 lines)"),
+        "{err}"
+    );
+
+    cleanup(&doc);
+}

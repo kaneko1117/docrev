@@ -17,7 +17,7 @@ use docrev::ui::{comment_list, lines, table};
 #[derive(Parser)]
 #[command(name = "docrev", version, about)]
 struct Cli {
-    /// Open a document (.xlsx, .md) in the TUI viewer
+    /// Open a document (.xlsx, .md, .docx) in the TUI viewer
     file: Option<PathBuf>,
     /// Viewer colors: `sheets` or `terminal` [env: DOCREV_THEME]
     #[arg(long, value_parser = parse_theme)]
@@ -30,7 +30,7 @@ struct Cli {
 enum Command {
     /// Print a sheet as a plain-text table, or a text document with line numbers (like `cat -n`)
     Dump {
-        /// Path to the document (.xlsx, .md)
+        /// Path to the document (.xlsx, .md, .docx)
         file: PathBuf,
         /// Sheet name to print (defaults to the first sheet the workbook shows; a hidden sheet can be named)
         #[arg(long)]

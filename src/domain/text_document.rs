@@ -37,7 +37,11 @@ pub struct TextDocument {
 impl TextDocument {
     /// `\r` before a newline is dropped; every line is shown as written.
     pub fn new(text: &str) -> Self {
-        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        Self::from_lines(text.lines().map(str::to_string).collect())
+    }
+
+    /// Lines as given, each free of line breaks, so their count is the line count.
+    pub fn from_lines(lines: Vec<String>) -> Self {
         let shown = lines
             .iter()
             .map(|line| vec![(line.clone(), Face::Plain)])
@@ -127,6 +131,15 @@ mod tests {
         assert_eq!(document.shown_text(0), "a b");
         assert_eq!(document.shown_text(1), "", "a rule shows no text");
         assert_eq!(document.shown_text(2), "");
+    }
+
+    #[test]
+    fn lines_given_as_such_keep_their_count() {
+        assert_eq!(TextDocument::from_lines(vec![String::new()]).len(), 1);
+        assert!(TextDocument::from_lines(Vec::new()).is_empty());
+        let document = TextDocument::from_lines(vec!["a".to_string(), String::new()]);
+        assert_eq!(document.lines(), ["a", ""]);
+        assert_eq!(document.shown(1), [(String::new(), Face::Plain)]);
     }
 
     #[test]
