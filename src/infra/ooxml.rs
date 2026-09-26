@@ -7,9 +7,10 @@ use std::path::Path;
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesCData, BytesRef, BytesText};
 
+/// The message does not name the file; the caller adds the path once.
 pub(crate) fn open_archive(document: &Path) -> Result<zip::ZipArchive<File>, String> {
-    let file = File::open(document).map_err(|e| format!("{}: {e}", document.display()))?;
-    zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", document.display()))
+    let file = File::open(document).map_err(|e| e.to_string())?;
+    zip::ZipArchive::new(file).map_err(|e| e.to_string())
 }
 
 pub(crate) fn read_entry(

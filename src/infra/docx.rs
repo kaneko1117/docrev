@@ -791,7 +791,7 @@ mod tests {
         let not_zip = temp_path();
         std::fs::write(&not_zip.0, b"this is not a zip file").unwrap();
         let err = read_blocks(&not_zip.0).unwrap_err();
-        assert!(err.to_string().contains(".docx"), "{err}");
+        assert!(err.to_string().contains("invalid Zip archive"), "{err}");
 
         let no_document = archive(&[("word/styles.xml", STYLES)]);
         let err = read_blocks(&no_document.0).unwrap_err();
