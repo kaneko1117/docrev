@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/kaneko1117/docrev/compare/v0.6.0...v0.6.1) - 2026-09-26
+
+### Added
+
+- open Word documents as text, one line per paragraph or table row
+- read the paragraphs and tables of a Word document
+- install the review skill as a Claude Code plugin
+
 ## [0.6.0](https://github.com/kaneko1117/docrev/compare/v0.5.0...v0.6.0) - 2026-09-14
 
 ### Added
